@@ -80,6 +80,7 @@ type CleanupSummary = {
     outputPath: string | null;
     status: CleanupStatus;
     error: string | null;
+    snapshot: MetadataPreviewSnapshot | null;
   }>;
 };
 
@@ -681,6 +682,7 @@ function App() {
       setSummary(result);
       setRunFailures(result.failures.slice(0, 6));
       setFileStates(buildFileStateMap(result.previewStates));
+      setAfterSnapshots(buildAfterSnapshotMap(result.previewStates));
       setProgress({
         total: result.total,
         completed: result.succeeded + result.failed,
@@ -752,10 +754,12 @@ function App() {
 
     const shellRect = shell.getBoundingClientRect();
     const rowRect = event.currentTarget.getBoundingClientRect();
-    const estimatedWidth = Math.min(360, Math.max(260, shell.clientWidth - 112));
-    const estimatedHeight = 310;
+    const estimatedWidth = Math.min(480, Math.max(340, shell.clientWidth - 24));
+    const estimatedHeight = 360;
+    const preferredLeft = event.clientX - shellRect.left - estimatedWidth - 14;
+    const fallbackLeft = event.clientX - shellRect.left + 16;
     const nextLeft = clampNumber(
-      event.clientX - shellRect.left + 14,
+      preferredLeft >= 12 ? preferredLeft : fallbackLeft,
       12,
       Math.max(12, shell.clientWidth - estimatedWidth - 12),
     );
@@ -1000,7 +1004,7 @@ function App() {
                           <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
                         </div>
                         <span className="queue-count">
-                          {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "…" : "…"}
+                          {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "读取中" : "—"}
                         </span>
                         <span className="queue-count">
                           {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
@@ -1175,16 +1179,24 @@ function MetadataPreviewFlyout(props: {
         </span>
       </div>
 
-      <div className="preview-summary-strip">
-        <span className="preview-summary-chip">
-          前 {props.beforeSnapshot ? props.beforeSnapshot.count : props.beforeLoading ? "…" : "—"}
-        </span>
-        <span className="preview-summary-chip">
-          后 {resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}
-        </span>
+      <div className="preview-summary-grid">
+        <div className="preview-summary-card">
+          <span>处理前</span>
+          <strong>
+            {props.beforeSnapshot
+              ? props.beforeSnapshot.count
+              : props.beforeLoading
+                ? "读取中"
+                : "—"}
+          </strong>
+        </div>
+        <div className="preview-summary-card">
+          <span>处理后</span>
+          <strong>{resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}</strong>
+        </div>
       </div>
 
-      <div className="preview-card-grid">
+      <div className="preview-card-grid compare-grid">
         <MetadataColumn
           title="处理前"
           snapshot={props.beforeSnapshot}
@@ -1227,8 +1239,11 @@ function MetadataColumn(props: {
                 className="preview-field"
                 title={`${field.group} · ${field.name}\n${field.valuePreview}`}
               >
-                <strong title={`${field.group} · ${field.name}`}>{trimMiddle(field.name, 18)}</strong>
-                <span>{field.valuePreview}</span>
+                <div className="preview-field-head">
+                  <strong title={`${field.group} · ${field.name}`}>{field.name}</strong>
+                  <span className="preview-field-group">{field.group}</span>
+                </div>
+                <span className="preview-field-value">{field.valuePreview}</span>
               </div>
             ))}
             {props.snapshot.truncated ? <div className="preview-note">内容已裁剪</div> : null}
@@ -1334,6 +1349,7 @@ function buildFileStateMap(
     outputPath: string | null;
     status: CleanupStatus;
     error: string | null;
+    snapshot: MetadataPreviewSnapshot | null;
   }>,
 ): Record<string, FileRunState> {
   return previewStates.reduce<Record<string, FileRunState>>((result, item) => {
@@ -1342,6 +1358,23 @@ function buildFileStateMap(
       outputPath: item.outputPath,
       error: item.error,
     };
+    return result;
+  }, {});
+}
+
+function buildAfterSnapshotMap(
+  previewStates: Array<{
+    sourcePath: string;
+    outputPath: string | null;
+    status: CleanupStatus;
+    error: string | null;
+    snapshot: MetadataPreviewSnapshot | null;
+  }>,
+): Record<string, MetadataPreviewSnapshot> {
+  return previewStates.reduce<Record<string, MetadataPreviewSnapshot>>((result, item) => {
+    if (item.snapshot) {
+      result[normalizePath(item.sourcePath)] = item.snapshot;
+    }
     return result;
   }, {});
 }
@@ -1380,13 +1413,13 @@ function resolveAfterCountLabel(
     return String(snapshot.count);
   }
   if (loading) {
-    return "…";
+    return "读取中";
   }
   if (rowState?.status === "success") {
     return "0";
   }
   if (rowState?.status === "running") {
-    return "…";
+    return "处理中";
   }
   return "—";
 }

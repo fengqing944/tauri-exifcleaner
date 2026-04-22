@@ -147,6 +147,7 @@ struct CleanupPreviewState {
     output_path: Option<String>,
     status: String,
     error: Option<String>,
+    snapshot: Option<MetadataPreviewSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -626,6 +627,7 @@ fn build_queue_view(store: &QueueStore) -> QueueView {
 fn build_cleanup_preview_states(
     tracked_preview_files: &[QueuedFile],
     tracked_preview_states: &HashMap<String, CleanupPreviewState>,
+    preview_snapshots: &HashMap<String, MetadataPreviewSnapshot>,
     cancelled: bool,
 ) -> Vec<CleanupPreviewState> {
     tracked_preview_files
@@ -635,6 +637,12 @@ fn build_cleanup_preview_states(
             tracked_preview_states
                 .get(&key)
                 .cloned()
+                .map(|mut state| {
+                    if state.status == "success" {
+                        state.snapshot = preview_snapshots.get(&key).cloned();
+                    }
+                    state
+                })
                 .unwrap_or_else(|| CleanupPreviewState {
                     source_path: file.source_path.clone(),
                     output_path: None,
@@ -644,7 +652,60 @@ fn build_cleanup_preview_states(
                         "success".to_string()
                     },
                     error: None,
+                    snapshot: preview_snapshots.get(&key).cloned(),
                 })
+        })
+        .collect()
+}
+
+fn build_cleanup_preview_snapshot_map(
+    exiftool_path: &Path,
+    tracked_preview_files: &[QueuedFile],
+    tracked_preview_states: &HashMap<String, CleanupPreviewState>,
+) -> HashMap<String, MetadataPreviewSnapshot> {
+    let mut snapshot_path_keys = HashSet::new();
+    let mut snapshot_paths = Vec::new();
+    let mut source_to_snapshot_key = HashMap::new();
+
+    for file in tracked_preview_files {
+        let source_key = dedupe_key(Path::new(&file.source_path));
+        if let Some(state) = tracked_preview_states.get(&source_key) {
+            if state.status != "success" {
+                continue;
+            }
+        }
+
+        let target_path = tracked_preview_states
+            .get(&source_key)
+            .and_then(|state| state.output_path.as_deref())
+            .unwrap_or(&file.source_path);
+        let target_path = PathBuf::from(target_path);
+        if !target_path.is_file() {
+            continue;
+        }
+
+        let snapshot_key = dedupe_key(&target_path);
+        source_to_snapshot_key.insert(source_key, snapshot_key.clone());
+        if snapshot_path_keys.insert(snapshot_key) {
+            snapshot_paths.push(target_path);
+        }
+    }
+
+    let snapshot_map = match read_metadata_snapshot_map(exiftool_path, &snapshot_paths) {
+        Ok(snapshot_map) => snapshot_map,
+        Err(error) => {
+            eprintln!("metadata preview snapshot read failed after cleanup: {error}");
+            return HashMap::new();
+        }
+    };
+
+    source_to_snapshot_key
+        .into_iter()
+        .filter_map(|(source_key, snapshot_key)| {
+            snapshot_map
+                .get(&snapshot_key)
+                .cloned()
+                .map(|snapshot| (source_key, snapshot))
         })
         .collect()
 }
@@ -1023,6 +1084,7 @@ async fn run_cleanup(
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
                                 error: outcome.error.clone(),
+                                snapshot: None,
                             },
                         );
                         app.emit(
@@ -1101,6 +1163,8 @@ async fn run_cleanup(
         }
 
         let cancelled = cancel_flag.load(Ordering::Relaxed);
+        let preview_snapshots =
+            build_cleanup_preview_snapshot_map(&exiftool_path, &tracked_preview_files, &tracked_preview_states);
 
         Ok(CleanupSummary {
             total,
@@ -1112,6 +1176,7 @@ async fn run_cleanup(
             preview_states: build_cleanup_preview_states(
                 &tracked_preview_files,
                 &tracked_preview_states,
+                &preview_snapshots,
                 cancelled,
             ),
         })
@@ -1819,17 +1884,41 @@ mod tests {
                 output_path: None,
                 status: "success".to_string(),
                 error: None,
+                snapshot: None,
             },
         );
+        let preview_snapshots = HashMap::from([(
+            dedupe_key(Path::new("C:/input/1.jpg")),
+            MetadataPreviewSnapshot {
+                count: 2,
+                fields: Vec::new(),
+                truncated: false,
+            },
+        )]);
 
-        let completed_states =
-            build_cleanup_preview_states(&tracked_preview_files, &tracked_preview_states, false);
+        let completed_states = build_cleanup_preview_states(
+            &tracked_preview_files,
+            &tracked_preview_states,
+            &preview_snapshots,
+            false,
+        );
         assert_eq!(completed_states.len(), 2);
         assert_eq!(completed_states[0].status, "success");
         assert_eq!(completed_states[1].status, "success");
+        assert_eq!(
+            completed_states[0]
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.count),
+            Some(2)
+        );
 
-        let cancelled_states =
-            build_cleanup_preview_states(&tracked_preview_files, &HashMap::new(), true);
+        let cancelled_states = build_cleanup_preview_states(
+            &tracked_preview_files,
+            &HashMap::new(),
+            &HashMap::new(),
+            true,
+        );
         assert_eq!(cancelled_states[0].status, "cancelled");
         assert_eq!(cancelled_states[1].status, "cancelled");
     }

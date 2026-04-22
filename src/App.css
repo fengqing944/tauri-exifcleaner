@@ -53,8 +53,12 @@ button {
 }
 
 .topbar {
-  min-height: 54px;
-  padding: 10px 14px;
+  padding: 10px 14px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.topbar-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -111,6 +115,45 @@ button {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.topbar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar-meta-group {
+  min-width: 260px;
+  justify-content: flex-end;
+}
+
+.toolbar-label {
+  font-size: 12px;
+  color: #475569;
+}
+
+.toolbar-slider {
+  min-width: 220px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.toolbar-slider input[type="range"] {
+  width: 100%;
+  accent-color: #2563eb;
 }
 
 .workspace {
@@ -250,19 +293,13 @@ button {
   background: #f1f7ff;
 }
 
-.import-actions,
-.button-row {
+.import-actions {
   display: grid;
   gap: 8px;
 }
 
 .import-actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.button-row.actions-row,
-.button-row.actions-row {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .button {
@@ -614,29 +651,6 @@ button {
   margin-bottom: 6px;
 }
 
-.field {
-  display: grid;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-.field span {
-  font-size: 12px;
-  color: #334155;
-}
-
-.slider-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.slider-row input[type="range"] {
-  width: 100%;
-  accent-color: #2563eb;
-}
-
 .footnote {
   padding: 10px 14px;
   border-top: 1px solid #e2e8f0;
@@ -681,7 +695,7 @@ button {
     padding: 10px;
   }
 
-  .topbar,
+  .topbar-main,
   .panel-header,
   .activity-strip {
     flex-direction: column;
@@ -692,9 +706,19 @@ button {
     justify-content: flex-start;
   }
 
+  .topbar-toolbar,
+  .toolbar-group,
+  .toolbar-meta-group {
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .toolbar-slider {
+    min-width: 0;
+  }
+
   .summary-strip,
   .import-actions,
-  .button-row.actions-row,
   .preview-card-grid {
     grid-template-columns: 1fr;
   }

@@ -750,17 +750,54 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand-block">
-          <strong>MetaSweep</strong>
-          <span>元数据清理工具</span>
+        <div className="topbar-main">
+          <div className="brand-block">
+            <strong>MetaSweep</strong>
+            <span>元数据清理工具</span>
+          </div>
+          <div className="topbar-meta">
+            <StatusBadge
+              tone={runtimeInfo?.exiftoolReady ? "success" : "warning"}
+              label={runtimeInfo?.exiftoolReady ? "引擎就绪" : "引擎未就绪"}
+            />
+            <span>{runtimeInfo?.exiftoolVersion ? `ExifTool ${runtimeInfo.exiftoolVersion}` : "ExifTool"}</span>
+            <span>原地覆盖</span>
+          </div>
         </div>
-        <div className="topbar-meta">
-          <StatusBadge
-            tone={runtimeInfo?.exiftoolReady ? "success" : "warning"}
-            label={runtimeInfo?.exiftoolReady ? "引擎就绪" : "引擎未就绪"}
-          />
-          <span>{runtimeInfo?.exiftoolVersion ? `ExifTool ${runtimeInfo.exiftoolVersion}` : "ExifTool"}</span>
-          <span>原地覆盖</span>
+
+        <div className="topbar-toolbar">
+          <div className="toolbar-group">
+            <button
+              className="button button-primary"
+              type="button"
+              disabled={!canStart}
+              onClick={startCleanup}
+            >
+              开始清理
+            </button>
+            <button
+              className="button"
+              type="button"
+              disabled={!isRunning && !isScanning}
+              onClick={isRunning ? cancelCleanup : cancelScan}
+            >
+              {isRunning ? "取消清理" : "取消扫描"}
+            </button>
+          </div>
+
+          <div className="toolbar-group toolbar-meta-group">
+            <span className="toolbar-label">并发</span>
+            <div className="toolbar-slider">
+              <input
+                type="range"
+                min={1}
+                max={runtimeInfo?.parallelismMax ?? 16}
+                value={parallelism}
+                onChange={(event) => setParallelism(Number(event.currentTarget.value))}
+              />
+              <strong>{parallelism}</strong>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -957,43 +994,6 @@ function App() {
             ) : (
               <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
             )}
-          </Panel>
-
-          <Panel title="操作" subtitle="默认原地覆盖，只保留必要执行项。">
-            <div className="message neutral">清理结果会直接写回原文件，不再显示输出模式和目录设置。</div>
-
-            <label className="field">
-              <span>并发任务数</span>
-              <div className="slider-row">
-                <input
-                  type="range"
-                  min={1}
-                  max={runtimeInfo?.parallelismMax ?? 16}
-                  value={parallelism}
-                  onChange={(event) => setParallelism(Number(event.currentTarget.value))}
-                />
-                <strong>{parallelism}</strong>
-              </div>
-            </label>
-
-            <div className="button-row actions-row">
-              <button
-                className="button button-primary"
-                type="button"
-                disabled={!canStart}
-                onClick={startCleanup}
-              >
-                开始清理
-              </button>
-              <button
-                className="button"
-                type="button"
-                disabled={!isRunning && !isScanning}
-                onClick={isRunning ? cancelCleanup : cancelScan}
-              >
-                {isRunning ? "取消清理" : "取消扫描"}
-              </button>
-            </div>
           </Panel>
         </aside>
       </section>

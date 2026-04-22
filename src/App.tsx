@@ -115,6 +115,11 @@ type FileRunState = {
   error: string | null;
 };
 
+type FlyoutPosition = {
+  left: number;
+  top: number;
+};
+
 const EMPTY_PROGRESS: ProgressState = {
   total: 0,
   completed: 0,
@@ -145,6 +150,7 @@ function App() {
   const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>({});
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
+  const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
@@ -670,8 +676,33 @@ function App() {
     setHoveredPathKey(null);
   };
 
-  const scheduleHover = (pathKey: string) => {
+  const positionFlyout = (event: React.MouseEvent<HTMLDivElement>) => {
+    const shell = tableShellRef.current;
+    if (!shell) {
+      return;
+    }
+
+    const shellRect = shell.getBoundingClientRect();
+    const rowRect = event.currentTarget.getBoundingClientRect();
+    const estimatedWidth = Math.min(360, Math.max(260, shell.clientWidth - 112));
+    const estimatedHeight = 310;
+    const nextLeft = clampNumber(
+      event.clientX - shellRect.left + 14,
+      12,
+      Math.max(12, shell.clientWidth - estimatedWidth - 12),
+    );
+    const nextTop = clampNumber(
+      rowRect.top - shellRect.top + rowRect.height + 6,
+      48,
+      Math.max(48, shell.clientHeight - estimatedHeight - 12),
+    );
+
+    setFlyoutPosition({ left: nextLeft, top: nextTop });
+  };
+
+  const scheduleHover = (pathKey: string, event: React.MouseEvent<HTMLDivElement>) => {
     cancelHoverTimer();
+    positionFlyout(event);
     startTransition(() => {
       setHoveredPathKey(pathKey);
     });
@@ -854,7 +885,7 @@ function App() {
                       <div
                         key={file.sourcePath}
                         className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
-                        onMouseEnter={() => scheduleHover(pathKey)}
+                        onMouseEnter={(event) => scheduleHover(pathKey, event)}
                         onMouseLeave={() => clearHover()}
                       >
                         <div className="queue-file">
@@ -876,6 +907,7 @@ function App() {
                 {previewFile ? (
                   <div
                     className="preview-flyout-shell"
+                    style={{ left: `${flyoutPosition.left}px`, top: `${flyoutPosition.top}px` }}
                     onMouseEnter={handleFlyoutEnter}
                     onMouseLeave={handleFlyoutLeave}
                   >
@@ -1250,6 +1282,10 @@ function getParentPath(path: string): string {
     return "";
   }
   return parts.slice(0, -1).join("/");
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function toMessage(error: unknown): string {

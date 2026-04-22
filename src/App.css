@@ -472,10 +472,13 @@ button {
 
 .preview-flyout-shell {
   position: absolute;
-  top: 54px;
-  left: 12px;
+  top: 52px;
+  left: 16px;
   z-index: 10;
   width: min(360px, calc(100% - 112px));
+  transition:
+    opacity 110ms ease,
+    transform 110ms ease;
 }
 
 .preview-detail-panel {

@@ -463,7 +463,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [beforeSnapshots, loadingSnapshots, previewFileKey]);
+  }, [beforeSnapshots, previewFileKey]);
 
   useEffect(() => {
     if (!previewFile || !previewPathKey) {
@@ -528,7 +528,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [beforeSnapshots, loadingSnapshots, previewFile, previewPathKey]);
+  }, [beforeSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
     if (!previewFile || !previewPathKey) {
@@ -601,7 +601,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [afterSnapshots, fileStates, loadingSnapshots, previewFile, previewPathKey]);
+  }, [afterSnapshots, fileStates, previewFile, previewPathKey]);
 
   useEffect(() => {
     if (!summary || summary.cancelled || !metadataSeedFiles.length) {
@@ -683,7 +683,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [afterSnapshots, fileStates, loadingSnapshots, metadataSeedFiles, previewFileKey, summary]);
+  }, [afterSnapshots, fileStates, metadataSeedFiles, previewFileKey, summary]);
 
   useEffect(() => {
     if (!hoveredPathKey) {

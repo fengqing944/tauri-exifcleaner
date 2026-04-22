@@ -804,8 +804,8 @@ function App() {
       <section className="workspace">
         <section className="content">
           <Panel
-            title="工作区"
-            subtitle="导入、预览和处理状态都收在一个区域里。悬停文件行可以查看处理前和处理后的字段摘要。"
+            title="文件队列"
+            subtitle="这里负责导入、浏览和字段预览。悬停文件行可以查看清理前后的字段摘要。"
             aside={
               isScanning ? (
                 <StatusBadge tone="info" label="扫描中" />
@@ -842,24 +842,26 @@ function App() {
               </div>
             </div>
 
-            <div className="summary-strip">
-              <StatChip label="输入根" value={String(rootCount)} />
-              <StatChip label="候选文件" value={String(fileCount)} />
-              <StatChip label="总大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
-              <StatChip label="忽略项" value={String(ignoredCount)} />
-            </div>
-
-            <div className="activity-strip">
-              <div className="activity-main">
-                <span className="activity-label">{activity.label}</span>
-                <strong title={activity.title}>{trimMiddle(activity.title, 88)}</strong>
+            <div className="workspace-overview">
+              <div className="summary-strip">
+                <StatChip label="输入根" value={String(rootCount)} />
+                <StatChip label="候选文件" value={String(fileCount)} />
+                <StatChip label="总大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
+                <StatChip label="忽略项" value={String(ignoredCount)} />
               </div>
-              <div className="activity-stats">
-                <span>
-                  {progress.completed}/{progress.total || fileCount}
-                </span>
-                <span>{progressPercent}%</span>
-                <span>{progress.currentStatus}</span>
+
+              <div className="activity-strip">
+                <div className="activity-main">
+                  <span className="activity-label">{activity.label}</span>
+                  <strong title={activity.title}>{trimMiddle(activity.title, 88)}</strong>
+                </div>
+                <div className="activity-stats">
+                  <span>
+                    {progress.completed}/{progress.total || fileCount}
+                  </span>
+                  <span>{progressPercent}%</span>
+                  <span>{progress.currentStatus}</span>
+                </div>
               </div>
             </div>
 
@@ -946,8 +948,8 @@ function App() {
 
         <aside className="sidebar">
           <Panel
-            title="任务"
-            subtitle="这里显示总进度、最近结果和最近失败项。"
+            title="任务状态"
+            subtitle="这里集中显示进度、结果和错误。"
             aside={
               <StatusBadge
                 tone={isRunning ? "info" : summary ? (summary.cancelled ? "warning" : "success") : "neutral"}
@@ -955,45 +957,61 @@ function App() {
               />
             }
           >
-            <div className="progress-panel">
-              <div className="progress-head">
-                <strong>{progressPercent}%</strong>
-                <span>
-                  {progress.completed}/{progress.total || fileCount}
-                </span>
+            <div className="task-board">
+              <div className="progress-panel task-progress-panel">
+                <div className="progress-head">
+                  <strong>{progressPercent}%</strong>
+                  <span>
+                    {progress.completed}/{progress.total || fileCount}
+                  </span>
+                </div>
+                <div className="progress-track">
+                  <div className="progress-value" style={{ width: `${progressPercent}%` }} />
+                </div>
+                <div className="progress-meta">
+                  <span>成功 {progress.succeeded}</span>
+                  <span>失败 {progress.failed}</span>
+                  <span>{progress.currentStatus}</span>
+                </div>
               </div>
-              <div className="progress-track">
-                <div className="progress-value" style={{ width: `${progressPercent}%` }} />
+
+              <div className="task-stats-strip">
+                <StatChip label="队列" value={String(fileCount)} />
+                <StatChip label="成功" value={String(progress.succeeded)} />
+                <StatChip label="失败" value={String(progress.failed)} />
               </div>
-              <div className="progress-meta">
-                <span>成功 {progress.succeeded}</span>
-                <span>失败 {progress.failed}</span>
-                <span>{progress.currentStatus}</span>
+
+              <div className={`task-callout ${summary?.cancelled ? "warning" : summary ? "success" : "neutral"}`}>
+                {summary ? (
+                  summary.cancelled ? (
+                    <span>任务已取消，已完成 {summary.succeeded + summary.failed}/{summary.total} 项。</span>
+                  ) : (
+                    <span>任务完成，成功 {summary.succeeded} 项，失败 {summary.failed} 项。</span>
+                  )
+                ) : (
+                  <span>清理开始后，这里会持续显示当前任务状态。</span>
+                )}
+              </div>
+
+              <div className="task-errors-block">
+                <div className="task-block-head">
+                  <strong>最近错误</strong>
+                  <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
+                </div>
+                {runFailures.length ? (
+                  <div className="failure-list task-failure-list">
+                    {runFailures.map((failure) => (
+                      <div key={failure.sourcePath} className="failure-row">
+                        <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
+                        <span>{failure.error}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
+                )}
               </div>
             </div>
-
-            {summary ? (
-              <div className={`message ${summary.cancelled ? "warning" : "success"}`}>
-                {summary.cancelled
-                  ? `任务已取消，已完成 ${summary.succeeded + summary.failed}/${summary.total} 项。`
-                  : `任务完成，成功 ${summary.succeeded} 项，失败 ${summary.failed} 项。`}
-              </div>
-            ) : (
-              <div className="message neutral">开始清理后，这里会保留最近一次任务结果。</div>
-            )}
-
-            {runFailures.length ? (
-              <div className="failure-list">
-                {runFailures.map((failure) => (
-                  <div key={failure.sourcePath} className="failure-row">
-                    <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
-                    <span>{failure.error}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
-            )}
           </Panel>
         </aside>
       </section>

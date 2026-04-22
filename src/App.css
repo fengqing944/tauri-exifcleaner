@@ -475,29 +475,29 @@ button {
   top: 76px;
   right: 12px;
   z-index: 10;
-  width: min(460px, calc(100% - 96px));
+  width: min(360px, calc(100% - 112px));
 }
 
 .preview-detail-panel {
-  padding: 9px;
+  padding: 8px;
   background: #ffffff;
   border: 1px solid #d5dbe3;
   border-radius: 10px;
-  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.09);
 }
 
 .preview-panel-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .preview-panel-title {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .preview-panel-title strong {
@@ -511,57 +511,75 @@ button {
   font-size: 11px;
 }
 
+.preview-summary-strip {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.preview-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+}
+
 .preview-card-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: 1fr;
+  gap: 6px;
 }
 
 .preview-column {
   min-width: 0;
-  padding: 7px;
+  padding: 6px;
   background: #fbfcfe;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 7px;
 }
 
 .preview-column header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 6px;
+  margin-bottom: 5px;
 }
 
 .preview-fields {
   display: grid;
-  gap: 5px;
-  max-height: 190px;
+  gap: 4px;
+  max-height: 112px;
   overflow: auto;
   padding-right: 2px;
 }
 
 .preview-field {
   display: grid;
-  gap: 3px;
-  padding: 6px 7px;
+  gap: 2px;
+  padding: 5px 6px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 7px;
 }
 
 .preview-field span {
   display: -webkit-box;
   overflow: hidden;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   word-break: break-word;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 
 .preview-empty,
 .preview-note {
-  font-size: 12px;
+  font-size: 11px;
   color: #475569;
 }
 

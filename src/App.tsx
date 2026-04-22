@@ -711,6 +711,19 @@ function App() {
     clearHover();
   };
 
+  const handleTablePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) {
+      return;
+    }
+
+    const insideRow = target.closest(".queue-row");
+    const insideFlyout = target.closest(".preview-flyout-shell");
+    if (!insideRow && !insideFlyout) {
+      clearHover();
+    }
+  };
+
   useEffect(() => {
     if (!previewPathKey) {
       return;
@@ -844,6 +857,7 @@ function App() {
                 className={`table-shell ${previewFile ? "is-flyout-open" : ""}`}
                 ref={tableShellRef}
                 onMouseLeave={() => clearHover()}
+                onPointerMove={handleTablePointerMove}
               >
                 <div className="table-head">
                   <span>选中的文件</span>
@@ -1104,20 +1118,26 @@ function MetadataPreviewFlyout(props: {
   afterLoading: boolean;
 }) {
   const fileTitle = getLeafName(props.file.relativePath || props.file.sourcePath);
-  const fileContext =
-    props.file.relativePath && props.file.relativePath !== fileTitle
-      ? props.file.relativePath
-      : props.file.sourcePath;
+  const fileContext = getParentPath(props.file.relativePath || props.file.sourcePath);
 
   return (
     <div className="preview-detail-panel">
       <div className="preview-panel-head">
         <div className="preview-panel-title">
-          <strong title={props.file.sourcePath}>{trimMiddle(fileTitle, 30)}</strong>
-          <span title={fileContext}>{trimMiddle(fileContext, 46)}</span>
+          <strong title={props.file.sourcePath}>{trimMiddle(fileTitle, 24)}</strong>
+          <span title={fileContext}>{trimMiddle(fileContext || props.file.sourcePath, 34)}</span>
         </div>
         <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
           {props.rowState ? getRowStatusDescriptor(props.rowState).label : "字段预览"}
+        </span>
+      </div>
+
+      <div className="preview-summary-strip">
+        <span className="preview-summary-chip">
+          前 {props.beforeSnapshot ? props.beforeSnapshot.count : props.beforeLoading ? "…" : "—"}
+        </span>
+        <span className="preview-summary-chip">
+          后 {resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}
         </span>
       </div>
 
@@ -1153,7 +1173,7 @@ function MetadataColumn(props: {
     <section className="preview-column">
       <header>
         <strong>{props.title}</strong>
-        <span>{props.snapshot ? `${props.snapshot.count} 项` : props.loading ? "读取中" : "暂无"}</span>
+        <span>{props.snapshot ? `${visibleFields.length} 条` : props.loading ? "读取中" : "暂无"}</span>
       </header>
 
       {props.snapshot ? (
@@ -1165,14 +1185,14 @@ function MetadataColumn(props: {
                 className="preview-field"
                 title={`${field.group} · ${field.name}\n${field.valuePreview}`}
               >
-                <strong>{field.name}</strong>
+                <strong title={`${field.group} · ${field.name}`}>{trimMiddle(field.name, 18)}</strong>
                 <span>{field.valuePreview}</span>
               </div>
             ))}
             {hiddenCount > 0 ? (
-              <div className="preview-note">另有 {hiddenCount} 项未展开。</div>
+              <div className="preview-note">+{hiddenCount} 项</div>
             ) : props.snapshot.truncated ? (
-              <div className="preview-note">字段已做摘要裁剪。</div>
+              <div className="preview-note">内容已裁剪</div>
             ) : null}
           </div>
         ) : (
@@ -1257,8 +1277,17 @@ function getLeafName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+function getParentPath(path: string): string {
+  const normalized = path.split("\\").join("/");
+  const parts = normalized.split("/");
+  if (parts.length <= 1) {
+    return "";
+  }
+  return parts.slice(0, -1).join("/");
+}
+
 function getCompactPreviewFields(snapshot: MetadataPreviewSnapshot): MetadataFieldPreview[] {
-  return snapshot.fields.slice(0, 3);
+  return snapshot.fields.slice(0, 2);
 }
 
 function toMessage(error: unknown): string {

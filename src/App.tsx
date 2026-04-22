@@ -2,7 +2,6 @@ import {
   startTransition,
   useEffect,
   useEffectEvent,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -145,11 +144,13 @@ function App() {
   const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>({});
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
-  const [pinnedPathKey, setPinnedPathKey] = useState<string | null>(null);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
   const hoverTimeoutRef = useRef<number | null>(null);
+  const flyoutActiveRef = useRef(false);
+  const tableShellRef = useRef<HTMLDivElement | null>(null);
+  const [flyoutTop, setFlyoutTop] = useState(76);
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -168,19 +169,15 @@ function App() {
     !isRunning &&
     (outputMode === "overwrite" || outputDir.trim().length > 0);
 
-  const runningPreviewPathKey = useMemo(
-    () =>
-      previewFiles
-        .map((file) => normalizePath(file.sourcePath))
-        .find((pathKey) => fileStates[pathKey]?.status === "running") ?? "",
-    [fileStates, previewFiles],
-  );
+  const runningPreviewPathKey =
+    previewFiles
+      .map((file) => normalizePath(file.sourcePath))
+      .find((pathKey) => fileStates[pathKey]?.status === "running") ?? "";
 
   const highlightedPathKey = runningPreviewPathKey || activePathKey;
-  const previewPathKey = pinnedPathKey ?? hoveredPathKey;
+  const previewPathKey = hoveredPathKey;
   const previewFile =
     previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
-  const previewPinned = Boolean(pinnedPathKey);
 
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
@@ -217,7 +214,7 @@ function App() {
     setAfterSnapshots({});
     setFileStates({});
     setHoveredPathKey(null);
-    setPinnedPathKey(null);
+    flyoutActiveRef.current = false;
   });
 
   const scanInputPaths = useEffectEvent(async (paths: string[]) => {
@@ -479,17 +476,18 @@ function App() {
   }, [afterSnapshots, fileStates, loadingSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
-    if (!pinnedPathKey) {
+    if (!hoveredPathKey) {
       return;
     }
 
     const stillVisible = previewFiles.some(
-      (file) => normalizePath(file.sourcePath) === pinnedPathKey,
+      (file) => normalizePath(file.sourcePath) === hoveredPathKey,
     );
     if (!stillVisible) {
-      setPinnedPathKey(null);
+      setHoveredPathKey(null);
+      flyoutActiveRef.current = false;
     }
-  }, [pinnedPathKey, previewFiles]);
+  }, [hoveredPathKey, previewFiles]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -652,49 +650,64 @@ function App() {
       setAfterSnapshots({});
       setLoadingSnapshots({});
       setHoveredPathKey(null);
-      setPinnedPathKey(null);
+      flyoutActiveRef.current = false;
     } catch (error) {
       setErrorMessage(toMessage(error));
     }
   };
 
-  const scheduleHover = (pathKey: string) => {
-    if (hoverTimeoutRef.current) {
-      window.clearTimeout(hoverTimeoutRef.current);
-    }
-
-    hoverTimeoutRef.current = window.setTimeout(() => {
-      setHoveredPathKey(pathKey);
-    }, 80);
-  };
-
-  const clearHover = (pathKey: string) => {
-    if (hoverTimeoutRef.current) {
-      window.clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-
-    if (pinnedPathKey === pathKey) {
+  const positionFlyout = (rowElement: HTMLDivElement) => {
+    const shell = tableShellRef.current;
+    if (!shell) {
       return;
     }
 
-    hoverTimeoutRef.current = window.setTimeout(() => {
-      setHoveredPathKey((current) => (current === pathKey ? null : current));
-    }, 120);
+    const rowRect = rowElement.getBoundingClientRect();
+    const shellRect = shell.getBoundingClientRect();
+    const desiredTop = rowRect.top - shellRect.top + rowRect.height + 6;
+    const maxTop = Math.max(72, shell.clientHeight - 428);
+    setFlyoutTop(Math.min(Math.max(72, desiredTop), maxTop));
   };
 
-  const togglePinnedPreview = (pathKey: string) => {
+  const cancelHoverTimer = () => {
     if (hoverTimeoutRef.current) {
       window.clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
     }
-
-    setHoveredPathKey(pathKey);
-    setPinnedPathKey((current) => (current === pathKey ? null : pathKey));
   };
 
-  const clearPinnedPreview = () => {
-    setPinnedPathKey(null);
+  const scheduleHover = (pathKey: string, rowElement: HTMLDivElement) => {
+    cancelHoverTimer();
+
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      positionFlyout(rowElement);
+      setHoveredPathKey(pathKey);
+    }, 70);
+  };
+
+  const clearHover = (pathKey?: string) => {
+    cancelHoverTimer();
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      if (flyoutActiveRef.current) {
+        return;
+      }
+      setHoveredPathKey((current) => {
+        if (!pathKey) {
+          return null;
+        }
+        return current === pathKey ? null : current;
+      });
+    }, 180);
+  };
+
+  const handleFlyoutEnter = () => {
+    flyoutActiveRef.current = true;
+    cancelHoverTimer();
+  };
+
+  const handleFlyoutLeave = () => {
+    flyoutActiveRef.current = false;
+    clearHover();
   };
 
   const activity = buildActivityState({
@@ -799,7 +812,7 @@ function App() {
             {!fileCount ? (
               <EmptyBox title="未选择文件" description="拖放图像、视频或 PDF 文件以自动删除元数据。" />
             ) : (
-              <div className="table-shell">
+              <div className={`table-shell ${previewFile ? "is-flyout-open" : ""}`} ref={tableShellRef}>
                 <div className="table-head">
                   <span>选中的文件</span>
                   <span># 处理前</span>
@@ -818,15 +831,13 @@ function App() {
                     const isPreviewing = previewPathKey === pathKey;
                     const isActive = highlightedPathKey === pathKey && isRunning;
                     const rowStatus = getRowStatusDescriptor(rowState);
-                    const isPinned = pinnedPathKey === pathKey;
 
                     return (
                       <div
                         key={file.sourcePath}
                         className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
-                        onMouseEnter={() => scheduleHover(pathKey)}
+                        onMouseEnter={(event) => scheduleHover(pathKey, event.currentTarget)}
                         onMouseLeave={() => clearHover(pathKey)}
-                        onClick={() => togglePinnedPreview(pathKey)}
                       >
                         <div className="queue-file">
                           <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
@@ -838,14 +849,29 @@ function App() {
                         <span className="queue-count">
                           {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
                         </span>
-                        <div className="row-status-cell">
-                          <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
-                          {isPinned ? <span className="row-hint">已固定</span> : <span className="row-hint">悬停预览 / 点击固定</span>}
-                        </div>
+                        <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
                       </div>
                     );
                   })}
                 </div>
+
+                {previewFile ? (
+                  <div
+                    className="preview-flyout-shell"
+                    style={{ top: `${flyoutTop}px` }}
+                    onMouseEnter={handleFlyoutEnter}
+                    onMouseLeave={handleFlyoutLeave}
+                  >
+                    <MetadataPreviewFlyout
+                      file={previewFile}
+                      beforeSnapshot={previewBeforeSnapshot}
+                      afterSnapshot={previewAfterSnapshot}
+                      rowState={previewRowState}
+                      beforeLoading={previewBeforeLoading}
+                      afterLoading={previewAfterLoading}
+                    />
+                  </div>
+                ) : null}
 
                 {moreFiles > 0 ? <div className="footnote">还有 {moreFiles} 个文件未展开显示。</div> : null}
               </div>
@@ -854,30 +880,6 @@ function App() {
         </section>
 
         <aside className="sidebar">
-          <Panel
-            title="字段预览"
-            subtitle="悬停文件行会更新这里，点击文件行可以固定，方便完整查看长字段。"
-            aside={
-              previewPinned ? (
-                <button className="button button-inline" type="button" onClick={clearPinnedPreview}>
-                  取消固定
-                </button>
-              ) : (
-                <StatusBadge tone="neutral" label="悬停查看" />
-              )
-            }
-          >
-            <MetadataPreviewPanel
-              file={previewFile}
-              beforeSnapshot={previewBeforeSnapshot}
-              afterSnapshot={previewAfterSnapshot}
-              rowState={previewRowState}
-              beforeLoading={previewBeforeLoading}
-              afterLoading={previewAfterLoading}
-              pinned={previewPinned}
-            />
-          </Panel>
-
           <Panel
             title="任务"
             subtitle="这里显示总进度、最近结果和最近失败项。"
@@ -1061,24 +1063,14 @@ function EmptyBox(props: { title: string; description: string }) {
   );
 }
 
-function MetadataPreviewPanel(props: {
-  file: QueuedFile | null;
+function MetadataPreviewFlyout(props: {
+  file: QueuedFile;
   beforeSnapshot?: MetadataPreviewSnapshot;
   afterSnapshot?: MetadataPreviewSnapshot;
   rowState?: FileRunState;
   beforeLoading: boolean;
   afterLoading: boolean;
-  pinned: boolean;
 }) {
-  if (!props.file) {
-    return (
-      <EmptyBox
-        title="暂无预览目标"
-        description="把鼠标移到文件行上，或点击一行把预览固定在这里。"
-      />
-    );
-  }
-
   return (
     <div className="preview-detail-panel">
       <div className="preview-panel-head">
@@ -1087,7 +1079,7 @@ function MetadataPreviewPanel(props: {
           <span title={props.file.sourcePath}>{props.file.sourcePath}</span>
         </div>
         <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
-          {props.rowState ? getRowStatusDescriptor(props.rowState).label : props.pinned ? "已固定" : "预览中"}
+          {props.rowState ? getRowStatusDescriptor(props.rowState).label : "字段预览"}
         </span>
       </div>
 

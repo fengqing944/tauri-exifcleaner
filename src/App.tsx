@@ -145,6 +145,7 @@ function App() {
   const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>({});
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
+  const [pinnedPathKey, setPinnedPathKey] = useState<string | null>(null);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
@@ -176,8 +177,10 @@ function App() {
   );
 
   const highlightedPathKey = runningPreviewPathKey || activePathKey;
-  const hoveredFile =
-    previewFiles.find((file) => normalizePath(file.sourcePath) === hoveredPathKey) ?? null;
+  const previewPathKey = pinnedPathKey ?? hoveredPathKey;
+  const previewFile =
+    previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
+  const previewPinned = Boolean(pinnedPathKey);
 
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
@@ -214,6 +217,7 @@ function App() {
     setAfterSnapshots({});
     setFileStates({});
     setHoveredPathKey(null);
+    setPinnedPathKey(null);
   });
 
   const scanInputPaths = useEffectEvent(async (paths: string[]) => {
@@ -402,11 +406,11 @@ function App() {
   }, [beforeSnapshots, previewFileKey, previewFiles]);
 
   useEffect(() => {
-    if (!hoveredFile) {
+    if (!previewFile || !previewPathKey) {
       return;
     }
 
-    const pathKey = normalizePath(hoveredFile.sourcePath);
+    const pathKey = previewPathKey;
     const rowState = fileStates[pathKey];
     const afterLoadingKey = `after:${pathKey}`;
 
@@ -419,7 +423,7 @@ function App() {
     }
 
     let disposed = false;
-    const targetPath = rowState.outputPath || hoveredFile.sourcePath;
+    const targetPath = rowState.outputPath || previewFile.sourcePath;
     const requests: MetadataSnapshotRequest[] = [
       {
         requestKey: pathKey,
@@ -472,7 +476,20 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [afterSnapshots, fileStates, hoveredFile, loadingSnapshots]);
+  }, [afterSnapshots, fileStates, loadingSnapshots, previewFile, previewPathKey]);
+
+  useEffect(() => {
+    if (!pinnedPathKey) {
+      return;
+    }
+
+    const stillVisible = previewFiles.some(
+      (file) => normalizePath(file.sourcePath) === pinnedPathKey,
+    );
+    if (!stillVisible) {
+      setPinnedPathKey(null);
+    }
+  }, [pinnedPathKey, previewFiles]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -635,6 +652,7 @@ function App() {
       setAfterSnapshots({});
       setLoadingSnapshots({});
       setHoveredPathKey(null);
+      setPinnedPathKey(null);
     } catch (error) {
       setErrorMessage(toMessage(error));
     }
@@ -647,7 +665,7 @@ function App() {
 
     hoverTimeoutRef.current = window.setTimeout(() => {
       setHoveredPathKey(pathKey);
-    }, 120);
+    }, 80);
   };
 
   const clearHover = (pathKey: string) => {
@@ -656,7 +674,27 @@ function App() {
       hoverTimeoutRef.current = null;
     }
 
-    setHoveredPathKey((current) => (current === pathKey ? null : current));
+    if (pinnedPathKey === pathKey) {
+      return;
+    }
+
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      setHoveredPathKey((current) => (current === pathKey ? null : current));
+    }, 120);
+  };
+
+  const togglePinnedPreview = (pathKey: string) => {
+    if (hoverTimeoutRef.current) {
+      window.clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+
+    setHoveredPathKey(pathKey);
+    setPinnedPathKey((current) => (current === pathKey ? null : pathKey));
+  };
+
+  const clearPinnedPreview = () => {
+    setPinnedPathKey(null);
   };
 
   const activity = buildActivityState({
@@ -666,6 +704,11 @@ function App() {
     fileCount,
     progress,
   });
+  const previewRowState = previewPathKey ? fileStates[previewPathKey] : undefined;
+  const previewBeforeSnapshot = previewPathKey ? beforeSnapshots[previewPathKey] : undefined;
+  const previewAfterSnapshot = previewPathKey ? afterSnapshots[previewPathKey] : undefined;
+  const previewBeforeLoading = previewPathKey ? Boolean(loadingSnapshots[`before:${previewPathKey}`]) : false;
+  const previewAfterLoading = previewPathKey ? Boolean(loadingSnapshots[`after:${previewPathKey}`]) : false;
 
   return (
     <main className="app-shell">
@@ -772,16 +815,18 @@ function App() {
                     const afterSnapshot = afterSnapshots[pathKey];
                     const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
                     const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
-                    const isHovered = hoveredPathKey === pathKey;
+                    const isPreviewing = previewPathKey === pathKey;
                     const isActive = highlightedPathKey === pathKey && isRunning;
                     const rowStatus = getRowStatusDescriptor(rowState);
+                    const isPinned = pinnedPathKey === pathKey;
 
                     return (
                       <div
                         key={file.sourcePath}
-                        className={`queue-row ${isActive ? "is-active" : ""} ${isHovered ? "is-hovered" : ""}`}
+                        className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
                         onMouseEnter={() => scheduleHover(pathKey)}
                         onMouseLeave={() => clearHover(pathKey)}
+                        onClick={() => togglePinnedPreview(pathKey)}
                       >
                         <div className="queue-file">
                           <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
@@ -793,18 +838,10 @@ function App() {
                         <span className="queue-count">
                           {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
                         </span>
-                        <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
-
-                        {isHovered ? (
-                          <MetadataHoverCard
-                            file={file}
-                            beforeSnapshot={beforeSnapshot}
-                            afterSnapshot={afterSnapshot}
-                            rowState={rowState}
-                            beforeLoading={beforeLoading}
-                            afterLoading={afterLoading}
-                          />
-                        ) : null}
+                        <div className="row-status-cell">
+                          <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
+                          {isPinned ? <span className="row-hint">已固定</span> : <span className="row-hint">悬停预览 / 点击固定</span>}
+                        </div>
                       </div>
                     );
                   })}
@@ -817,6 +854,30 @@ function App() {
         </section>
 
         <aside className="sidebar">
+          <Panel
+            title="字段预览"
+            subtitle="悬停文件行会更新这里，点击文件行可以固定，方便完整查看长字段。"
+            aside={
+              previewPinned ? (
+                <button className="button button-inline" type="button" onClick={clearPinnedPreview}>
+                  取消固定
+                </button>
+              ) : (
+                <StatusBadge tone="neutral" label="悬停查看" />
+              )
+            }
+          >
+            <MetadataPreviewPanel
+              file={previewFile}
+              beforeSnapshot={previewBeforeSnapshot}
+              afterSnapshot={previewAfterSnapshot}
+              rowState={previewRowState}
+              beforeLoading={previewBeforeLoading}
+              afterLoading={previewAfterLoading}
+              pinned={previewPinned}
+            />
+          </Panel>
+
           <Panel
             title="任务"
             subtitle="这里显示总进度、最近结果和最近失败项。"
@@ -1000,22 +1061,37 @@ function EmptyBox(props: { title: string; description: string }) {
   );
 }
 
-function MetadataHoverCard(props: {
-  file: QueuedFile;
+function MetadataPreviewPanel(props: {
+  file: QueuedFile | null;
   beforeSnapshot?: MetadataPreviewSnapshot;
   afterSnapshot?: MetadataPreviewSnapshot;
   rowState?: FileRunState;
   beforeLoading: boolean;
   afterLoading: boolean;
+  pinned: boolean;
 }) {
+  if (!props.file) {
+    return (
+      <EmptyBox
+        title="暂无预览目标"
+        description="把鼠标移到文件行上，或点击一行把预览固定在这里。"
+      />
+    );
+  }
+
   return (
-    <div className="hover-card">
-      <div className="hover-card-head">
-        <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 44)}</strong>
-        <span>{props.rowState ? getRowStatusDescriptor(props.rowState).label : "待处理"}</span>
+    <div className="preview-detail-panel">
+      <div className="preview-panel-head">
+        <div className="preview-panel-title">
+          <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 52)}</strong>
+          <span title={props.file.sourcePath}>{props.file.sourcePath}</span>
+        </div>
+        <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
+          {props.rowState ? getRowStatusDescriptor(props.rowState).label : props.pinned ? "已固定" : "预览中"}
+        </span>
       </div>
 
-      <div className="hover-card-grid">
+      <div className="preview-card-grid">
         <MetadataColumn
           title="处理前字段"
           snapshot={props.beforeSnapshot}
@@ -1041,7 +1117,7 @@ function MetadataColumn(props: {
   emptyText: string;
 }) {
   return (
-    <section className="hover-column">
+    <section className="preview-column">
       <header>
         <strong>{props.title}</strong>
         <span>{props.snapshot ? `${props.snapshot.count} 项` : props.loading ? "读取中" : "暂无"}</span>
@@ -1049,20 +1125,20 @@ function MetadataColumn(props: {
 
       {props.snapshot ? (
         props.snapshot.fields.length ? (
-          <div className="hover-fields">
+          <div className="preview-fields">
             {props.snapshot.fields.map((field) => (
-              <div key={`${field.group}:${field.name}`} className="hover-field">
-                <strong>{field.name}</strong>
+              <div key={`${field.group}:${field.name}`} className="preview-field">
+                <strong>{field.group} · {field.name}</strong>
                 <span>{field.valuePreview}</span>
               </div>
             ))}
-            {props.snapshot.truncated ? <div className="hover-note">仅显示前几项字段。</div> : null}
+            {props.snapshot.truncated ? <div className="preview-note">仅显示前几项字段。</div> : null}
           </div>
         ) : (
-          <div className="hover-empty">没有可展示的字段。</div>
+          <div className="preview-empty">没有可展示的字段。</div>
         )
       ) : (
-        <div className="hover-empty">{props.loading ? "正在读取字段..." : props.emptyText}</div>
+        <div className="preview-empty">{props.loading ? "正在读取字段..." : props.emptyText}</div>
       )}
     </section>
   );

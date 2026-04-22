@@ -46,7 +46,7 @@ button {
 
 .topbar,
 .panel,
-.hover-card {
+.preview-detail-panel {
   background: #ffffff;
   border: 1px solid #d5dbe3;
   border-radius: 10px;
@@ -80,13 +80,14 @@ button {
 .progress-meta,
 .footnote,
 .queue-file span,
-.hover-card-head span,
-.hover-column header span,
-.hover-field span,
-.hover-note,
+.preview-panel-title span,
+.preview-column header span,
+.preview-field span,
+.preview-note,
 .failure-row span,
 .activity-stats,
-.stat-chip span {
+.stat-chip span,
+.row-hint {
   color: #475569;
 }
 
@@ -95,13 +96,14 @@ button {
 .panel-header p,
 .badge,
 .queue-file span,
-.hover-card-head span,
-.hover-column header span,
-.hover-field span,
-.hover-note,
+.preview-panel-title span,
+.preview-column header span,
+.preview-field span,
+.preview-note,
 .failure-row span,
 .activity-stats,
-.stat-chip span {
+.stat-chip span,
+.row-hint {
   font-size: 12px;
 }
 
@@ -115,7 +117,7 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   gap: 12px;
   align-items: start;
 }
@@ -276,6 +278,12 @@ button {
   cursor: pointer;
 }
 
+.button-inline {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 .button:hover {
   background: #f8fafc;
 }
@@ -424,6 +432,7 @@ button {
   position: relative;
   padding: 12px 14px;
   background: #ffffff;
+  cursor: pointer;
 }
 
 .queue-row + .queue-row {
@@ -449,8 +458,9 @@ button {
 .queue-file strong,
 .empty-box strong,
 .failure-row strong,
-.hover-column header strong,
-.hover-field strong {
+.preview-column header strong,
+.preview-field strong,
+.preview-panel-title strong {
   color: #0f172a;
 }
 
@@ -467,42 +477,61 @@ button {
   color: #1e3a8a;
 }
 
-.hover-card {
-  position: absolute;
-  left: 12px;
-  top: calc(100% - 6px);
-  width: min(620px, calc(100vw - 120px));
-  padding: 12px;
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
+.row-status-cell {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
 }
 
-.hover-card-head {
+.row-hint {
+  font-size: 11px;
+}
+
+.preview-detail-panel {
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.preview-panel-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
-.hover-card-head strong {
+.preview-panel-title {
   min-width: 0;
+  display: grid;
+  gap: 4px;
 }
 
-.hover-card-grid {
+.preview-panel-title strong {
+  font-size: 14px;
+}
+
+.preview-panel-title span {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.preview-card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
-.hover-column {
+.preview-column {
   min-width: 0;
   padding: 10px;
-  background: #f8fafc;
+  background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
 }
 
-.hover-column header {
+.preview-column header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -510,22 +539,31 @@ button {
   margin-bottom: 8px;
 }
 
-.hover-fields {
+.preview-fields {
   display: grid;
   gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
-.hover-field {
+.preview-field {
   display: grid;
   gap: 3px;
   padding: 8px 10px;
-  background: #ffffff;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
 }
 
-.hover-empty,
-.hover-note {
+.preview-field span {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.55;
+}
+
+.preview-empty,
+.preview-note {
   font-size: 12px;
   color: #475569;
 }
@@ -664,7 +702,7 @@ button {
   .button-row.actions-row,
   .mode-row,
   .field-row,
-  .hover-card-grid {
+  .preview-card-grid {
     grid-template-columns: 1fr;
   }
 
@@ -682,9 +720,4 @@ button {
     justify-self: start;
   }
 
-  .hover-card {
-    position: static;
-    width: auto;
-    margin-top: 8px;
-  }
 }

@@ -519,6 +519,14 @@ button {
   overflow: auto;
 }
 
+.queue-scroll-hint {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #64748b;
+  border-top: 1px solid #e2e8f0;
+  background: #fcfdff;
+}
+
 .queue-row {
   position: relative;
   padding: 12px 14px;

@@ -30,6 +30,7 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
+const QUEUE_PAGE_SIZE_MAX: usize = 512;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -419,8 +420,20 @@ fn clear_queue(
 }
 
 #[tauri::command]
-fn get_queue_files(queue_state: State<'_, QueueState>) -> Vec<QueuedFile> {
-    queue_state.inner.lock().unwrap().files.clone()
+fn get_queue_files_page(
+    queue_state: State<'_, QueueState>,
+    offset: usize,
+    limit: usize,
+) -> Vec<QueuedFile> {
+    let store = queue_state.inner.lock().unwrap();
+    let page_size = limit.clamp(1, QUEUE_PAGE_SIZE_MAX);
+    store
+        .files
+        .iter()
+        .skip(offset)
+        .take(page_size)
+        .cloned()
+        .collect()
 }
 
 #[tauri::command]
@@ -1740,7 +1753,7 @@ pub fn run() {
             scan_inputs,
             cancel_scan,
             clear_queue,
-            get_queue_files,
+            get_queue_files_page,
             load_metadata_snapshots,
             run_cleanup,
             cancel_cleanup

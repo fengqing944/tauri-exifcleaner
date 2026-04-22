@@ -3,6 +3,7 @@ import {
   useDeferredValue,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -136,6 +137,8 @@ const EMPTY_PROGRESS: ProgressState = {
   currentStatus: "idle",
 };
 
+const QUEUE_PAGE_SIZE = 240;
+
 function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [queueView, setQueueView] = useState<QueueView | null>(null);
@@ -156,12 +159,14 @@ function App() {
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
+  const [isLoadingQueuePage, setIsLoadingQueuePage] = useState(false);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
+  const queueBodyRef = useRef<HTMLDivElement | null>(null);
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -170,12 +175,13 @@ function App() {
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
   const previewFiles = queueFiles.length ? queueFiles : queueView?.previewFiles ?? [];
-  const metadataSeedFiles = previewFiles.slice(0, 24);
+  const metadataSeedFiles = useMemo(() => previewFiles.slice(0, 24), [previewFiles]);
   const ignoredCount = queueView?.ignoredCount ?? 0;
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
   const previewFileKey = metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|");
   const outputMode: OutputMode = "overwrite";
   const canStart = fileCount > 0 && !isScanning && !isRunning;
+  const hasMoreQueueFiles = queueFiles.length < fileCount;
 
   const runningPreviewPathKey =
     previewFiles
@@ -220,7 +226,9 @@ function App() {
     pendingProgressRef.current = null;
     setSummary(null);
     setRunFailures([]);
+    setBeforeSnapshots({});
     setAfterSnapshots({});
+    setLoadingSnapshots({});
     setFileStates({});
     setHoveredPathKey(null);
     flyoutActiveRef.current = false;
@@ -228,12 +236,43 @@ function App() {
 
   const refreshQueueFiles = useEffectEvent(async () => {
     try {
-      const files = await invoke<QueuedFile[]>("get_queue_files");
+      setIsLoadingQueuePage(true);
+      const files = await invoke<QueuedFile[]>("get_queue_files_page", {
+        offset: 0,
+        limit: QUEUE_PAGE_SIZE,
+      });
       startTransition(() => {
         setQueueFiles(files);
       });
     } catch (error) {
       setErrorMessage(toMessage(error));
+    } finally {
+      setIsLoadingQueuePage(false);
+    }
+  });
+
+  const loadMoreQueueFiles = useEffectEvent(async () => {
+    if (isLoadingQueuePage || queueFiles.length >= fileCount || !fileCount) {
+      return;
+    }
+
+    try {
+      setIsLoadingQueuePage(true);
+      const files = await invoke<QueuedFile[]>("get_queue_files_page", {
+        offset: queueFiles.length,
+        limit: QUEUE_PAGE_SIZE,
+      });
+      if (!files.length) {
+        return;
+      }
+
+      startTransition(() => {
+        setQueueFiles((current) => [...current, ...files]);
+      });
+    } catch (error) {
+      setErrorMessage(toMessage(error));
+    } finally {
+      setIsLoadingQueuePage(false);
     }
   });
 
@@ -256,6 +295,7 @@ function App() {
     setIsScanning(true);
     setErrorMessage(null);
     resetRunState();
+    setQueueFiles([]);
 
     try {
       const result = await invoke<ScanSummary>("scan_inputs", {
@@ -357,7 +397,10 @@ function App() {
     }
 
     const requests = metadataSeedFiles
-      .filter((file) => !beforeSnapshots[normalizePath(file.sourcePath)])
+      .filter((file) => {
+        const pathKey = normalizePath(file.sourcePath);
+        return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
+      })
       .map((file) => ({
         requestKey: normalizePath(file.sourcePath),
         filePath: file.sourcePath,
@@ -420,7 +463,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [beforeSnapshots, metadataSeedFiles, previewFileKey]);
+  }, [beforeSnapshots, loadingSnapshots, previewFileKey]);
 
   useEffect(() => {
     if (!previewFile || !previewPathKey) {
@@ -655,6 +698,26 @@ function App() {
       flyoutActiveRef.current = false;
     }
   }, [hoveredPathKey, previewFiles]);
+
+  useEffect(() => {
+    const body = queueBodyRef.current;
+    if (!body) {
+      return;
+    }
+
+    const handleScroll = () => {
+      if (
+        body.scrollTop + body.clientHeight >= body.scrollHeight - 160 &&
+        hasMoreQueueFiles &&
+        !isLoadingQueuePage
+      ) {
+        void loadMoreQueueFiles();
+      }
+    };
+
+    body.addEventListener("scroll", handleScroll);
+    return () => body.removeEventListener("scroll", handleScroll);
+  }, [hasMoreQueueFiles, isLoadingQueuePage, loadMoreQueueFiles, previewFiles.length]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -1063,7 +1126,7 @@ function App() {
                     <span>状态</span>
                   </div>
 
-                  <div className="table-body queue-scroll-body">
+                  <div className="table-body queue-scroll-body" ref={queueBodyRef}>
                     {previewFiles.map((file) => {
                       const pathKey = normalizePath(file.sourcePath);
                       const rowState = fileStates[pathKey];
@@ -1097,6 +1160,12 @@ function App() {
                       );
                     })}
                   </div>
+
+                  {hasMoreQueueFiles ? (
+                    <div className="queue-scroll-hint">
+                      {isLoadingQueuePage ? "正在继续载入列表..." : "继续向下滚动以载入更多文件"}
+                    </div>
+                  ) : null}
 
                   {previewFile ? (
                     <div

@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useDeferredValue,
   useEffect,
   useEffectEvent,
   useRef,
@@ -150,7 +151,6 @@ function App() {
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
-  const [flyoutTop, setFlyoutTop] = useState(76);
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -175,7 +175,8 @@ function App() {
       .find((pathKey) => fileStates[pathKey]?.status === "running") ?? "";
 
   const highlightedPathKey = runningPreviewPathKey || activePathKey;
-  const previewPathKey = hoveredPathKey;
+  const deferredHoveredPathKey = useDeferredValue(hoveredPathKey);
+  const previewPathKey = hoveredPathKey ? deferredHoveredPathKey : null;
   const previewFile =
     previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
 
@@ -656,19 +657,6 @@ function App() {
     }
   };
 
-  const positionFlyout = (rowElement: HTMLDivElement) => {
-    const shell = tableShellRef.current;
-    if (!shell) {
-      return;
-    }
-
-    const rowRect = rowElement.getBoundingClientRect();
-    const shellRect = shell.getBoundingClientRect();
-    const desiredTop = rowRect.top - shellRect.top + rowRect.height + 6;
-    const maxTop = Math.max(72, shell.clientHeight - 428);
-    setFlyoutTop(Math.min(Math.max(72, desiredTop), maxTop));
-  };
-
   const cancelHoverTimer = () => {
     if (hoverTimeoutRef.current) {
       window.clearTimeout(hoverTimeoutRef.current);
@@ -682,13 +670,11 @@ function App() {
     setHoveredPathKey(null);
   };
 
-  const scheduleHover = (pathKey: string, rowElement: HTMLDivElement) => {
+  const scheduleHover = (pathKey: string) => {
     cancelHoverTimer();
-
-    hoverTimeoutRef.current = window.setTimeout(() => {
-      positionFlyout(rowElement);
+    startTransition(() => {
       setHoveredPathKey(pathKey);
-    }, 70);
+    });
   };
 
   const clearHover = () => {
@@ -698,7 +684,7 @@ function App() {
         return;
       }
       setHoveredPathKey(null);
-    }, 180);
+    }, 90);
   };
 
   const handleFlyoutEnter = () => {
@@ -709,19 +695,6 @@ function App() {
   const handleFlyoutLeave = () => {
     flyoutActiveRef.current = false;
     clearHover();
-  };
-
-  const handleTablePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement | null;
-    if (!target) {
-      return;
-    }
-
-    const insideRow = target.closest(".queue-row");
-    const insideFlyout = target.closest(".preview-flyout-shell");
-    if (!insideRow && !insideFlyout) {
-      clearHover();
-    }
   };
 
   useEffect(() => {
@@ -857,7 +830,6 @@ function App() {
                 className={`table-shell ${previewFile ? "is-flyout-open" : ""}`}
                 ref={tableShellRef}
                 onMouseLeave={() => clearHover()}
-                onPointerMove={handleTablePointerMove}
               >
                 <div className="table-head">
                   <span>选中的文件</span>
@@ -874,7 +846,7 @@ function App() {
                     const afterSnapshot = afterSnapshots[pathKey];
                     const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
                     const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
-                    const isPreviewing = previewPathKey === pathKey;
+                    const isPreviewing = hoveredPathKey === pathKey;
                     const isActive = highlightedPathKey === pathKey && isRunning;
                     const rowStatus = getRowStatusDescriptor(rowState);
 
@@ -882,7 +854,7 @@ function App() {
                       <div
                         key={file.sourcePath}
                         className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
-                        onMouseEnter={(event) => scheduleHover(pathKey, event.currentTarget)}
+                        onMouseEnter={() => scheduleHover(pathKey)}
                         onMouseLeave={() => clearHover()}
                       >
                         <div className="queue-file">
@@ -904,7 +876,6 @@ function App() {
                 {previewFile ? (
                   <div
                     className="preview-flyout-shell"
-                    style={{ top: `${flyoutTop}px` }}
                     onMouseEnter={handleFlyoutEnter}
                     onMouseLeave={handleFlyoutLeave}
                   >

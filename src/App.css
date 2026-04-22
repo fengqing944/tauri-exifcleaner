@@ -472,8 +472,8 @@ button {
 
 .preview-flyout-shell {
   position: absolute;
-  top: 76px;
-  right: 12px;
+  top: 54px;
+  left: 12px;
   z-index: 10;
   width: min(360px, calc(100% - 112px));
 }
@@ -484,6 +484,7 @@ button {
   border: 1px solid #d5dbe3;
   border-radius: 10px;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.09);
+  will-change: transform, opacity;
 }
 
 .preview-panel-head {

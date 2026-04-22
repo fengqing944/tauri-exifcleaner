@@ -136,10 +136,7 @@ function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [outputMode, setOutputMode] = useState<OutputMode>("mirror");
-  const [outputDir, setOutputDir] = useState("");
   const [parallelism, setParallelism] = useState(2);
-  const [preserveStructure, setPreserveStructure] = useState(true);
   const [progress, setProgress] = useState<ProgressState>(EMPTY_PROGRESS);
   const [runFailures, setRunFailures] = useState<Array<{ sourcePath: string; error: string }>>([]);
   const [summary, setSummary] = useState<CleanupSummary | null>(null);
@@ -169,11 +166,8 @@ function App() {
   const moreFiles = Math.max(0, fileCount - previewFiles.length);
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
   const previewFileKey = previewFiles.map((file) => normalizePath(file.sourcePath)).join("|");
-  const canStart =
-    fileCount > 0 &&
-    !isScanning &&
-    !isRunning &&
-    (outputMode === "overwrite" || outputDir.trim().length > 0);
+  const outputMode: OutputMode = "overwrite";
+  const canStart = fileCount > 0 && !isScanning && !isRunning;
 
   const runningPreviewPathKey =
     previewFiles
@@ -298,7 +292,6 @@ function App() {
 
         setRuntimeInfo(info);
         setParallelism(info.parallelismDefault);
-        setOutputDir((current) => current || info.defaultOutputDir);
       })
       .catch((error) => {
         if (!disposed) {
@@ -571,20 +564,6 @@ function App() {
     await scanInputPaths(selectionToArray(selection));
   };
 
-  const pickOutputDirectory = async () => {
-    const selection = await open({
-      title: "选择清理后的输出目录",
-      multiple: false,
-      directory: true,
-      defaultPath: outputDir || runtimeInfo?.defaultOutputDir,
-    });
-
-    const [selected] = selectionToArray(selection);
-    if (selected) {
-      setOutputDir(selected);
-    }
-  };
-
   const startCleanup = async () => {
     if (!fileCount || !canStart) {
       return;
@@ -604,9 +583,9 @@ function App() {
       const result = await invoke<CleanupSummary>("run_cleanup", {
         options: {
           outputMode,
-          outputDir: outputMode === "mirror" ? outputDir : null,
+          outputDir: null,
           parallelism,
-          preserveStructure,
+          preserveStructure: true,
         },
       });
 
@@ -781,7 +760,7 @@ function App() {
             label={runtimeInfo?.exiftoolReady ? "引擎就绪" : "引擎未就绪"}
           />
           <span>{runtimeInfo?.exiftoolVersion ? `ExifTool ${runtimeInfo.exiftoolVersion}` : "ExifTool"}</span>
-          <span>{outputMode === "overwrite" ? "原地覆盖" : "镜像输出"}</span>
+          <span>原地覆盖</span>
         </div>
       </header>
 
@@ -980,54 +959,8 @@ function App() {
             )}
           </Panel>
 
-          <Panel title="设置" subtitle="界面收敛成更轻的工具面板，操作仍然都在这里。">
-            <div className="mode-row">
-              <button
-                type="button"
-                className={`button button-mode ${outputMode === "mirror" ? "is-selected" : ""}`}
-                onClick={() => setOutputMode("mirror")}
-              >
-                镜像输出
-              </button>
-              <button
-                type="button"
-                className={`button button-mode ${outputMode === "overwrite" ? "is-selected is-danger" : ""}`}
-                onClick={() => setOutputMode("overwrite")}
-              >
-                原地覆盖
-              </button>
-            </div>
-
-            <label className="field">
-              <span>输出目录</span>
-              <div className="field-row">
-                <input
-                  value={outputMode === "overwrite" ? "原地覆盖模式下不需要输出目录" : outputDir}
-                  readOnly
-                  disabled={outputMode === "overwrite"}
-                />
-                <button
-                  type="button"
-                  className="button"
-                  disabled={outputMode === "overwrite"}
-                  onClick={pickOutputDirectory}
-                >
-                  浏览
-                </button>
-              </div>
-            </label>
-
-            <label className="field">
-              <span>目录结构</span>
-              <button
-                type="button"
-                className={`button ${preserveStructure ? "is-soft-selected" : ""}`}
-                onClick={() => setPreserveStructure((value) => !value)}
-                disabled={outputMode === "overwrite"}
-              >
-                {preserveStructure ? "保留原目录结构" : "平铺输出"}
-              </button>
-            </label>
+          <Panel title="操作" subtitle="默认原地覆盖，只保留必要执行项。">
+            <div className="message neutral">清理结果会直接写回原文件，不再显示输出模式和目录设置。</div>
 
             <label className="field">
               <span>并发任务数</span>

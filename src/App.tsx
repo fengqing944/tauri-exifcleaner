@@ -139,6 +139,7 @@ const EMPTY_PROGRESS: ProgressState = {
 function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [queueView, setQueueView] = useState<QueueView | null>(null);
+  const [queueFiles, setQueueFiles] = useState<QueuedFile[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -168,11 +169,11 @@ function App() {
   const isBusy = isScanning || isRunning;
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
-  const previewFiles = queueView?.previewFiles ?? [];
+  const previewFiles = queueFiles.length ? queueFiles : queueView?.previewFiles ?? [];
+  const metadataSeedFiles = previewFiles.slice(0, 24);
   const ignoredCount = queueView?.ignoredCount ?? 0;
-  const moreFiles = Math.max(0, fileCount - previewFiles.length);
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
-  const previewFileKey = previewFiles.map((file) => normalizePath(file.sourcePath)).join("|");
+  const previewFileKey = metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|");
   const outputMode: OutputMode = "overwrite";
   const canStart = fileCount > 0 && !isScanning && !isRunning;
 
@@ -225,6 +226,17 @@ function App() {
     flyoutActiveRef.current = false;
   });
 
+  const refreshQueueFiles = useEffectEvent(async () => {
+    try {
+      const files = await invoke<QueuedFile[]>("get_queue_files");
+      startTransition(() => {
+        setQueueFiles(files);
+      });
+    } catch (error) {
+      setErrorMessage(toMessage(error));
+    }
+  });
+
   const scanInputPaths = useEffectEvent(async (paths: string[]) => {
     if (isRunning) {
       setErrorMessage("请等待当前清理任务结束后再追加导入。");
@@ -254,6 +266,7 @@ function App() {
         setQueueView(result.view);
         setProgress(createProgressState(result.view.supportedCount));
       });
+      await refreshQueueFiles();
     } catch (error) {
       setErrorMessage(toMessage(error));
     } finally {
@@ -339,11 +352,11 @@ function App() {
   }, [handleCleanupFileEvent, handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
 
   useEffect(() => {
-    if (!previewFiles.length) {
+    if (!metadataSeedFiles.length) {
       return;
     }
 
-    const requests = previewFiles
+    const requests = metadataSeedFiles
       .filter((file) => !beforeSnapshots[normalizePath(file.sourcePath)])
       .map((file) => ({
         requestKey: normalizePath(file.sourcePath),
@@ -407,7 +420,72 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [beforeSnapshots, previewFileKey, previewFiles]);
+  }, [beforeSnapshots, metadataSeedFiles, previewFileKey]);
+
+  useEffect(() => {
+    if (!previewFile || !previewPathKey) {
+      return;
+    }
+
+    const beforeLoadingKey = `before:${previewPathKey}`;
+    if (beforeSnapshots[previewPathKey] || loadingSnapshots[beforeLoadingKey]) {
+      return;
+    }
+
+    let disposed = false;
+    const requests: MetadataSnapshotRequest[] = [
+      {
+        requestKey: previewPathKey,
+        filePath: previewFile.sourcePath,
+      },
+    ];
+
+    startTransition(() => {
+      setLoadingSnapshots((current) => ({
+        ...current,
+        [beforeLoadingKey]: true,
+      }));
+    });
+
+    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
+      .then((responses) => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setBeforeSnapshots((current) => {
+            const next = { ...current };
+            for (const response of responses) {
+              next[response.requestKey] = response.snapshot;
+            }
+            return next;
+          });
+        });
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setErrorMessage(toMessage(error));
+        }
+      })
+      .finally(() => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setLoadingSnapshots((current) => {
+            const next = { ...current };
+            delete next[beforeLoadingKey];
+            return next;
+          });
+        });
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [beforeSnapshots, loadingSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
     if (!previewFile || !previewPathKey) {
@@ -483,11 +561,11 @@ function App() {
   }, [afterSnapshots, fileStates, loadingSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
-    if (!summary || summary.cancelled || !previewFiles.length) {
+    if (!summary || summary.cancelled || !metadataSeedFiles.length) {
       return;
     }
 
-    const requests = previewFiles
+    const requests = metadataSeedFiles
       .map((file) => {
         const pathKey = normalizePath(file.sourcePath);
         const rowState = fileStates[pathKey];
@@ -562,7 +640,7 @@ function App() {
     return () => {
       disposed = true;
     };
-  }, [afterSnapshots, fileStates, loadingSnapshots, previewFileKey, previewFiles, summary]);
+  }, [afterSnapshots, fileStates, loadingSnapshots, metadataSeedFiles, previewFileKey, summary]);
 
   useEffect(() => {
     if (!hoveredPathKey) {
@@ -718,6 +796,7 @@ function App() {
     try {
       await invoke("clear_queue");
       setQueueView(null);
+      setQueueFiles([]);
       setSummary(null);
       setRunFailures([]);
       setProgress(EMPTY_PROGRESS);
@@ -911,30 +990,6 @@ function App() {
               )
             }
           >
-            <div className="import-strip">
-              <button
-                className={`dropzone compact-dropzone ${dropActive ? "active" : ""}`}
-                type="button"
-                disabled={isBusy}
-                onClick={addFiles}
-              >
-                <strong>{fileCount ? "继续添加文件或文件夹" : "拖入文件或点击导入"}</strong>
-                <span>支持多文件、多文件夹和递归扫描。</span>
-              </button>
-
-              <div className="import-actions">
-                <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
-                  添加文件
-                </button>
-                <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
-                  添加文件夹
-                </button>
-                <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
-                  清空
-                </button>
-              </div>
-            </div>
-
             <div className="workspace-overview">
               <div className="summary-strip">
                 <StatChip label="输入根" value={String(rootCount)} />
@@ -965,77 +1020,104 @@ function App() {
               </div>
             ) : null}
 
-            {!fileCount ? (
-              <EmptyBox title="未选择文件" description="拖放图像、视频或 PDF 文件以自动删除元数据。" />
-            ) : (
-              <div
-                className={`table-shell ${previewFile ? "is-flyout-open" : ""}`}
-                ref={tableShellRef}
-                onMouseLeave={() => clearHover()}
-              >
-                <div className="table-head">
-                  <span>选中的文件</span>
-                  <span># 处理前</span>
-                  <span># 处理后</span>
-                  <span>状态</span>
+            <div className={`queue-workspace ${dropActive ? "is-drop-active" : ""}`}>
+              <div className="queue-workspace-toolbar">
+                <div className="queue-workspace-copy">
+                  <strong>{fileCount ? "把文件拖到这个区域可继续追加" : "拖放区域与文件列表已合并"}</strong>
+                  <span>{fileCount ? "下方列表可滚动浏览，悬停任意行查看处理前后字段。" : "拖放图像、视频或 PDF 文件到这里，或使用右侧按钮导入。"}</span>
                 </div>
 
-                <div className="table-body">
-                  {previewFiles.map((file) => {
-                    const pathKey = normalizePath(file.sourcePath);
-                    const rowState = fileStates[pathKey];
-                    const beforeSnapshot = beforeSnapshots[pathKey];
-                    const afterSnapshot = afterSnapshots[pathKey];
-                    const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
-                    const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
-                    const isPreviewing = hoveredPathKey === pathKey;
-                    const isActive = highlightedPathKey === pathKey && isRunning;
-                    const rowStatus = getRowStatusDescriptor(rowState);
-
-                    return (
-                      <div
-                        key={file.sourcePath}
-                        className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
-                        onMouseEnter={(event) => scheduleHover(pathKey, event)}
-                        onMouseLeave={() => clearHover()}
-                      >
-                        <div className="queue-file">
-                          <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
-                          <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
-                        </div>
-                        <span className="queue-count">
-                          {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "读取中" : "—"}
-                        </span>
-                        <span className="queue-count">
-                          {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
-                        </span>
-                        <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
-                      </div>
-                    );
-                  })}
+                <div className="import-actions compact-actions">
+                  <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
+                    添加文件
+                  </button>
+                  <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
+                    添加文件夹
+                  </button>
+                  <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
+                    清空
+                  </button>
                 </div>
-
-                {previewFile ? (
-                  <div
-                    className="preview-flyout-shell"
-                    style={{ left: `${flyoutPosition.left}px`, top: `${flyoutPosition.top}px` }}
-                    onMouseEnter={handleFlyoutEnter}
-                    onMouseLeave={handleFlyoutLeave}
-                  >
-                    <MetadataPreviewFlyout
-                      file={previewFile}
-                      beforeSnapshot={previewBeforeSnapshot}
-                      afterSnapshot={previewAfterSnapshot}
-                      rowState={previewRowState}
-                      beforeLoading={previewBeforeLoading}
-                      afterLoading={previewAfterLoading}
-                    />
-                  </div>
-                ) : null}
-
-                {moreFiles > 0 ? <div className="footnote">还有 {moreFiles} 个文件未展开显示。</div> : null}
               </div>
-            )}
+
+              {!fileCount ? (
+                <button
+                  className={`dropzone queue-dropstage ${dropActive ? "active" : ""}`}
+                  type="button"
+                  disabled={isBusy}
+                  onClick={addFiles}
+                >
+                  <strong>拖入文件或点击导入</strong>
+                  <span>支持多文件、多文件夹和递归扫描。这里既是导入区，也是之后的文件列表区。</span>
+                </button>
+              ) : (
+                <div
+                  className={`table-shell queue-list-shell ${previewFile ? "is-flyout-open" : ""}`}
+                  ref={tableShellRef}
+                  onMouseLeave={() => clearHover()}
+                >
+                  <div className="table-head">
+                    <span>选中的文件</span>
+                    <span># 处理前</span>
+                    <span># 处理后</span>
+                    <span>状态</span>
+                  </div>
+
+                  <div className="table-body queue-scroll-body">
+                    {previewFiles.map((file) => {
+                      const pathKey = normalizePath(file.sourcePath);
+                      const rowState = fileStates[pathKey];
+                      const beforeSnapshot = beforeSnapshots[pathKey];
+                      const afterSnapshot = afterSnapshots[pathKey];
+                      const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
+                      const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
+                      const isPreviewing = hoveredPathKey === pathKey;
+                      const isActive = highlightedPathKey === pathKey && isRunning;
+                      const rowStatus = getRowStatusDescriptor(rowState);
+
+                      return (
+                        <div
+                          key={file.sourcePath}
+                          className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
+                          onMouseEnter={(event) => scheduleHover(pathKey, event)}
+                          onMouseLeave={() => clearHover()}
+                        >
+                          <div className="queue-file">
+                            <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
+                            <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
+                          </div>
+                          <span className="queue-count">
+                            {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "读取中" : "—"}
+                          </span>
+                          <span className="queue-count">
+                            {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
+                          </span>
+                          <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {previewFile ? (
+                    <div
+                      className="preview-flyout-shell"
+                      style={{ left: `${flyoutPosition.left}px`, top: `${flyoutPosition.top}px` }}
+                      onMouseEnter={handleFlyoutEnter}
+                      onMouseLeave={handleFlyoutLeave}
+                    >
+                      <MetadataPreviewFlyout
+                        file={previewFile}
+                        beforeSnapshot={previewBeforeSnapshot}
+                        afterSnapshot={previewAfterSnapshot}
+                        rowState={previewRowState}
+                        beforeLoading={previewBeforeLoading}
+                        afterLoading={previewAfterLoading}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
           </Panel>
         </section>
 

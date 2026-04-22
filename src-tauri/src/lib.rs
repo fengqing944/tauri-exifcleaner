@@ -419,6 +419,11 @@ fn clear_queue(
 }
 
 #[tauri::command]
+fn get_queue_files(queue_state: State<'_, QueueState>) -> Vec<QueuedFile> {
+    queue_state.inner.lock().unwrap().files.clone()
+}
+
+#[tauri::command]
 async fn load_metadata_snapshots(
     app: AppHandle,
     requests: Vec<MetadataSnapshotRequest>,
@@ -1735,6 +1740,7 @@ pub fn run() {
             scan_inputs,
             cancel_scan,
             clear_queue,
+            get_queue_files,
             load_metadata_snapshots,
             run_cleanup,
             cancel_cleanup

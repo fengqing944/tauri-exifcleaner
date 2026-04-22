@@ -551,10 +551,15 @@ button {
   margin-bottom: 5px;
 }
 
+.preview-column header strong,
+.preview-column header span {
+  font-size: 11px;
+}
+
 .preview-fields {
   display: grid;
   gap: 4px;
-  max-height: 112px;
+  max-height: 180px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -568,13 +573,16 @@ button {
   border-radius: 7px;
 }
 
+.preview-field strong {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .preview-field span {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-line-clamp: 1;
-  -webkit-box-orient: vertical;
+  font-size: 10px;
   word-break: break-word;
   line-height: 1.35;
+  white-space: pre-wrap;
 }
 
 .preview-empty,

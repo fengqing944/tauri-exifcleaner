@@ -1166,14 +1166,13 @@ function MetadataColumn(props: {
   loading: boolean;
   emptyText: string;
 }) {
-  const visibleFields = props.snapshot ? getCompactPreviewFields(props.snapshot) : [];
-  const hiddenCount = props.snapshot ? Math.max(0, props.snapshot.count - visibleFields.length) : 0;
+  const visibleFields = props.snapshot ? props.snapshot.fields : [];
 
   return (
     <section className="preview-column">
       <header>
         <strong>{props.title}</strong>
-        <span>{props.snapshot ? `${visibleFields.length} 条` : props.loading ? "读取中" : "暂无"}</span>
+        <span>{props.snapshot ? `${props.snapshot.count} 条` : props.loading ? "读取中" : "暂无"}</span>
       </header>
 
       {props.snapshot ? (
@@ -1189,11 +1188,7 @@ function MetadataColumn(props: {
                 <span>{field.valuePreview}</span>
               </div>
             ))}
-            {hiddenCount > 0 ? (
-              <div className="preview-note">+{hiddenCount} 项</div>
-            ) : props.snapshot.truncated ? (
-              <div className="preview-note">内容已裁剪</div>
-            ) : null}
+            {props.snapshot.truncated ? <div className="preview-note">内容已裁剪</div> : null}
           </div>
         ) : (
           <div className="preview-empty">没有可展示的字段。</div>
@@ -1284,10 +1279,6 @@ function getParentPath(path: string): string {
     return "";
   }
   return parts.slice(0, -1).join("/");
-}
-
-function getCompactPreviewFields(snapshot: MetadataPreviewSnapshot): MetadataFieldPreview[] {
-  return snapshot.fields.slice(0, 2);
 }
 
 function toMessage(error: unknown): string {

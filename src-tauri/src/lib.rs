@@ -29,7 +29,6 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 ];
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
-const MAX_METADATA_FIELD_PREVIEW: usize = 10;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 
 #[cfg(target_os = "windows")]
@@ -784,12 +783,8 @@ fn summarize_metadata_value(value: &Value) -> String {
 fn build_metadata_snapshot(fields: &[MetadataFieldPreview]) -> MetadataPreviewSnapshot {
     MetadataPreviewSnapshot {
         count: fields.len(),
-        fields: fields
-            .iter()
-            .take(MAX_METADATA_FIELD_PREVIEW)
-            .cloned()
-            .collect(),
-        truncated: fields.len() > MAX_METADATA_FIELD_PREVIEW,
+        fields: fields.to_vec(),
+        truncated: false,
     }
 }
 

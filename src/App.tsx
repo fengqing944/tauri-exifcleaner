@@ -40,6 +40,17 @@ type QueueView = {
   rootCount: number;
 };
 
+type ScanProgressEvent = {
+  view: QueueView;
+  done: boolean;
+  cancelled: boolean;
+};
+
+type ScanSummary = {
+  view: QueueView;
+  cancelled: boolean;
+};
+
 type CleanupProgressEvent = {
   total: number;
   completed: number;
@@ -102,6 +113,7 @@ function App() {
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
+  const isBusy = isScanning || isRunning;
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
   const previewFiles = queueView?.previewFiles ?? [];
@@ -118,9 +130,23 @@ function App() {
     pendingProgressRef.current = payload;
   });
 
+  const handleScanProgressEvent = useEffectEvent((payload: ScanProgressEvent) => {
+    startTransition(() => {
+      setQueueView(payload.view);
+      setProgress(createProgressState(payload.view.supportedCount));
+      setSummary(null);
+      setRunFailures([]);
+    });
+  });
+
   const scanInputPaths = useEffectEvent(async (paths: string[]) => {
     if (isRunning) {
       setErrorMessage("请等待当前清理任务结束后再追加导入。");
+      return;
+    }
+
+    if (isScanning) {
+      setErrorMessage("扫描尚未完成，请等待当前导入结束或先取消扫描。");
       return;
     }
 
@@ -133,13 +159,13 @@ function App() {
     setErrorMessage(null);
 
     try {
-      const result = await invoke<QueueView>("scan_inputs", {
+      const result = await invoke<ScanSummary>("scan_inputs", {
         inputPaths: cleanedPaths,
       });
 
       startTransition(() => {
-        setQueueView(result);
-        setProgress(createProgressState(result.supportedCount));
+        setQueueView(result.view);
+        setProgress(createProgressState(result.view.supportedCount));
         setSummary(null);
         setRunFailures([]);
       });
@@ -199,6 +225,9 @@ function App() {
     const cleanupProgressListener = listen<CleanupProgressEvent>("cleanup-progress", (event) =>
       handleProgressEvent(event.payload),
     );
+    const scanProgressListener = listen<ScanProgressEvent>("scan-progress", (event) =>
+      handleScanProgressEvent(event.payload),
+    );
 
     void getCurrentWindow()
       .onDragDropEvent((event) => handleWindowDrop(event as never))
@@ -213,9 +242,10 @@ function App() {
     return () => {
       disposed = true;
       void cleanupProgressListener.then((unlisten) => unlisten());
+      void scanProgressListener.then((unlisten) => unlisten());
       unlistenWindowDrop?.();
     };
-  }, [handleProgressEvent, handleWindowDrop]);
+  }, [handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
 
   useEffect(() => {
     if (!isRunning) {
@@ -349,6 +379,14 @@ function App() {
     }
   };
 
+  const cancelScan = async () => {
+    try {
+      await invoke<boolean>("cancel_scan");
+    } catch (error) {
+      setErrorMessage(toMessage(error));
+    }
+  };
+
   const clearQueue = async () => {
     try {
       await invoke("clear_queue");
@@ -397,7 +435,7 @@ function App() {
             <button
               className={`dropzone workbench-dropzone ${dropActive ? "active" : ""}`}
               type="button"
-              disabled={isRunning}
+              disabled={isBusy}
               onClick={addFiles}
             >
               <strong>拖放图像、视频或 PDF 文件</strong>
@@ -405,13 +443,13 @@ function App() {
             </button>
 
             <div className="button-row">
-              <button className="button button-primary" type="button" onClick={addFiles} disabled={isRunning}>
+              <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
                 添加文件
               </button>
-              <button className="button" type="button" onClick={addFolders} disabled={isRunning}>
+              <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
                 添加文件夹
               </button>
-              <button className="button button-danger" type="button" onClick={clearQueue} disabled={isRunning}>
+              <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
                 清空
               </button>
             </div>
@@ -600,8 +638,13 @@ function App() {
               >
                 开始清理
               </button>
-              <button className="button" type="button" disabled={!isRunning} onClick={cancelCleanup}>
-                取消
+              <button
+                className="button"
+                type="button"
+                disabled={!isRunning && !isScanning}
+                onClick={isRunning ? cancelCleanup : cancelScan}
+              >
+                {isRunning ? "取消清理" : "取消扫描"}
               </button>
             </div>
           </Panel>

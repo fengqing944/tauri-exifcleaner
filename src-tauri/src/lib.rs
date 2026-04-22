@@ -1,16 +1,17 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self as std_mpsc, Receiver},
         Arc, Mutex,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
@@ -25,19 +26,20 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
     "mef", "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "png", "ps", "psd",
     "raf", "raw", "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
 ];
-const MAX_METADATA_PREVIEW_FILES: usize = 8;
-const MAX_METADATA_FIELD_PREVIEW: usize = 10;
-const MAX_MEASURED_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
-const MEASURED_PREVIEW_EXTENSIONS: &[&str] = &[
-    "avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
-];
-const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
+const MAX_QUEUE_PREVIEW_FILES: usize = 12;
+const SCAN_BATCH_SIZE: usize = 256;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Default)]
 struct CleanupState {
+    running: Mutex<bool>,
+    cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+#[derive(Default)]
+struct ScanState {
     running: Mutex<bool>,
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
 }
@@ -149,27 +151,17 @@ struct CleanupSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MetadataFieldPreview {
-    group: String,
-    name: String,
-    value_preview: String,
+struct ScanProgressEvent {
+    view: QueueView,
+    done: bool,
+    cancelled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MetadataPreviewSnapshot {
-    count: usize,
-    fields: Vec<MetadataFieldPreview>,
-    truncated: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct FileMetadataPreview {
-    source_path: String,
-    before: MetadataPreviewSnapshot,
-    after: MetadataPreviewSnapshot,
-    after_estimated: bool,
+struct ScanSummary {
+    view: QueueView,
+    cancelled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +175,20 @@ struct ScanBatch {
     files: Vec<QueuedFile>,
     ignored_count: usize,
     ignored_samples: Vec<String>,
+}
+
+impl ScanBatch {
+    fn is_empty(&self) -> bool {
+        self.files.is_empty() && self.ignored_count == 0 && self.ignored_samples.is_empty()
+    }
+}
+
+enum ScanWorkerEvent {
+    Batch(ScanBatch),
+}
+
+struct ScanOutcome {
+    cancelled: bool,
 }
 
 #[derive(Debug)]
@@ -202,8 +208,15 @@ struct ExifToolSession {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
-    stderr: BufReader<ChildStderr>,
+    stderr_events: Receiver<StderrEvent>,
+    stderr_thread: Option<thread::JoinHandle<()>>,
     next_execute_id: u64,
+}
+
+enum StderrEvent {
+    Line(String),
+    Closed,
+    Error(String),
 }
 
 struct ExifToolCommandResult {
@@ -239,46 +252,143 @@ fn build_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
 
 #[tauri::command]
 async fn scan_inputs(
+    app: AppHandle,
+    cleanup_state: State<'_, CleanupState>,
+    scan_state: State<'_, ScanState>,
     queue_state: State<'_, QueueState>,
     input_paths: Vec<String>,
-) -> Result<QueueView, String> {
-    let batch = tauri::async_runtime::spawn_blocking(move || perform_scan_inputs(input_paths))
-        .await
-        .map_err(|error| format!("扫描任务异常: {error}"))??;
+) -> Result<ScanSummary, String> {
+    if *cleanup_state.running.lock().unwrap() {
+        return Err("请等待当前清理任务结束后再追加导入。".to_string());
+    }
 
-    let mut store = queue_state.inner.lock().unwrap();
-    merge_scan_batch(&mut store, batch);
-    Ok(build_queue_view(&store))
+    {
+        let mut running = scan_state.running.lock().unwrap();
+        if *running {
+            return Err("已有扫描任务正在进行，请等待当前导入完成或先取消扫描。".to_string());
+        }
+        *running = true;
+    }
+
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    {
+        let mut stored_flag = scan_state.cancel_flag.lock().unwrap();
+        *stored_flag = Some(cancel_flag.clone());
+    }
+
+    let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
+    let scan_handle =
+        tauri::async_runtime::spawn_blocking(move || perform_scan_inputs(input_paths, cancel_flag, sender));
+
+    let scan_result = async {
+        while let Some(event) = receiver.recv().await {
+            match event {
+                ScanWorkerEvent::Batch(batch) => {
+                    let view = {
+                        let mut store = queue_state.inner.lock().unwrap();
+                        merge_scan_batch(&mut store, batch);
+                        build_queue_view(&store)
+                    };
+
+                    app.emit(
+                        "scan-progress",
+                        ScanProgressEvent {
+                            view,
+                            done: false,
+                            cancelled: false,
+                        },
+                    )
+                    .map_err(|error| format!("无法发送扫描进度事件: {error}"))?;
+                }
+            }
+        }
+
+        let outcome = scan_handle
+            .await
+            .map_err(|error| format!("扫描任务异常: {error}"))??;
+        let view = {
+            let store = queue_state.inner.lock().unwrap();
+            build_queue_view(&store)
+        };
+
+        app.emit(
+            "scan-progress",
+            ScanProgressEvent {
+                view: view.clone(),
+                done: true,
+                cancelled: outcome.cancelled,
+            },
+        )
+        .map_err(|error| format!("无法发送扫描完成事件: {error}"))?;
+
+        Ok(ScanSummary {
+            view,
+            cancelled: outcome.cancelled,
+        })
+    }
+    .await;
+
+    {
+        let mut running = scan_state.running.lock().unwrap();
+        *running = false;
+    }
+    {
+        let mut stored_flag = scan_state.cancel_flag.lock().unwrap();
+        *stored_flag = None;
+    }
+
+    scan_result
 }
 
 #[tauri::command]
-async fn load_metadata_previews(
-    app: AppHandle,
-    input_paths: Vec<String>,
-    focused_path: Option<String>,
-) -> Result<Vec<FileMetadataPreview>, String> {
-    tauri::async_runtime::spawn_blocking(move || build_metadata_previews(app, input_paths, focused_path))
-        .await
-        .map_err(|error| format!("元数据预览任务异常: {error}"))?
+fn cancel_scan(state: State<'_, ScanState>) -> bool {
+    if let Some(cancel_flag) = state.cancel_flag.lock().unwrap().as_ref() {
+        cancel_flag.store(true, Ordering::Relaxed);
+        return true;
+    }
+
+    false
 }
 
 #[tauri::command]
-fn clear_queue(queue_state: State<'_, QueueState>) {
+fn clear_queue(
+    cleanup_state: State<'_, CleanupState>,
+    scan_state: State<'_, ScanState>,
+    queue_state: State<'_, QueueState>,
+) -> Result<(), String> {
+    if *cleanup_state.running.lock().unwrap() {
+        return Err("请等待当前清理任务结束后再清空队列。".to_string());
+    }
+    if *scan_state.running.lock().unwrap() {
+        return Err("扫描尚未结束，请先等待扫描完成或取消扫描。".to_string());
+    }
+
     *queue_state.inner.lock().unwrap() = QueueStore::default();
+    Ok(())
 }
 
-fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
+fn perform_scan_inputs(
+    input_paths: Vec<String>,
+    cancel_flag: Arc<AtomicBool>,
+    sender: mpsc::UnboundedSender<ScanWorkerEvent>,
+) -> Result<ScanOutcome, String> {
     let mut seen = HashSet::new();
-    let mut files = Vec::new();
-    let mut ignored_count = 0_usize;
-    let mut ignored_samples = Vec::new();
+    let mut batch = ScanBatch {
+        files: Vec::with_capacity(SCAN_BATCH_SIZE),
+        ignored_count: 0,
+        ignored_samples: Vec::new(),
+    };
 
     for raw_path in input_paths {
+        if cancel_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
         let input_path = PathBuf::from(raw_path);
 
         if !input_path.exists() {
-            ignored_count += 1;
-            push_ignored_sample(&mut ignored_samples, &input_path);
+            batch.ignored_count += 1;
+            push_ignored_sample(&mut batch.ignored_samples, &input_path);
             continue;
         }
 
@@ -293,10 +403,14 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_type().is_file())
             {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+
                 let file_path = entry.into_path();
                 if !is_supported_file(&file_path) {
-                    ignored_count += 1;
-                    push_ignored_sample(&mut ignored_samples, &file_path);
+                    batch.ignored_count += 1;
+                    push_ignored_sample(&mut batch.ignored_samples, &file_path);
                     continue;
                 }
 
@@ -308,8 +422,8 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                 let metadata = match fs::metadata(&file_path) {
                     Ok(metadata) => metadata,
                     Err(_) => {
-                        ignored_count += 1;
-                        push_ignored_sample(&mut ignored_samples, &file_path);
+                        batch.ignored_count += 1;
+                        push_ignored_sample(&mut batch.ignored_samples, &file_path);
                         continue;
                     }
                 };
@@ -320,7 +434,7 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                     .to_string_lossy()
                     .to_string();
 
-                files.push(QueuedFile {
+                batch.files.push(QueuedFile {
                     source_path: file_path.to_string_lossy().to_string(),
                     relative_path,
                     root_label: root_label.clone(),
@@ -328,11 +442,13 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                     size_bytes: metadata.len(),
                     from_directory: true,
                 });
+
+                flush_scan_batch(&sender, &mut batch)?;
             }
         } else if input_path.is_file() {
             if !is_supported_file(&input_path) {
-                ignored_count += 1;
-                push_ignored_sample(&mut ignored_samples, &input_path);
+                batch.ignored_count += 1;
+                push_ignored_sample(&mut batch.ignored_samples, &input_path);
                 continue;
             }
 
@@ -346,7 +462,7 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                     .unwrap_or("unnamed")
                     .to_string();
 
-                files.push(QueuedFile {
+                batch.files.push(QueuedFile {
                     source_path: input_path.to_string_lossy().to_string(),
                     relative_path,
                     root_label: root_label.clone(),
@@ -354,15 +470,48 @@ fn perform_scan_inputs(input_paths: Vec<String>) -> Result<ScanBatch, String> {
                     size_bytes: metadata.len(),
                     from_directory: false,
                 });
+
+                flush_scan_batch(&sender, &mut batch)?;
             }
         }
     }
 
-    Ok(ScanBatch {
-        files,
-        ignored_count,
-        ignored_samples,
+    flush_remaining_scan_batch(&sender, &mut batch)?;
+
+    Ok(ScanOutcome {
+        cancelled: cancel_flag.load(Ordering::Relaxed),
     })
+}
+
+fn flush_scan_batch(
+    sender: &mpsc::UnboundedSender<ScanWorkerEvent>,
+    batch: &mut ScanBatch,
+) -> Result<(), String> {
+    if batch.files.len() < SCAN_BATCH_SIZE {
+        return Ok(());
+    }
+
+    flush_remaining_scan_batch(sender, batch)
+}
+
+fn flush_remaining_scan_batch(
+    sender: &mpsc::UnboundedSender<ScanWorkerEvent>,
+    batch: &mut ScanBatch,
+) -> Result<(), String> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+
+    let outgoing = ScanBatch {
+        files: std::mem::take(&mut batch.files),
+        ignored_count: batch.ignored_count,
+        ignored_samples: std::mem::take(&mut batch.ignored_samples),
+    };
+    batch.ignored_count = 0;
+
+    sender
+        .send(ScanWorkerEvent::Batch(outgoing))
+        .map_err(|_| "扫描进度通道已关闭。".to_string())
 }
 
 fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) {
@@ -407,334 +556,11 @@ fn build_queue_view(store: &QueueStore) -> QueueView {
         preview_files: store
             .files
             .iter()
-            .take(MAX_METADATA_PREVIEW_FILES)
+            .take(MAX_QUEUE_PREVIEW_FILES)
             .cloned()
             .collect(),
         root_count: store.roots.len(),
     }
-}
-
-fn build_metadata_previews(
-    app: AppHandle,
-    input_paths: Vec<String>,
-    focused_path: Option<String>,
-) -> Result<Vec<FileMetadataPreview>, String> {
-    let exiftool_path = resolve_exiftool(&app)?;
-    let preview_paths = normalize_preview_paths(input_paths);
-    if preview_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let before_map = read_metadata_snapshot_map(&exiftool_path, &preview_paths)?;
-    let focused_key = focused_path
-        .as_deref()
-        .map(PathBuf::from)
-        .map(|path| dedupe_key(&path));
-    let after_map = build_focused_after_map(&exiftool_path, &preview_paths, focused_key.as_deref())?;
-
-    let mut results = Vec::with_capacity(preview_paths.len());
-
-    for path in &preview_paths {
-        let source_key = dedupe_key(path);
-        let before_fields = before_map
-            .get(&source_key)
-            .cloned()
-            .unwrap_or_default();
-
-        let after_fields = after_map.get(&source_key).cloned().unwrap_or_default();
-
-        results.push(FileMetadataPreview {
-            source_path: path.to_string_lossy().to_string(),
-            before: build_metadata_snapshot(&before_fields),
-            after: build_metadata_snapshot(&after_fields),
-            after_estimated: !after_map.contains_key(&source_key),
-        });
-    }
-
-    Ok(results)
-}
-
-fn build_focused_after_map(
-    exiftool_path: &Path,
-    preview_paths: &[PathBuf],
-    focused_key: Option<&str>,
-) -> Result<HashMap<String, Vec<MetadataFieldPreview>>, String> {
-    let Some(focused_key) = focused_key else {
-        return Ok(HashMap::new());
-    };
-
-    let Some(focused_path) = preview_paths
-        .iter()
-        .find(|path| dedupe_key(path) == focused_key)
-    else {
-        return Ok(HashMap::new());
-    };
-
-    if !can_measure_metadata_preview(focused_path) {
-        return Ok(HashMap::new());
-    }
-
-    let temp_dir = create_preview_temp_dir()?;
-    let temp_path = create_preview_copy(&temp_dir, focused_path, 0)?;
-    let result = clean_preview_copy(exiftool_path, &temp_path)
-        .and_then(|_| read_metadata_snapshot_map(exiftool_path, &[temp_path.clone()]));
-    let _ = fs::remove_dir_all(&temp_dir);
-
-    let temp_map = result?;
-    let after_fields = temp_map
-        .get(&dedupe_key(&temp_path))
-        .cloned()
-        .unwrap_or_default();
-
-    Ok(HashMap::from([(focused_key.to_string(), after_fields)]))
-}
-
-fn normalize_preview_paths(input_paths: Vec<String>) -> Vec<PathBuf> {
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::new();
-
-    for raw_path in input_paths {
-        let path = PathBuf::from(raw_path);
-        if !path.is_file() {
-            continue;
-        }
-
-        let key = dedupe_key(&path);
-        if !seen.insert(key) {
-            continue;
-        }
-
-        normalized.push(path);
-        if normalized.len() >= MAX_METADATA_PREVIEW_FILES {
-            break;
-        }
-    }
-
-    normalized
-}
-
-fn read_metadata_snapshot_map(
-    exiftool_path: &Path,
-    input_paths: &[PathBuf],
-) -> Result<HashMap<String, Vec<MetadataFieldPreview>>, String> {
-    if input_paths.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-j")
-        .arg("-G1")
-        .arg("-s")
-        .arg("-a")
-        .arg("-u")
-        .arg("-m")
-        .arg("-ignoreMinorErrors");
-    configure_hidden_process(&mut command);
-
-    if let Some(parent) = exiftool_path.parent() {
-        command.current_dir(parent);
-    }
-
-    for path in input_paths {
-        command.arg(path);
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| format!("无法读取元数据预览: {error}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "ExifTool 元数据预览失败。".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    let records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
-        .map_err(|error| format!("无法解析元数据预览结果: {error}"))?;
-    let mut snapshots = HashMap::new();
-
-    for record in records {
-        let Some(source_file) = record
-            .get("SourceFile")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
-
-        let mut fields = record
-            .into_iter()
-            .filter_map(|(key, value)| map_metadata_field(&key, &value))
-            .collect::<Vec<_>>();
-        fields.sort_by(|left, right| {
-            left.group
-                .cmp(&right.group)
-                .then(left.name.cmp(&right.name))
-        });
-
-        snapshots.insert(dedupe_key(Path::new(&source_file)), fields);
-    }
-
-    Ok(snapshots)
-}
-
-fn map_metadata_field(key: &str, value: &Value) -> Option<MetadataFieldPreview> {
-    if key == "SourceFile" {
-        return None;
-    }
-
-    let (group, name) = split_metadata_key(key);
-    if should_skip_metadata_group(group) {
-        return None;
-    }
-
-    Some(MetadataFieldPreview {
-        group: group.to_string(),
-        name: name.to_string(),
-        value_preview: summarize_metadata_value(value),
-    })
-}
-
-fn split_metadata_key(key: &str) -> (&str, &str) {
-    key.split_once(':').unwrap_or(("General", key))
-}
-
-fn should_skip_metadata_group(group: &str) -> bool {
-    METADATA_GROUPS_TO_SKIP
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(group))
-}
-
-fn summarize_metadata_value(value: &Value) -> String {
-    let summary = match value {
-        Value::Null => "空值".to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => number.to_string(),
-        Value::String(text) => text.trim().to_string(),
-        Value::Array(items) => items
-            .iter()
-            .take(3)
-            .map(summarize_metadata_value)
-            .collect::<Vec<_>>()
-            .join(" / "),
-        Value::Object(map) => format!("{} 个字段", map.len()),
-    };
-
-    truncate_text(&summary, 96)
-}
-
-fn build_metadata_snapshot(fields: &[MetadataFieldPreview]) -> MetadataPreviewSnapshot {
-    MetadataPreviewSnapshot {
-        count: fields.len(),
-        fields: fields
-            .iter()
-            .take(MAX_METADATA_FIELD_PREVIEW)
-            .cloned()
-            .collect(),
-        truncated: fields.len() > MAX_METADATA_FIELD_PREVIEW,
-    }
-}
-
-fn can_measure_metadata_preview(path: &Path) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_lowercase();
-    if !MEASURED_PREVIEW_EXTENSIONS.contains(&extension.as_str()) {
-        return false;
-    }
-
-    fs::metadata(path)
-        .map(|metadata| metadata.len() <= MAX_MEASURED_PREVIEW_BYTES)
-        .unwrap_or(false)
-}
-
-fn create_preview_temp_dir() -> Result<PathBuf, String> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let temp_dir = std::env::temp_dir().join(format!(
-        "metasweep-preview-{}-{}",
-        std::process::id(),
-        timestamp
-    ));
-    fs::create_dir_all(&temp_dir)
-        .map_err(|error| format!("无法创建元数据预览临时目录: {error}"))?;
-    Ok(temp_dir)
-}
-
-fn create_preview_copy(temp_dir: &Path, source_path: &Path, index: usize) -> Result<PathBuf, String> {
-    let file_name = source_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("preview.bin");
-    let temp_path = temp_dir.join(format!("{index:02}-{file_name}"));
-    fs::copy(source_path, &temp_path).map_err(|error| {
-        format!(
-            "无法创建元数据预览副本 {}: {error}",
-            source_path.display()
-        )
-    })?;
-    Ok(temp_path)
-}
-
-fn clean_preview_copy(exiftool_path: &Path, preview_path: &Path) -> Result<(), String> {
-    let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-q")
-        .arg("-q")
-        .arg("-m")
-        .arg("-ignoreMinorErrors")
-        .arg("-P")
-        .arg("-overwrite_original")
-        .arg("-all=")
-        .arg(preview_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    configure_hidden_process(&mut command);
-
-    if let Some(parent) = exiftool_path.parent() {
-        command.current_dir(parent);
-    }
-
-    let output = command
-        .output()
-        .map_err(|error| format!("无法创建元数据预览结果: {error}"))?;
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-    if !stderr.is_empty() || !output.status.success() {
-        return Err(if stderr.is_empty() {
-            "ExifTool 无法生成元数据预览结果。".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    Ok(())
-}
-
-fn truncate_text(value: &str, max_len: usize) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return "空值".to_string();
-    }
-
-    if trimmed.chars().count() <= max_len {
-        return trimmed.to_string();
-    }
-
-    let shortened = trimmed.chars().take(max_len.saturating_sub(1)).collect::<String>();
-    format!("{shortened}...")
 }
 
 #[tauri::command]
@@ -751,9 +577,14 @@ fn cancel_cleanup(state: State<'_, CleanupState>) -> bool {
 async fn run_cleanup(
     app: AppHandle,
     cleanup_state: State<'_, CleanupState>,
+    scan_state: State<'_, ScanState>,
     queue_state: State<'_, QueueState>,
     options: CleanupOptions,
 ) -> Result<CleanupSummary, String> {
+    if *scan_state.running.lock().unwrap() {
+        return Err("扫描尚未结束，请等待扫描完成或先取消扫描。".to_string());
+    }
+
     {
         let mut running = cleanup_state.running.lock().unwrap();
         if *running {
@@ -1084,12 +915,15 @@ impl ExifToolSession {
             .stderr
             .take()
             .ok_or_else(|| "无法获取 ExifTool stderr".to_string())?;
+        let (stderr_sender, stderr_events) = std_mpsc::channel();
+        let stderr_thread = thread::spawn(move || drain_stderr(stderr, stderr_sender));
 
         Ok(Self {
             child,
             stdin,
             stdout: BufReader::new(stdout),
-            stderr: BufReader::new(stderr),
+            stderr_events,
+            stderr_thread: Some(stderr_thread),
             next_execute_id: 1,
         })
     }
@@ -1155,6 +989,9 @@ impl ExifToolSession {
         self.child
             .wait()
             .map_err(|error| format!("关闭 ExifTool worker 失败: {error}"))?;
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
         Ok(())
     }
 
@@ -1181,21 +1018,58 @@ impl ExifToolSession {
         let mut stderr_lines = Vec::new();
 
         loop {
-            let line = read_line(&mut self.stderr, "stderr")?;
-            if let Some(status) = line.strip_prefix(marker_prefix) {
-                let status = status
-                    .trim()
-                    .parse::<i32>()
-                    .map_err(|error| format!("无法解析 ExifTool 状态码: {error}"))?;
+            match self
+                .stderr_events
+                .recv()
+                .map_err(|_| "ExifTool stderr 通道已关闭。".to_string())?
+            {
+                StderrEvent::Line(line) => {
+                    if let Some(status) = line.strip_prefix(marker_prefix) {
+                        let status = status
+                            .trim()
+                            .parse::<i32>()
+                            .map_err(|error| format!("无法解析 ExifTool 状态码: {error}"))?;
 
-                return Ok(ExifToolCommandResult {
-                    status,
-                    stderr_output: stderr_lines.join("\n"),
-                });
+                        return Ok(ExifToolCommandResult {
+                            status,
+                            stderr_output: stderr_lines.join("\n"),
+                        });
+                    }
+
+                    if !line.is_empty() {
+                        stderr_lines.push(line);
+                    }
+                }
+                StderrEvent::Closed => {
+                    return Err("ExifTool stderr 意外关闭。".to_string());
+                }
+                StderrEvent::Error(error) => return Err(error),
             }
+        }
+    }
+}
 
-            if !line.is_empty() {
-                stderr_lines.push(line);
+fn drain_stderr(stderr: impl std::io::Read, sender: std_mpsc::Sender<StderrEvent>) {
+    let mut reader = BufReader::new(stderr);
+
+    loop {
+        let mut buffer = String::new();
+        match reader.read_line(&mut buffer) {
+            Ok(0) => {
+                let _ = sender.send(StderrEvent::Closed);
+                break;
+            }
+            Ok(_) => {
+                let line = buffer.trim_end_matches(['\r', '\n']).to_string();
+                if sender.send(StderrEvent::Line(line)).is_err() {
+                    break;
+                }
+            }
+            Err(error) => {
+                let _ = sender.send(StderrEvent::Error(format!(
+                    "读取 ExifTool stderr 失败: {error}"
+                )));
+                break;
             }
         }
     }
@@ -1394,13 +1268,14 @@ fn configure_hidden_process(command: &mut Command) {
 pub fn run() {
     tauri::Builder::default()
         .manage(CleanupState::default())
+        .manage(ScanState::default())
         .manage(QueueState::default())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_runtime_info,
             scan_inputs,
+            cancel_scan,
             clear_queue,
-            load_metadata_previews,
             run_cleanup,
             cancel_cleanup
         ])
@@ -1472,10 +1347,67 @@ mod tests {
         let view = build_queue_view(&store);
 
         assert_eq!(view.supported_count, 11);
-        assert_eq!(view.preview_files.len(), MAX_METADATA_PREVIEW_FILES);
+        assert_eq!(
+            view.preview_files.len(),
+            view.supported_count.min(MAX_QUEUE_PREVIEW_FILES)
+        );
         assert_eq!(view.root_count, 1);
         assert_eq!(view.ignored_count, 2);
         assert_eq!(view.ignored_samples, vec!["C:/ignored/a.txt", "C:/ignored/b.txt"]);
+    }
+
+    #[test]
+    fn scan_inputs_emits_multiple_batches_and_honors_cancel_flag() {
+        let temp_dir = std::env::temp_dir().join("metasweep-scan-batches");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        for index in 0..(SCAN_BATCH_SIZE + 4) {
+            let path = temp_dir.join(format!("batch-{index}.jpg"));
+            fs::write(path, b"test").expect("write sample file");
+        }
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
+        let outcome = perform_scan_inputs(
+            vec![temp_dir.to_string_lossy().to_string()],
+            cancel_flag,
+            sender,
+        )
+        .expect("scan directory");
+
+        let mut batches = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            batches.push(event);
+        }
+        assert!(!outcome.cancelled, "scan should finish without cancellation");
+        assert!(
+            batches.len() >= 2,
+            "expected more than one batch when file count exceeds SCAN_BATCH_SIZE"
+        );
+    }
+
+    #[test]
+    fn scan_inputs_can_stop_early_after_cancel() {
+        let temp_dir = std::env::temp_dir().join("metasweep-scan-cancel");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        for index in 0..(SCAN_BATCH_SIZE * 2) {
+            let path = temp_dir.join(format!("cancel-{index}.jpg"));
+            fs::write(path, b"test").expect("write sample file");
+        }
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        cancel_flag.store(true, Ordering::Relaxed);
+        let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
+        let outcome = perform_scan_inputs(
+            vec![temp_dir.to_string_lossy().to_string()],
+            cancel_flag,
+            sender,
+        )
+        .expect("scan cancellation");
+
+        assert!(outcome.cancelled, "scan should report cancellation");
+        assert!(receiver.try_recv().is_err(), "cancelled scan should not emit queued files");
     }
 
     #[test]

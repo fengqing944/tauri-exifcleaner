@@ -676,6 +676,12 @@ function App() {
     }
   };
 
+  const hidePreview = () => {
+    cancelHoverTimer();
+    flyoutActiveRef.current = false;
+    setHoveredPathKey(null);
+  };
+
   const scheduleHover = (pathKey: string, rowElement: HTMLDivElement) => {
     cancelHoverTimer();
 
@@ -685,18 +691,13 @@ function App() {
     }, 70);
   };
 
-  const clearHover = (pathKey?: string) => {
+  const clearHover = () => {
     cancelHoverTimer();
     hoverTimeoutRef.current = window.setTimeout(() => {
       if (flyoutActiveRef.current) {
         return;
       }
-      setHoveredPathKey((current) => {
-        if (!pathKey) {
-          return null;
-        }
-        return current === pathKey ? null : current;
-      });
+      setHoveredPathKey(null);
     }, 180);
   };
 
@@ -709,6 +710,33 @@ function App() {
     flyoutActiveRef.current = false;
     clearHover();
   };
+
+  useEffect(() => {
+    if (!previewPathKey) {
+      return;
+    }
+
+    const handleWindowBlur = () => {
+      hidePreview();
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      const shell = tableShellRef.current;
+      if (shell && target && shell.contains(target)) {
+        return;
+      }
+      hidePreview();
+    };
+
+    window.addEventListener("blur", handleWindowBlur);
+    window.addEventListener("pointerdown", handlePointerDown, true);
+
+    return () => {
+      window.removeEventListener("blur", handleWindowBlur);
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [previewPathKey]);
 
   const activity = buildActivityState({
     summary,
@@ -812,7 +840,11 @@ function App() {
             {!fileCount ? (
               <EmptyBox title="未选择文件" description="拖放图像、视频或 PDF 文件以自动删除元数据。" />
             ) : (
-              <div className={`table-shell ${previewFile ? "is-flyout-open" : ""}`} ref={tableShellRef}>
+              <div
+                className={`table-shell ${previewFile ? "is-flyout-open" : ""}`}
+                ref={tableShellRef}
+                onMouseLeave={() => clearHover()}
+              >
                 <div className="table-head">
                   <span>选中的文件</span>
                   <span># 处理前</span>
@@ -837,7 +869,7 @@ function App() {
                         key={file.sourcePath}
                         className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
                         onMouseEnter={(event) => scheduleHover(pathKey, event.currentTarget)}
-                        onMouseLeave={() => clearHover(pathKey)}
+                        onMouseLeave={() => clearHover()}
                       >
                         <div className="queue-file">
                           <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
@@ -1071,12 +1103,18 @@ function MetadataPreviewFlyout(props: {
   beforeLoading: boolean;
   afterLoading: boolean;
 }) {
+  const fileTitle = getLeafName(props.file.relativePath || props.file.sourcePath);
+  const fileContext =
+    props.file.relativePath && props.file.relativePath !== fileTitle
+      ? props.file.relativePath
+      : props.file.sourcePath;
+
   return (
     <div className="preview-detail-panel">
       <div className="preview-panel-head">
         <div className="preview-panel-title">
-          <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 42)}</strong>
-          <span title={props.file.sourcePath}>{trimMiddle(props.file.sourcePath, 64)}</span>
+          <strong title={props.file.sourcePath}>{trimMiddle(fileTitle, 30)}</strong>
+          <span title={fileContext}>{trimMiddle(fileContext, 46)}</span>
         </div>
         <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
           {props.rowState ? getRowStatusDescriptor(props.rowState).label : "字段预览"}
@@ -1085,14 +1123,14 @@ function MetadataPreviewFlyout(props: {
 
       <div className="preview-card-grid">
         <MetadataColumn
-          title="处理前字段"
+          title="处理前"
           snapshot={props.beforeSnapshot}
           loading={props.beforeLoading}
           emptyText="正在读取字段摘要..."
         />
 
         <MetadataColumn
-          title="处理后字段"
+          title="处理后"
           snapshot={props.afterSnapshot}
           loading={props.afterLoading}
           emptyText={resolveAfterEmptyText(props.rowState)}
@@ -1128,7 +1166,6 @@ function MetadataColumn(props: {
                 title={`${field.group} · ${field.name}\n${field.valuePreview}`}
               >
                 <strong>{field.name}</strong>
-                <em>{field.group}</em>
                 <span>{field.valuePreview}</span>
               </div>
             ))}
@@ -1214,8 +1251,14 @@ function trimMiddle(value: string, maxLength: number): string {
   return `${value.slice(0, head)}...${value.slice(-tail)}`;
 }
 
+function getLeafName(path: string): string {
+  const normalized = path.split("\\").join("/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || path;
+}
+
 function getCompactPreviewFields(snapshot: MetadataPreviewSnapshot): MetadataFieldPreview[] {
-  return snapshot.fields.slice(0, 4);
+  return snapshot.fields.slice(0, 3);
 }
 
 function toMessage(error: unknown): string {

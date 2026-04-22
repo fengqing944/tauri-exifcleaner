@@ -142,6 +142,15 @@ struct CleanupFailure {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CleanupPreviewState {
+    source_path: String,
+    output_path: Option<String>,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CleanupSummary {
     total: usize,
     succeeded: usize,
@@ -149,6 +158,7 @@ struct CleanupSummary {
     cancelled: bool,
     output_dir: Option<String>,
     failures: Vec<CleanupFailure>,
+    preview_states: Vec<CleanupPreviewState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -613,6 +623,32 @@ fn build_queue_view(store: &QueueStore) -> QueueView {
     }
 }
 
+fn build_cleanup_preview_states(
+    tracked_preview_files: &[QueuedFile],
+    tracked_preview_states: &HashMap<String, CleanupPreviewState>,
+    cancelled: bool,
+) -> Vec<CleanupPreviewState> {
+    tracked_preview_files
+        .iter()
+        .map(|file| {
+            let key = dedupe_key(Path::new(&file.source_path));
+            tracked_preview_states
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| CleanupPreviewState {
+                    source_path: file.source_path.clone(),
+                    output_path: None,
+                    status: if cancelled {
+                        "cancelled".to_string()
+                    } else {
+                        "success".to_string()
+                    },
+                    error: None,
+                })
+        })
+        .collect()
+}
+
 fn build_metadata_snapshots(
     app: AppHandle,
     requests: Vec<MetadataSnapshotRequest>,
@@ -873,15 +909,25 @@ async fn run_cleanup(
     }
 
     let run_result = async {
-        let (planned_files, tracked_paths) = {
+        let (planned_files, tracked_preview_files, tracked_paths) = {
             let store = queue_state.inner.lock().unwrap();
+            let tracked_preview_files = store
+                .files
+                .iter()
+                .take(MAX_QUEUE_PREVIEW_FILES)
+                .cloned()
+                .collect::<Vec<_>>();
             let tracked_paths = store
                 .files
                 .iter()
                 .take(MAX_QUEUE_PREVIEW_FILES)
                 .map(|file| dedupe_key(Path::new(&file.source_path)))
                 .collect::<HashSet<_>>();
-            (plan_output_paths(&store.files, &options)?, tracked_paths)
+            (
+                plan_output_paths(&store.files, &options)?,
+                tracked_preview_files,
+                tracked_paths,
+            )
         };
 
         if planned_files.is_empty() {
@@ -892,6 +938,7 @@ async fn run_cleanup(
                 cancelled: false,
                 output_dir: options.output_dir.clone(),
                 failures: Vec::new(),
+                preview_states: Vec::new(),
             });
         }
 
@@ -930,6 +977,7 @@ async fn run_cleanup(
         let mut succeeded = 0_usize;
         let mut failed = 0_usize;
         let mut failures = Vec::new();
+        let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
         let emit_step = if total > 4_000 {
             48
@@ -966,7 +1014,17 @@ async fn run_cleanup(
                     }
                 }
                 WorkerEvent::Outcome(outcome) => {
-                    if tracked_paths.contains(&dedupe_key(Path::new(&outcome.source_path))) {
+                    let outcome_key = dedupe_key(Path::new(&outcome.source_path));
+                    if tracked_paths.contains(&outcome_key) {
+                        tracked_preview_states.insert(
+                            outcome_key,
+                            CleanupPreviewState {
+                                source_path: outcome.source_path.clone(),
+                                output_path: outcome.output_path.clone(),
+                                status: outcome.status.to_string(),
+                                error: outcome.error.clone(),
+                            },
+                        );
                         app.emit(
                             "cleanup-file",
                             CleanupProgressEvent {
@@ -1042,13 +1100,20 @@ async fn run_cleanup(
             return Err(error);
         }
 
+        let cancelled = cancel_flag.load(Ordering::Relaxed);
+
         Ok(CleanupSummary {
             total,
             succeeded,
             failed,
-            cancelled: cancel_flag.load(Ordering::Relaxed),
+            cancelled,
             output_dir: options.output_dir.clone(),
             failures,
+            preview_states: build_cleanup_preview_states(
+                &tracked_preview_files,
+                &tracked_preview_states,
+                cancelled,
+            ),
         })
     }
     .await;
@@ -1738,6 +1803,35 @@ mod tests {
 
         assert!(outcome.cancelled, "scan should report cancellation");
         assert!(receiver.try_recv().is_err(), "cancelled scan should not emit queued files");
+    }
+
+    #[test]
+    fn cleanup_preview_states_fill_missing_rows_from_final_summary() {
+        let tracked_preview_files = vec![
+            queued_file("C:/input/1.jpg", "1.jpg", "input", "C:/input"),
+            queued_file("C:/input/2.jpg", "2.jpg", "input", "C:/input"),
+        ];
+        let mut tracked_preview_states = HashMap::new();
+        tracked_preview_states.insert(
+            dedupe_key(Path::new("C:/input/1.jpg")),
+            CleanupPreviewState {
+                source_path: "C:/input/1.jpg".to_string(),
+                output_path: None,
+                status: "success".to_string(),
+                error: None,
+            },
+        );
+
+        let completed_states =
+            build_cleanup_preview_states(&tracked_preview_files, &tracked_preview_states, false);
+        assert_eq!(completed_states.len(), 2);
+        assert_eq!(completed_states[0].status, "success");
+        assert_eq!(completed_states[1].status, "success");
+
+        let cancelled_states =
+            build_cleanup_preview_states(&tracked_preview_files, &HashMap::new(), true);
+        assert_eq!(cancelled_states[0].status, "cancelled");
+        assert_eq!(cancelled_states[1].status, "cancelled");
     }
 
     #[test]

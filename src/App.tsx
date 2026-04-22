@@ -75,6 +75,12 @@ type CleanupSummary = {
     sourcePath: string;
     error: string;
   }>;
+  previewStates: Array<{
+    sourcePath: string;
+    outputPath: string | null;
+    status: CleanupStatus;
+    error: string | null;
+  }>;
 };
 
 type ProgressState = {
@@ -476,6 +482,88 @@ function App() {
   }, [afterSnapshots, fileStates, loadingSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
+    if (!summary || summary.cancelled || !previewFiles.length) {
+      return;
+    }
+
+    const requests = previewFiles
+      .map((file) => {
+        const pathKey = normalizePath(file.sourcePath);
+        const rowState = fileStates[pathKey];
+        if (
+          rowState?.status !== "success" ||
+          afterSnapshots[pathKey] ||
+          loadingSnapshots[`after:${pathKey}`]
+        ) {
+          return null;
+        }
+
+        return {
+          requestKey: pathKey,
+          filePath: rowState.outputPath || file.sourcePath,
+        };
+      })
+      .filter((request): request is MetadataSnapshotRequest => Boolean(request));
+
+    if (!requests.length) {
+      return;
+    }
+
+    let disposed = false;
+
+    startTransition(() => {
+      setLoadingSnapshots((current) => {
+        const next = { ...current };
+        for (const request of requests) {
+          next[`after:${request.requestKey}`] = true;
+        }
+        return next;
+      });
+    });
+
+    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
+      .then((responses) => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setAfterSnapshots((current) => {
+            const next = { ...current };
+            for (const response of responses) {
+              next[response.requestKey] = response.snapshot;
+            }
+            return next;
+          });
+        });
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setErrorMessage(toMessage(error));
+        }
+      })
+      .finally(() => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setLoadingSnapshots((current) => {
+            const next = { ...current };
+            for (const request of requests) {
+              delete next[`after:${request.requestKey}`];
+            }
+            return next;
+          });
+        });
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [afterSnapshots, fileStates, loadingSnapshots, previewFileKey, previewFiles, summary]);
+
+  useEffect(() => {
     if (!hoveredPathKey) {
       return;
     }
@@ -592,6 +680,7 @@ function App() {
       pendingProgressRef.current = null;
       setSummary(result);
       setRunFailures(result.failures.slice(0, 6));
+      setFileStates(buildFileStateMap(result.previewStates));
       setProgress({
         total: result.total,
         completed: result.succeeded + result.failed,
@@ -1237,6 +1326,24 @@ function getParentPath(path: string): string {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function buildFileStateMap(
+  previewStates: Array<{
+    sourcePath: string;
+    outputPath: string | null;
+    status: CleanupStatus;
+    error: string | null;
+  }>,
+): Record<string, FileRunState> {
+  return previewStates.reduce<Record<string, FileRunState>>((result, item) => {
+    result[normalizePath(item.sourcePath)] = {
+      status: item.status,
+      outputPath: item.outputPath,
+      error: item.error,
+    };
+    return result;
+  }, {});
 }
 
 function toMessage(error: unknown): string {

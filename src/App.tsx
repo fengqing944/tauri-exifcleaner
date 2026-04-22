@@ -1075,8 +1075,8 @@ function MetadataPreviewFlyout(props: {
     <div className="preview-detail-panel">
       <div className="preview-panel-head">
         <div className="preview-panel-title">
-          <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 52)}</strong>
-          <span title={props.file.sourcePath}>{props.file.sourcePath}</span>
+          <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 42)}</strong>
+          <span title={props.file.sourcePath}>{trimMiddle(props.file.sourcePath, 64)}</span>
         </div>
         <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
           {props.rowState ? getRowStatusDescriptor(props.rowState).label : "字段预览"}
@@ -1108,6 +1108,9 @@ function MetadataColumn(props: {
   loading: boolean;
   emptyText: string;
 }) {
+  const visibleFields = props.snapshot ? getCompactPreviewFields(props.snapshot) : [];
+  const hiddenCount = props.snapshot ? Math.max(0, props.snapshot.count - visibleFields.length) : 0;
+
   return (
     <section className="preview-column">
       <header>
@@ -1116,15 +1119,24 @@ function MetadataColumn(props: {
       </header>
 
       {props.snapshot ? (
-        props.snapshot.fields.length ? (
+        visibleFields.length ? (
           <div className="preview-fields">
-            {props.snapshot.fields.map((field) => (
-              <div key={`${field.group}:${field.name}`} className="preview-field">
-                <strong>{field.group} · {field.name}</strong>
+            {visibleFields.map((field) => (
+              <div
+                key={`${field.group}:${field.name}`}
+                className="preview-field"
+                title={`${field.group} · ${field.name}\n${field.valuePreview}`}
+              >
+                <strong>{field.name}</strong>
+                <em>{field.group}</em>
                 <span>{field.valuePreview}</span>
               </div>
             ))}
-            {props.snapshot.truncated ? <div className="preview-note">仅显示前几项字段。</div> : null}
+            {hiddenCount > 0 ? (
+              <div className="preview-note">另有 {hiddenCount} 项未展开。</div>
+            ) : props.snapshot.truncated ? (
+              <div className="preview-note">字段已做摘要裁剪。</div>
+            ) : null}
           </div>
         ) : (
           <div className="preview-empty">没有可展示的字段。</div>
@@ -1200,6 +1212,10 @@ function trimMiddle(value: string, maxLength: number): string {
   const head = Math.max(12, Math.floor(maxLength / 2) - 2);
   const tail = Math.max(10, Math.floor(maxLength / 2) - 4);
   return `${value.slice(0, head)}...${value.slice(-tail)}`;
+}
+
+function getCompactPreviewFields(snapshot: MetadataPreviewSnapshot): MetadataFieldPreview[] {
+  return snapshot.fields.slice(0, 4);
 }
 
 function toMessage(error: unknown): string {

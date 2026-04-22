@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
@@ -11,7 +12,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc;
@@ -28,6 +29,8 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 ];
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
+const MAX_METADATA_FIELD_PREVIEW: usize = 10;
+const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -164,6 +167,37 @@ struct ScanSummary {
     cancelled: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataSnapshotRequest {
+    request_key: String,
+    file_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataFieldPreview {
+    group: String,
+    name: String,
+    value_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataPreviewSnapshot {
+    count: usize,
+    fields: Vec<MetadataFieldPreview>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataSnapshotResponse {
+    request_key: String,
+    snapshot: MetadataPreviewSnapshot,
+    missing: bool,
+}
+
 #[derive(Debug, Clone)]
 struct PlannedCleanupFile {
     source_path: PathBuf,
@@ -199,7 +233,14 @@ struct FileCleanupOutcome {
     error: Option<String>,
 }
 
+#[derive(Debug)]
+struct FileCleanupStart {
+    source_path: String,
+    output_path: Option<String>,
+}
+
 enum WorkerEvent {
+    Started(FileCleanupStart),
     Outcome(FileCleanupOutcome),
     Fatal(String),
 }
@@ -365,6 +406,16 @@ fn clear_queue(
 
     *queue_state.inner.lock().unwrap() = QueueStore::default();
     Ok(())
+}
+
+#[tauri::command]
+async fn load_metadata_snapshots(
+    app: AppHandle,
+    requests: Vec<MetadataSnapshotRequest>,
+) -> Result<Vec<MetadataSnapshotResponse>, String> {
+    tauri::async_runtime::spawn_blocking(move || build_metadata_snapshots(app, requests))
+        .await
+        .map_err(|error| format!("元数据预览任务异常: {error}"))?
 }
 
 fn perform_scan_inputs(
@@ -563,6 +614,233 @@ fn build_queue_view(store: &QueueStore) -> QueueView {
     }
 }
 
+fn build_metadata_snapshots(
+    app: AppHandle,
+    requests: Vec<MetadataSnapshotRequest>,
+) -> Result<Vec<MetadataSnapshotResponse>, String> {
+    let exiftool_path = resolve_exiftool(&app)?;
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut deduped_paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    for request in &requests {
+        let file_path = PathBuf::from(&request.file_path);
+        if !file_path.is_file() {
+            continue;
+        }
+
+        let key = dedupe_key(&file_path);
+        if seen.insert(key) {
+            deduped_paths.push(file_path);
+        }
+    }
+
+    let snapshot_map = read_metadata_snapshot_map(&exiftool_path, &deduped_paths)?;
+    let mut results = Vec::with_capacity(requests.len());
+
+    for request in requests {
+        let path = PathBuf::from(&request.file_path);
+        let key = dedupe_key(&path);
+        let snapshot = snapshot_map
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(empty_metadata_snapshot);
+
+        results.push(MetadataSnapshotResponse {
+            request_key: request.request_key,
+            snapshot,
+            missing: !path.is_file(),
+        });
+    }
+
+    Ok(results)
+}
+
+fn read_metadata_snapshot_map(
+    exiftool_path: &Path,
+    input_paths: &[PathBuf],
+) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
+    if input_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let argfile_path = write_utf8_argfile("metadata-preview", input_paths.iter().map(|path| {
+        path.to_string_lossy().to_string()
+    }))?;
+    let mut command = Command::new(exiftool_path);
+    command
+        .arg("-charset")
+        .arg("filename=UTF8")
+        .arg("-j")
+        .arg("-G1")
+        .arg("-s")
+        .arg("-a")
+        .arg("-u")
+        .arg("-m")
+        .arg("-ignoreMinorErrors")
+        .arg("-@")
+        .arg(&argfile_path);
+    configure_hidden_process(&mut command);
+
+    if let Some(parent) = exiftool_path.parent() {
+        command.current_dir(parent);
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| format!("无法读取元数据预览: {error}"));
+    let _ = fs::remove_file(&argfile_path);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "ExifTool 元数据预览失败。".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
+        .map_err(|error| format!("无法解析元数据预览结果: {error}"))?;
+    let mut snapshots = HashMap::new();
+
+    for record in records {
+        let Some(source_file) = record
+            .get("SourceFile")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        let mut fields = record
+            .into_iter()
+            .filter_map(|(key, value)| map_metadata_field(&key, &value))
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| {
+            left.group
+                .cmp(&right.group)
+                .then(left.name.cmp(&right.name))
+        });
+
+        snapshots.insert(
+            dedupe_key(Path::new(&source_file)),
+            build_metadata_snapshot(&fields),
+        );
+    }
+
+    Ok(snapshots)
+}
+
+fn map_metadata_field(key: &str, value: &Value) -> Option<MetadataFieldPreview> {
+    if key == "SourceFile" {
+        return None;
+    }
+
+    let (group, name) = split_metadata_key(key);
+    if should_skip_metadata_group(group) {
+        return None;
+    }
+
+    Some(MetadataFieldPreview {
+        group: group.to_string(),
+        name: name.to_string(),
+        value_preview: summarize_metadata_value(value),
+    })
+}
+
+fn split_metadata_key(key: &str) -> (&str, &str) {
+    key.split_once(':').unwrap_or(("General", key))
+}
+
+fn should_skip_metadata_group(group: &str) -> bool {
+    METADATA_GROUPS_TO_SKIP
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(group))
+}
+
+fn summarize_metadata_value(value: &Value) -> String {
+    let summary = match value {
+        Value::Null => "空值".to_string(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::String(text) => text.trim().to_string(),
+        Value::Array(items) => items
+            .iter()
+            .take(3)
+            .map(summarize_metadata_value)
+            .collect::<Vec<_>>()
+            .join(" / "),
+        Value::Object(map) => format!("{} 个字段", map.len()),
+    };
+
+    truncate_text(&summary, 96)
+}
+
+fn build_metadata_snapshot(fields: &[MetadataFieldPreview]) -> MetadataPreviewSnapshot {
+    MetadataPreviewSnapshot {
+        count: fields.len(),
+        fields: fields
+            .iter()
+            .take(MAX_METADATA_FIELD_PREVIEW)
+            .cloned()
+            .collect(),
+        truncated: fields.len() > MAX_METADATA_FIELD_PREVIEW,
+    }
+}
+
+fn empty_metadata_snapshot() -> MetadataPreviewSnapshot {
+    MetadataPreviewSnapshot {
+        count: 0,
+        fields: Vec::new(),
+        truncated: false,
+    }
+}
+
+fn truncate_text(value: &str, max_len: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "空值".to_string();
+    }
+
+    if trimmed.chars().count() <= max_len {
+        return trimmed.to_string();
+    }
+
+    let shortened = trimmed
+        .chars()
+        .take(max_len.saturating_sub(1))
+        .collect::<String>();
+    format!("{shortened}...")
+}
+
+fn write_utf8_argfile<I>(prefix: &str, lines: I) -> Result<PathBuf, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let path = std::env::temp_dir().join(format!(
+        "metasweep-{prefix}-{}-{timestamp}.args",
+        std::process::id()
+    ));
+    let mut content = String::new();
+
+    for line in lines {
+        content.push_str(&line);
+        content.push('\n');
+    }
+
+    fs::write(&path, content).map_err(|error| format!("无法创建 ExifTool 参数文件: {error}"))?;
+    Ok(path)
+}
+
 #[tauri::command]
 fn cancel_cleanup(state: State<'_, CleanupState>) -> bool {
     if let Some(cancel_flag) = state.cancel_flag.lock().unwrap().as_ref() {
@@ -600,9 +878,15 @@ async fn run_cleanup(
     }
 
     let run_result = async {
-        let planned_files = {
+        let (planned_files, tracked_paths) = {
             let store = queue_state.inner.lock().unwrap();
-            plan_output_paths(&store.files, &options)?
+            let tracked_paths = store
+                .files
+                .iter()
+                .take(MAX_QUEUE_PREVIEW_FILES)
+                .map(|file| dedupe_key(Path::new(&file.source_path)))
+                .collect::<HashSet<_>>();
+            (plan_output_paths(&store.files, &options)?, tracked_paths)
         };
 
         if planned_files.is_empty() {
@@ -668,7 +952,42 @@ async fn run_cleanup(
 
         while let Some(event) = receiver.recv().await {
             match event {
+                WorkerEvent::Started(started) => {
+                    if tracked_paths.contains(&dedupe_key(Path::new(&started.source_path))) {
+                        app.emit(
+                            "cleanup-file",
+                            CleanupProgressEvent {
+                                total,
+                                completed,
+                                succeeded,
+                                failed,
+                                current_path: started.source_path,
+                                output_path: started.output_path,
+                                status: "running".to_string(),
+                                error: None,
+                            },
+                        )
+                        .map_err(|error| format!("无法发送行状态事件: {error}"))?;
+                    }
+                }
                 WorkerEvent::Outcome(outcome) => {
+                    if tracked_paths.contains(&dedupe_key(Path::new(&outcome.source_path))) {
+                        app.emit(
+                            "cleanup-file",
+                            CleanupProgressEvent {
+                                total,
+                                completed: completed + 1,
+                                succeeded: succeeded + usize::from(outcome.status == "success"),
+                                failed: failed + usize::from(outcome.status == "failed"),
+                                current_path: outcome.source_path.clone(),
+                                output_path: outcome.output_path.clone(),
+                                status: outcome.status.to_string(),
+                                error: outcome.error.clone(),
+                            },
+                        )
+                        .map_err(|error| format!("无法发送行状态事件: {error}"))?;
+                    }
+
                     completed += 1;
                     match outcome.status {
                         "success" => succeeded += 1,
@@ -785,6 +1104,19 @@ fn run_cleanup_worker(
             break;
         };
 
+        if sender
+            .send(WorkerEvent::Started(FileCleanupStart {
+                source_path: planned_file.source_path.to_string_lossy().to_string(),
+                output_path: planned_file
+                    .output_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
+            }))
+            .is_err()
+        {
+            break;
+        }
+
         let outcome = match execute_cleanup_file(&planned_file, &options, &mut session) {
             Ok(outcome) => outcome,
             Err(error) => FileCleanupOutcome {
@@ -886,6 +1218,8 @@ impl ExifToolSession {
     fn new(exiftool_path: &Path) -> Result<Self, String> {
         let mut command = Command::new(exiftool_path);
         command
+            .arg("-charset")
+            .arg("filename=UTF8")
             .arg("-stay_open")
             .arg("True")
             .arg("-@")
@@ -1231,7 +1565,7 @@ fn sanitize_segment(input: &str) -> String {
 }
 
 fn dedupe_key(path: &Path) -> String {
-    let key = path.to_string_lossy().to_string();
+    let key = path.to_string_lossy().replace('\\', "/");
     if cfg!(target_os = "windows") {
         key.to_lowercase()
     } else {
@@ -1276,6 +1610,7 @@ pub fn run() {
             scan_inputs,
             cancel_scan,
             clear_queue,
+            load_metadata_snapshots,
             run_cleanup,
             cancel_cleanup
         ])
@@ -1438,6 +1773,59 @@ mod tests {
 
         assert!(result.is_ok(), "expected png clean to succeed, got {result:?}");
         assert!(working_copy.exists(), "cleaned file should still exist");
+    }
+
+    #[test]
+    fn persistent_session_supports_unicode_file_paths() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join("metasweep-tests").join("中文 路径");
+        fs::create_dir_all(&temp_dir).expect("create unicode temp dir");
+
+        let working_copy = temp_dir.join("示例 图像.png");
+        fs::copy(&source, &working_copy).expect("copy unicode sample png");
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+
+        assert!(
+            result.is_ok(),
+            "expected unicode path clean to succeed, got {result:?}"
+        );
+        assert!(working_copy.exists(), "cleaned unicode file should still exist");
+    }
+
+    #[test]
+    fn metadata_snapshot_reader_supports_unicode_file_paths() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join("metasweep-tests").join("元数据 预览");
+        fs::create_dir_all(&temp_dir).expect("create unicode preview dir");
+
+        let working_copy = temp_dir.join("预览 文件.png");
+        fs::copy(&source, &working_copy).expect("copy preview png");
+
+        let snapshot_map =
+            read_metadata_snapshot_map(&bundled_exiftool(), &[working_copy.clone()]).expect("read metadata");
+
+        assert!(
+            snapshot_map.contains_key(&dedupe_key(&working_copy)),
+            "expected snapshot map to contain unicode path key"
+        );
     }
 
     #[test]

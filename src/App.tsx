@@ -2,6 +2,7 @@ import {
   startTransition,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -12,6 +13,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 
 type OutputMode = "mirror" | "overwrite";
+type CleanupStatus = "running" | "success" | "failed" | "cancelled";
+type BadgeTone = "success" | "warning" | "info" | "neutral" | "danger";
 
 type RuntimeInfo = {
   defaultOutputDir: string;
@@ -58,7 +61,7 @@ type CleanupProgressEvent = {
   failed: number;
   currentPath: string;
   outputPath: string | null;
-  status: "success" | "failed" | "cancelled";
+  status: CleanupStatus;
   error: string | null;
 };
 
@@ -81,6 +84,35 @@ type ProgressState = {
   failed: number;
   currentPath: string;
   currentStatus: string;
+};
+
+type MetadataFieldPreview = {
+  group: string;
+  name: string;
+  valuePreview: string;
+};
+
+type MetadataPreviewSnapshot = {
+  count: number;
+  fields: MetadataFieldPreview[];
+  truncated: boolean;
+};
+
+type MetadataSnapshotRequest = {
+  requestKey: string;
+  filePath: string;
+};
+
+type MetadataSnapshotResponse = {
+  requestKey: string;
+  snapshot: MetadataPreviewSnapshot;
+  missing: boolean;
+};
+
+type FileRunState = {
+  status: CleanupStatus;
+  outputPath: string | null;
+  error: string | null;
 };
 
 const EMPTY_PROGRESS: ProgressState = {
@@ -106,9 +138,17 @@ function App() {
   const [progress, setProgress] = useState<ProgressState>(EMPTY_PROGRESS);
   const [runFailures, setRunFailures] = useState<Array<{ sourcePath: string; error: string }>>([]);
   const [summary, setSummary] = useState<CleanupSummary | null>(null);
+  const [fileStates, setFileStates] = useState<Record<string, FileRunState>>({});
+  const [beforeSnapshots, setBeforeSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>(
+    {},
+  );
+  const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>({});
+  const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
+  const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
+  const hoverTimeoutRef = useRef<number | null>(null);
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -120,14 +160,42 @@ function App() {
   const ignoredCount = queueView?.ignoredCount ?? 0;
   const moreFiles = Math.max(0, fileCount - previewFiles.length);
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
+  const previewFileKey = previewFiles.map((file) => normalizePath(file.sourcePath)).join("|");
   const canStart =
     fileCount > 0 &&
     !isScanning &&
     !isRunning &&
     (outputMode === "overwrite" || outputDir.trim().length > 0);
 
+  const runningPreviewPathKey = useMemo(
+    () =>
+      previewFiles
+        .map((file) => normalizePath(file.sourcePath))
+        .find((pathKey) => fileStates[pathKey]?.status === "running") ?? "",
+    [fileStates, previewFiles],
+  );
+
+  const highlightedPathKey = runningPreviewPathKey || activePathKey;
+  const hoveredFile =
+    previewFiles.find((file) => normalizePath(file.sourcePath) === hoveredPathKey) ?? null;
+
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
+  });
+
+  const handleCleanupFileEvent = useEffectEvent((payload: CleanupProgressEvent) => {
+    const pathKey = normalizePath(payload.currentPath);
+
+    startTransition(() => {
+      setFileStates((current) => ({
+        ...current,
+        [pathKey]: {
+          status: payload.status,
+          outputPath: payload.outputPath,
+          error: payload.error,
+        },
+      }));
+    });
   });
 
   const handleScanProgressEvent = useEffectEvent((payload: ScanProgressEvent) => {
@@ -137,6 +205,15 @@ function App() {
       setSummary(null);
       setRunFailures([]);
     });
+  });
+
+  const resetRunState = useEffectEvent(() => {
+    pendingProgressRef.current = null;
+    setSummary(null);
+    setRunFailures([]);
+    setAfterSnapshots({});
+    setFileStates({});
+    setHoveredPathKey(null);
   });
 
   const scanInputPaths = useEffectEvent(async (paths: string[]) => {
@@ -157,6 +234,7 @@ function App() {
 
     setIsScanning(true);
     setErrorMessage(null);
+    resetRunState();
 
     try {
       const result = await invoke<ScanSummary>("scan_inputs", {
@@ -166,8 +244,6 @@ function App() {
       startTransition(() => {
         setQueueView(result.view);
         setProgress(createProgressState(result.view.supportedCount));
-        setSummary(null);
-        setRunFailures([]);
       });
     } catch (error) {
       setErrorMessage(toMessage(error));
@@ -225,6 +301,9 @@ function App() {
     const cleanupProgressListener = listen<CleanupProgressEvent>("cleanup-progress", (event) =>
       handleProgressEvent(event.payload),
     );
+    const cleanupFileListener = listen<CleanupProgressEvent>("cleanup-file", (event) =>
+      handleCleanupFileEvent(event.payload),
+    );
     const scanProgressListener = listen<ScanProgressEvent>("scan-progress", (event) =>
       handleScanProgressEvent(event.payload),
     );
@@ -241,14 +320,166 @@ function App() {
 
     return () => {
       disposed = true;
+      if (hoverTimeoutRef.current) {
+        window.clearTimeout(hoverTimeoutRef.current);
+      }
       void cleanupProgressListener.then((unlisten) => unlisten());
+      void cleanupFileListener.then((unlisten) => unlisten());
       void scanProgressListener.then((unlisten) => unlisten());
       unlistenWindowDrop?.();
     };
-  }, [handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
+  }, [handleCleanupFileEvent, handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
+
+  useEffect(() => {
+    if (!previewFiles.length) {
+      return;
+    }
+
+    const requests = previewFiles
+      .filter((file) => !beforeSnapshots[normalizePath(file.sourcePath)])
+      .map((file) => ({
+        requestKey: normalizePath(file.sourcePath),
+        filePath: file.sourcePath,
+      }));
+
+    if (!requests.length) {
+      return;
+    }
+
+    let disposed = false;
+    const loadingKeys = requests.map((request) => `before:${request.requestKey}`);
+
+    startTransition(() => {
+      setLoadingSnapshots((current) => {
+        const next = { ...current };
+        for (const key of loadingKeys) {
+          next[key] = true;
+        }
+        return next;
+      });
+    });
+
+    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
+      .then((responses) => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setBeforeSnapshots((current) => {
+            const next = { ...current };
+            for (const response of responses) {
+              next[response.requestKey] = response.snapshot;
+            }
+            return next;
+          });
+        });
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setErrorMessage(toMessage(error));
+        }
+      })
+      .finally(() => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setLoadingSnapshots((current) => {
+            const next = { ...current };
+            for (const key of loadingKeys) {
+              delete next[key];
+            }
+            return next;
+          });
+        });
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [beforeSnapshots, previewFileKey, previewFiles]);
+
+  useEffect(() => {
+    if (!hoveredFile) {
+      return;
+    }
+
+    const pathKey = normalizePath(hoveredFile.sourcePath);
+    const rowState = fileStates[pathKey];
+    const afterLoadingKey = `after:${pathKey}`;
+
+    if (
+      rowState?.status !== "success" ||
+      afterSnapshots[pathKey] ||
+      loadingSnapshots[afterLoadingKey]
+    ) {
+      return;
+    }
+
+    let disposed = false;
+    const targetPath = rowState.outputPath || hoveredFile.sourcePath;
+    const requests: MetadataSnapshotRequest[] = [
+      {
+        requestKey: pathKey,
+        filePath: targetPath,
+      },
+    ];
+
+    startTransition(() => {
+      setLoadingSnapshots((current) => ({
+        ...current,
+        [afterLoadingKey]: true,
+      }));
+    });
+
+    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
+      .then((responses) => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setAfterSnapshots((current) => {
+            const next = { ...current };
+            for (const response of responses) {
+              next[response.requestKey] = response.snapshot;
+            }
+            return next;
+          });
+        });
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setErrorMessage(toMessage(error));
+        }
+      })
+      .finally(() => {
+        if (disposed) {
+          return;
+        }
+
+        startTransition(() => {
+          setLoadingSnapshots((current) => {
+            const next = { ...current };
+            delete next[afterLoadingKey];
+            return next;
+          });
+        });
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [afterSnapshots, fileStates, hoveredFile, loadingSnapshots]);
 
   useEffect(() => {
     if (!isRunning) {
+      if (summary) {
+        return;
+      }
+
       const payload = pendingProgressRef.current;
       if (payload) {
         pendingProgressRef.current = null;
@@ -296,7 +527,7 @@ function App() {
     }, 220);
 
     return () => window.clearInterval(timer);
-  }, [isRunning]);
+  }, [isRunning, summary]);
 
   const addFiles = async () => {
     const selection = await open({
@@ -339,8 +570,11 @@ function App() {
 
     setIsRunning(true);
     setErrorMessage(null);
-    setSummary(null);
     setRunFailures([]);
+    setSummary(null);
+    setFileStates({});
+    setAfterSnapshots({});
+    setHoveredPathKey(null);
     pendingProgressRef.current = null;
     setProgress(createProgressState(fileCount));
 
@@ -354,16 +588,17 @@ function App() {
         },
       });
 
+      pendingProgressRef.current = null;
       setSummary(result);
       setRunFailures(result.failures.slice(0, 6));
-      setProgress((current) => ({
-        ...current,
+      setProgress({
         total: result.total,
         completed: result.succeeded + result.failed,
         succeeded: result.succeeded,
         failed: result.failed,
+        currentPath: "",
         currentStatus: result.cancelled ? "cancelled" : "done",
-      }));
+      });
     } catch (error) {
       setErrorMessage(toMessage(error));
     } finally {
@@ -395,10 +630,42 @@ function App() {
       setRunFailures([]);
       setProgress(EMPTY_PROGRESS);
       setErrorMessage(null);
+      setFileStates({});
+      setBeforeSnapshots({});
+      setAfterSnapshots({});
+      setLoadingSnapshots({});
+      setHoveredPathKey(null);
     } catch (error) {
       setErrorMessage(toMessage(error));
     }
   };
+
+  const scheduleHover = (pathKey: string) => {
+    if (hoverTimeoutRef.current) {
+      window.clearTimeout(hoverTimeoutRef.current);
+    }
+
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      setHoveredPathKey(pathKey);
+    }, 120);
+  };
+
+  const clearHover = (pathKey: string) => {
+    if (hoverTimeoutRef.current) {
+      window.clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+
+    setHoveredPathKey((current) => (current === pathKey ? null : current));
+  };
+
+  const activity = buildActivityState({
+    summary,
+    isRunning,
+    isScanning,
+    fileCount,
+    progress,
+  });
 
   return (
     <main className="app-shell">
@@ -420,45 +687,63 @@ function App() {
       <section className="workspace">
         <section className="content">
           <Panel
-            title="导入与预览"
-            subtitle="拖拽区和预览区合并在一起。导入后会在这里直接显示当前队列和当前清理位置。"
+            title="工作区"
+            subtitle="导入、预览和处理状态都收在一个区域里。悬停文件行可以查看处理前和处理后的字段摘要。"
             aside={
               isScanning ? (
                 <StatusBadge tone="info" label="扫描中" />
               ) : isRunning ? (
                 <StatusBadge tone="info" label="处理中" />
+              ) : summary ? (
+                <StatusBadge tone={summary.cancelled ? "warning" : "success"} label={summary.cancelled ? "已取消" : "已完成"} />
               ) : (
                 <StatusBadge tone={dropActive ? "info" : "neutral"} label={dropActive ? "释放导入" : "待命"} />
               )
             }
           >
-            <button
-              className={`dropzone workbench-dropzone ${dropActive ? "active" : ""}`}
-              type="button"
-              disabled={isBusy}
-              onClick={addFiles}
-            >
-              <strong>拖放图像、视频或 PDF 文件</strong>
-              <span>支持多文件和多文件夹。导入后会在这个区域直接显示预览列表，并标出当前清理到哪里。</span>
-            </button>
+            <div className="import-strip">
+              <button
+                className={`dropzone compact-dropzone ${dropActive ? "active" : ""}`}
+                type="button"
+                disabled={isBusy}
+                onClick={addFiles}
+              >
+                <strong>{fileCount ? "继续添加文件或文件夹" : "拖入文件或点击导入"}</strong>
+                <span>支持多文件、多文件夹和递归扫描。</span>
+              </button>
 
-            <div className="button-row">
-              <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
-                添加文件
-              </button>
-              <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
-                添加文件夹
-              </button>
-              <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
-                清空
-              </button>
+              <div className="import-actions">
+                <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
+                  添加文件
+                </button>
+                <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
+                  添加文件夹
+                </button>
+                <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
+                  清空
+                </button>
+              </div>
             </div>
 
-            <div className="metrics-grid">
-              <MetricCard label="输入根" value={String(rootCount)} />
-              <MetricCard label="候选文件" value={String(fileCount)} />
-              <MetricCard label="总大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
-              <MetricCard label="忽略项" value={String(ignoredCount)} />
+            <div className="summary-strip">
+              <StatChip label="输入根" value={String(rootCount)} />
+              <StatChip label="候选文件" value={String(fileCount)} />
+              <StatChip label="总大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
+              <StatChip label="忽略项" value={String(ignoredCount)} />
+            </div>
+
+            <div className="activity-strip">
+              <div className="activity-main">
+                <span className="activity-label">{activity.label}</span>
+                <strong title={activity.title}>{trimMiddle(activity.title, 88)}</strong>
+              </div>
+              <div className="activity-stats">
+                <span>
+                  {progress.completed}/{progress.total || fileCount}
+                </span>
+                <span>{progressPercent}%</span>
+                <span>{progress.currentStatus}</span>
+              </div>
             </div>
 
             {ignoredCount > 0 ? (
@@ -468,61 +753,79 @@ function App() {
               </div>
             ) : null}
 
-            <div className="activity-banner">
-              <span className="activity-label">
-                {isRunning ? "当前正在清理" : fileCount ? "当前队列" : "等待导入"}
-              </span>
-              <strong title={progress.currentPath}>
-                {isRunning
-                  ? trimMiddle(progress.currentPath || "准备处理下一项", 88)
-                  : fileCount
-                    ? `已加入 ${fileCount} 个文件，等待执行清理`
-                    : "把文件或文件夹拖进来，这里会直接显示预览列表和当前处理位置"}
-              </strong>
-              <div className="activity-meta">
-                <span>
-                  {progress.completed}/{progress.total || fileCount}
-                </span>
-                <span>{progressPercent}%</span>
-                <span>{progress.currentStatus}</span>
-              </div>
-            </div>
-
             {!fileCount ? (
               <EmptyBox title="未选择文件" description="拖放图像、视频或 PDF 文件以自动删除元数据。" />
             ) : (
-              <>
-                <div className="preview-list">
+              <div className="table-shell">
+                <div className="table-head">
+                  <span>选中的文件</span>
+                  <span># 处理前</span>
+                  <span># 处理后</span>
+                  <span>状态</span>
+                </div>
+
+                <div className="table-body">
                   {previewFiles.map((file) => {
-                    const isActive = activePathKey === normalizePath(file.sourcePath);
+                    const pathKey = normalizePath(file.sourcePath);
+                    const rowState = fileStates[pathKey];
+                    const beforeSnapshot = beforeSnapshots[pathKey];
+                    const afterSnapshot = afterSnapshots[pathKey];
+                    const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
+                    const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
+                    const isHovered = hoveredPathKey === pathKey;
+                    const isActive = highlightedPathKey === pathKey && isRunning;
+                    const rowStatus = getRowStatusDescriptor(rowState);
 
                     return (
-                      <div key={file.sourcePath} className={`preview-row ${isActive ? "is-active" : ""}`}>
-                        <div className="preview-file">
-                          <strong title={file.relativePath}>{trimMiddle(file.relativePath, 46)}</strong>
-                          <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 72)}</span>
+                      <div
+                        key={file.sourcePath}
+                        className={`queue-row ${isActive ? "is-active" : ""} ${isHovered ? "is-hovered" : ""}`}
+                        onMouseEnter={() => scheduleHover(pathKey)}
+                        onMouseLeave={() => clearHover(pathKey)}
+                      >
+                        <div className="queue-file">
+                          <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
+                          <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
                         </div>
-                        <span className="preview-meta">{trimMiddle(file.rootLabel, 24)}</span>
-                        <span className="preview-meta">{formatBytes(file.sizeBytes)}</span>
-                        <span className={`preview-status ${isActive ? "is-active" : ""}`}>
-                          {isActive ? "正在处理" : isRunning ? "队列中" : "待处理"}
+                        <span className="queue-count">
+                          {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "…" : "…"}
                         </span>
+                        <span className="queue-count">
+                          {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
+                        </span>
+                        <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
+
+                        {isHovered ? (
+                          <MetadataHoverCard
+                            file={file}
+                            beforeSnapshot={beforeSnapshot}
+                            afterSnapshot={afterSnapshot}
+                            rowState={rowState}
+                            beforeLoading={beforeLoading}
+                            afterLoading={afterLoading}
+                          />
+                        ) : null}
                       </div>
                     );
                   })}
-
-                  {moreFiles > 0 ? <div className="footnote">还有 {moreFiles} 个文件未展开显示。</div> : null}
                 </div>
-              </>
+
+                {moreFiles > 0 ? <div className="footnote">还有 {moreFiles} 个文件未展开显示。</div> : null}
+              </div>
             )}
           </Panel>
         </section>
 
         <aside className="sidebar">
           <Panel
-            title="进度"
-            subtitle="清理过程中会持续显示当前处理到的文件。"
-            aside={<StatusBadge tone={isRunning ? "info" : "neutral"} label={isRunning ? "处理中" : "空闲"} />}
+            title="任务"
+            subtitle="这里显示总进度、最近结果和最近失败项。"
+            aside={
+              <StatusBadge
+                tone={isRunning ? "info" : summary ? (summary.cancelled ? "warning" : "success") : "neutral"}
+                label={isRunning ? "处理中" : summary ? (summary.cancelled ? "已取消" : "已完成") : "空闲"}
+              />
+            }
           >
             <div className="progress-panel">
               <div className="progress-head">
@@ -539,9 +842,6 @@ function App() {
                 <span>失败 {progress.failed}</span>
                 <span>{progress.currentStatus}</span>
               </div>
-              <div className="current-path" title={progress.currentPath}>
-                {progress.currentPath ? trimMiddle(progress.currentPath, 68) : "尚未开始处理"}
-              </div>
             </div>
 
             {summary ? (
@@ -550,23 +850,25 @@ function App() {
                   ? `任务已取消，已完成 ${summary.succeeded + summary.failed}/${summary.total} 项。`
                   : `任务完成，成功 ${summary.succeeded} 项，失败 ${summary.failed} 项。`}
               </div>
-            ) : null}
+            ) : (
+              <div className="message neutral">开始清理后，这里会保留最近一次任务结果。</div>
+            )}
 
             {runFailures.length ? (
               <div className="failure-list">
                 {runFailures.map((failure) => (
                   <div key={failure.sourcePath} className="failure-row">
-                    <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 48)}</strong>
+                    <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
                     <span>{failure.error}</span>
                   </div>
                 ))}
               </div>
             ) : (
-              <EmptyBox title="没有错误项" description="这里只保留最近失败项，不再维护整块活动流。" />
+              <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
             )}
           </Panel>
 
-          <Panel title="设置" subtitle="默认并发降到更稳的级别，优先保证程序响应。">
+          <Panel title="设置" subtitle="界面收敛成更轻的工具面板，操作仍然都在这里。">
             <div className="mode-row">
               <button
                 type="button"
@@ -629,7 +931,7 @@ function App() {
               </div>
             </label>
 
-            <div className="button-row button-row-actions">
+            <div className="button-row actions-row">
               <button
                 className="button button-primary"
                 type="button"
@@ -676,13 +978,13 @@ function Panel(props: {
   );
 }
 
-function StatusBadge(props: { tone: "success" | "warning" | "info" | "neutral"; label: string }) {
+function StatusBadge(props: { tone: BadgeTone; label: string }) {
   return <span className={`badge ${props.tone}`}>{props.label}</span>;
 }
 
-function MetricCard(props: { label: string; value: string }) {
+function StatChip(props: { label: string; value: string }) {
   return (
-    <div className="metric-card">
+    <div className="stat-chip">
       <span>{props.label}</span>
       <strong>{props.value}</strong>
     </div>
@@ -695,6 +997,74 @@ function EmptyBox(props: { title: string; description: string }) {
       <strong>{props.title}</strong>
       <span>{props.description}</span>
     </div>
+  );
+}
+
+function MetadataHoverCard(props: {
+  file: QueuedFile;
+  beforeSnapshot?: MetadataPreviewSnapshot;
+  afterSnapshot?: MetadataPreviewSnapshot;
+  rowState?: FileRunState;
+  beforeLoading: boolean;
+  afterLoading: boolean;
+}) {
+  return (
+    <div className="hover-card">
+      <div className="hover-card-head">
+        <strong title={props.file.relativePath}>{trimMiddle(props.file.relativePath, 44)}</strong>
+        <span>{props.rowState ? getRowStatusDescriptor(props.rowState).label : "待处理"}</span>
+      </div>
+
+      <div className="hover-card-grid">
+        <MetadataColumn
+          title="处理前字段"
+          snapshot={props.beforeSnapshot}
+          loading={props.beforeLoading}
+          emptyText="正在读取字段摘要..."
+        />
+
+        <MetadataColumn
+          title="处理后字段"
+          snapshot={props.afterSnapshot}
+          loading={props.afterLoading}
+          emptyText={resolveAfterEmptyText(props.rowState)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MetadataColumn(props: {
+  title: string;
+  snapshot?: MetadataPreviewSnapshot;
+  loading: boolean;
+  emptyText: string;
+}) {
+  return (
+    <section className="hover-column">
+      <header>
+        <strong>{props.title}</strong>
+        <span>{props.snapshot ? `${props.snapshot.count} 项` : props.loading ? "读取中" : "暂无"}</span>
+      </header>
+
+      {props.snapshot ? (
+        props.snapshot.fields.length ? (
+          <div className="hover-fields">
+            {props.snapshot.fields.map((field) => (
+              <div key={`${field.group}:${field.name}`} className="hover-field">
+                <strong>{field.name}</strong>
+                <span>{field.valuePreview}</span>
+              </div>
+            ))}
+            {props.snapshot.truncated ? <div className="hover-note">仅显示前几项字段。</div> : null}
+          </div>
+        ) : (
+          <div className="hover-empty">没有可展示的字段。</div>
+        )
+      ) : (
+        <div className="hover-empty">{props.loading ? "正在读取字段..." : props.emptyText}</div>
+      )}
+    </section>
   );
 }
 
@@ -740,7 +1110,7 @@ function createProgressState(total: number): ProgressState {
 }
 
 function normalizePath(path: string): string {
-  return path.toLowerCase();
+  return path.split("\\").join("/").toLowerCase();
 }
 
 function formatBytes(bytes: number): string {
@@ -772,6 +1142,103 @@ function toMessage(error: unknown): string {
     return error.message;
   }
   return "发生了未知错误。";
+}
+
+function getRowStatusDescriptor(rowState?: FileRunState): { label: string; tone: BadgeTone } {
+  switch (rowState?.status) {
+    case "running":
+      return { label: "处理中", tone: "info" };
+    case "success":
+      return { label: "已清理", tone: "success" };
+    case "failed":
+      return { label: "失败", tone: "danger" };
+    case "cancelled":
+      return { label: "已取消", tone: "warning" };
+    default:
+      return { label: "待处理", tone: "neutral" };
+  }
+}
+
+function resolveAfterCountLabel(
+  snapshot: MetadataPreviewSnapshot | undefined,
+  rowState: FileRunState | undefined,
+  loading: boolean,
+): string {
+  if (snapshot) {
+    return String(snapshot.count);
+  }
+  if (loading) {
+    return "…";
+  }
+  if (rowState?.status === "success") {
+    return "0";
+  }
+  if (rowState?.status === "running") {
+    return "…";
+  }
+  return "—";
+}
+
+function resolveAfterEmptyText(rowState?: FileRunState): string {
+  if (!rowState) {
+    return "清理完成后可查看处理后的字段。";
+  }
+  if (rowState.status === "running") {
+    return "正在处理当前文件...";
+  }
+  if (rowState.status === "failed") {
+    return rowState.error || "当前文件处理失败，未生成处理后结果。";
+  }
+  if (rowState.status === "success") {
+    return "没有可展示的处理后字段。";
+  }
+  if (rowState.status === "cancelled") {
+    return "任务已取消，处理后结果不可用。";
+  }
+  return "清理完成后可查看处理后的字段。";
+}
+
+function buildActivityState(input: {
+  summary: CleanupSummary | null;
+  isRunning: boolean;
+  isScanning: boolean;
+  fileCount: number;
+  progress: ProgressState;
+}) {
+  if (input.summary) {
+    return {
+      label: input.summary.cancelled ? "任务已取消" : "任务已完成",
+      title: input.summary.cancelled
+        ? `已完成 ${input.summary.succeeded + input.summary.failed}/${input.summary.total} 项`
+        : `成功 ${input.summary.succeeded} 项，失败 ${input.summary.failed} 项`,
+    };
+  }
+
+  if (input.isRunning) {
+    return {
+      label: "当前正在清理",
+      title: input.progress.currentPath || "正在准备下一项",
+    };
+  }
+
+  if (input.isScanning) {
+    return {
+      label: "扫描中",
+      title: "正在把文件加入队列",
+    };
+  }
+
+  if (input.fileCount) {
+    return {
+      label: "准备就绪",
+      title: `队列中共有 ${input.fileCount} 个文件，悬停任意行可看字段摘要`,
+    };
+  }
+
+  return {
+    label: "等待导入",
+    title: "拖放文件或文件夹后，这里会直接显示紧凑表格和字段预览。",
+  };
 }
 
 export default App;

@@ -35,6 +35,7 @@ const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
+const WINDOW_STATE_FILENAME: &str = ".window-state.json";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -2178,6 +2179,39 @@ fn configure_hidden_process(command: &mut Command) {
     }
 }
 
+fn state_file_has_main_window(path: &Path) -> bool {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+
+    let Ok(value) = serde_json::from_str::<Value>(&contents) else {
+        return false;
+    };
+
+    value
+        .as_object()
+        .and_then(|state_map| state_map.get("main"))
+        .is_some()
+}
+
+fn should_center_main_window_on_first_launch(app: &AppHandle) -> bool {
+    let Ok(app_dir) = app.path().app_config_dir() else {
+        return false;
+    };
+
+    !state_file_has_main_window(&app_dir.join(WINDOW_STATE_FILENAME))
+}
+
+fn center_main_window_if_needed(app: &AppHandle) {
+    if !should_center_main_window_on_first_launch(app) {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.center();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_shell_request = collect_shell_open_request_from_os_args(std::env::args_os());
@@ -2197,6 +2231,10 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .setup(|app| {
+            center_main_window_if_needed(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_runtime_info,
             scan_inputs,
@@ -2401,6 +2439,37 @@ mod tests {
             slot.as_ref().map(|request| request.paths.len()),
             Some(2),
             "merged request should be stored back in the slot"
+        );
+    }
+
+    #[test]
+    fn state_file_parser_only_treats_main_entry_as_restorable_state() {
+        let temp_dir = std::env::temp_dir().join("tagsweep-window-state-tests");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let with_main = temp_dir.join("with-main.json");
+        fs::write(
+            &with_main,
+            r#"{"main":{"width":1160,"height":760,"x":120,"y":120}}"#,
+        )
+        .expect("write main state");
+        assert!(
+            state_file_has_main_window(&with_main),
+            "state file with main entry should be recognized"
+        );
+
+        let without_main = temp_dir.join("without-main.json");
+        fs::write(&without_main, r#"{"other":{"x":0,"y":0}}"#).expect("write other state");
+        assert!(
+            !state_file_has_main_window(&without_main),
+            "state file without main entry should not skip first-launch centering"
+        );
+
+        let invalid = temp_dir.join("invalid.json");
+        fs::write(&invalid, "not-json").expect("write invalid state");
+        assert!(
+            !state_file_has_main_window(&invalid),
+            "invalid state content should fall back to first-launch centering"
         );
     }
 

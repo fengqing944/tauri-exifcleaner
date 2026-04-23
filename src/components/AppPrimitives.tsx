@@ -17,7 +17,7 @@ export function Panel(props: {
         </div>
         {props.aside}
       </header>
-      {props.children}
+      <div className="panel-body">{props.children}</div>
     </section>
   );
 }

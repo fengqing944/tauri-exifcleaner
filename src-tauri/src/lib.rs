@@ -2202,14 +2202,20 @@ fn should_center_main_window_on_first_launch(app: &AppHandle) -> bool {
     !state_file_has_main_window(&app_dir.join(WINDOW_STATE_FILENAME))
 }
 
-fn center_main_window_if_needed(app: &AppHandle) {
-    if !should_center_main_window_on_first_launch(app) {
+fn restore_main_window_state_before_show(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
         return;
+    };
+
+    if should_center_main_window_on_first_launch(app) {
+        let _ = window.center();
+    } else {
+        let restore_flags = tauri_plugin_window_state::StateFlags::all()
+            & !tauri_plugin_window_state::StateFlags::VISIBLE;
+        let _ = tauri_plugin_window_state::WindowExt::restore_state(&window, restore_flags);
     }
 
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.center();
-    }
+    let _ = window.show();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2230,9 +2236,13 @@ pub fn run() {
             inner: Mutex::new(startup_shell_request),
         })
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .skip_initial_state("main")
+                .build(),
+        )
         .setup(|app| {
-            center_main_window_if_needed(app.handle());
+            restore_main_window_state_before_show(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

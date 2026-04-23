@@ -33,7 +33,6 @@ const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "Sys
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
-const SHELL_CLEAN_HEADLESS_ARG: &str = "--shell-clean-headless";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -866,168 +865,6 @@ fn append_debug_log(message: String) {
             .unwrap_or_default();
         let _ = writeln!(file, "[{timestamp}] {message}");
     }
-}
-
-fn resolve_exiftool_from_runtime() -> Result<PathBuf, String> {
-    if let Ok(custom_path) = std::env::var("EXIFTOOL_PATH") {
-        let candidate = PathBuf::from(custom_path);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    let executable_name = if cfg!(target_os = "windows") {
-        "exiftool.exe"
-    } else {
-        "exiftool"
-    };
-
-    let mut candidates = Vec::new();
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            candidates.push(parent.join("exiftool").join(executable_name));
-            candidates.push(parent.join("resources").join("exiftool").join(executable_name));
-        }
-    }
-    candidates.push(
-        PathBuf::from("src-tauri")
-            .join("resources")
-            .join("exiftool")
-            .join(executable_name),
-    );
-    candidates.push(PathBuf::from("resources").join("exiftool").join(executable_name));
-    candidates.push(PathBuf::from(executable_name));
-
-    for candidate in candidates {
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-
-    Err("没有找到 ExifTool 可执行文件。".to_string())
-}
-
-fn build_queue_store_from_paths(paths: Vec<String>) -> Result<QueueStore, String> {
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
-    perform_scan_inputs(paths, cancel_flag, sender)?;
-    let mut store = QueueStore::default();
-
-    while let Ok(event) = receiver.try_recv() {
-        match event {
-            ScanWorkerEvent::Batch(batch) => merge_scan_batch(&mut store, batch),
-        }
-    }
-
-    Ok(store)
-}
-
-fn run_shell_cleanup_headless(request: ShellOpenRequest) -> Result<(), String> {
-    append_debug_log(format!(
-        "shell.headless.start paths={} auto_start_cleanup={}",
-        request.paths.len(),
-        request.auto_start_cleanup
-    ));
-
-    let store = build_queue_store_from_paths(request.paths)?;
-    if store.files.is_empty() {
-        append_debug_log("shell.headless.empty supported_files=0".to_string());
-        return Ok(());
-    }
-
-    let options = CleanupOptions {
-        output_mode: OutputMode::Overwrite,
-        output_dir: None,
-        parallelism: default_parallelism(),
-        preserve_structure: true,
-    };
-    let planned_files = plan_output_paths(&store.files, &options)?;
-    if planned_files.is_empty() {
-        append_debug_log("shell.headless.empty planned_files=0".to_string());
-        return Ok(());
-    }
-
-    let exiftool_path = resolve_exiftool_from_runtime()?;
-    let total = planned_files.len();
-    let concurrency = options
-        .parallelism
-        .clamp(1, max_parallelism())
-        .min(total.max(1));
-    let queue = Arc::new(Mutex::new(VecDeque::from(planned_files)));
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let (sender, mut receiver) = mpsc::unbounded_channel::<WorkerEvent>();
-    let mut worker_threads = Vec::with_capacity(concurrency);
-
-    for worker_index in 0..concurrency {
-        let queue = queue.clone();
-        let sender = sender.clone();
-        let options = options.clone();
-        let exiftool_path = exiftool_path.clone();
-        let cancel_flag = cancel_flag.clone();
-        worker_threads.push(thread::spawn(move || {
-            run_cleanup_worker(
-                worker_index,
-                queue,
-                sender,
-                options,
-                exiftool_path,
-                cancel_flag,
-            )
-        }));
-    }
-    drop(sender);
-
-    let mut succeeded = 0_usize;
-    let mut failed = 0_usize;
-    let mut fatal_error = None::<String>;
-    let mut failure_samples = Vec::new();
-
-    while let Some(event) = receiver.blocking_recv() {
-        match event {
-            WorkerEvent::Started(_) => {}
-            WorkerEvent::Outcome(outcome) => match outcome.status {
-                "success" => succeeded += 1,
-                "failed" => {
-                    failed += 1;
-                    if failure_samples.len() < 6 {
-                        failure_samples.push(format!(
-                            "{}: {}",
-                            outcome.source_path,
-                            outcome
-                                .error
-                                .unwrap_or_else(|| "未知错误".to_string())
-                        ));
-                    }
-                }
-                _ => {}
-            },
-            WorkerEvent::Fatal(error) => {
-                fatal_error = Some(error);
-                cancel_flag.store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-    }
-
-    for handle in worker_threads {
-        let _ = handle.join();
-    }
-
-    if let Some(error) = fatal_error {
-        append_debug_log(format!("shell.headless.error total={} error={error}", total));
-        return Err(error);
-    }
-
-    append_debug_log(format!(
-        "shell.headless.done total={} succeeded={} failed={} ignored={} samples={}",
-        total,
-        succeeded,
-        failed,
-        store.ignored_count,
-        failure_samples.join(" | ")
-    ));
-
-    Ok(())
 }
 
 fn read_metadata_snapshot_map(
@@ -1969,7 +1806,7 @@ fn sanitize_segment(input: &str) -> String {
     }
 }
 
-fn collect_shell_request_from_strings<I, S>(args: I, marker: &str) -> Option<ShellOpenRequest>
+fn collect_shell_open_request_from_strings<I, S>(args: I) -> Option<ShellOpenRequest>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
@@ -1984,7 +1821,7 @@ where
 
         let value = value.as_ref();
         if !seen_marker {
-            if value == marker {
+            if value == SHELL_CLEAN_ARG {
                 seen_marker = true;
             }
             continue;
@@ -2007,22 +1844,6 @@ where
     }
 }
 
-fn collect_shell_open_request_from_strings<I, S>(args: I) -> Option<ShellOpenRequest>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    collect_shell_request_from_strings(args, SHELL_CLEAN_ARG)
-}
-
-fn collect_headless_shell_request_from_strings<I, S>(args: I) -> Option<ShellOpenRequest>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    collect_shell_request_from_strings(args, SHELL_CLEAN_HEADLESS_ARG)
-}
-
 fn collect_shell_open_request_from_os_args<I, S>(args: I) -> Option<ShellOpenRequest>
 where
     I: IntoIterator<Item = S>,
@@ -2033,18 +1854,6 @@ where
         .map(|value| value.into().to_string_lossy().to_string())
         .collect::<Vec<_>>();
     collect_shell_open_request_from_strings(values)
-}
-
-fn collect_headless_shell_request_from_os_args<I, S>(args: I) -> Option<ShellOpenRequest>
-where
-    I: IntoIterator<Item = S>,
-    S: Into<std::ffi::OsString>,
-{
-    let values = args
-        .into_iter()
-        .map(|value| value.into().to_string_lossy().to_string())
-        .collect::<Vec<_>>();
-    collect_headless_shell_request_from_strings(values)
 }
 
 fn normalize_shell_paths(paths: Vec<String>) -> Vec<String> {
@@ -2152,13 +1961,6 @@ fn configure_hidden_process(command: &mut Command) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if let Some(request) = collect_headless_shell_request_from_os_args(std::env::args_os()) {
-        if let Err(error) = run_shell_cleanup_headless(request) {
-            append_debug_log(format!("shell.headless.fatal {error}"));
-        }
-        return;
-    }
-
     let startup_shell_request = collect_shell_open_request_from_os_args(std::env::args_os());
     let mut builder = tauri::Builder::default();
     builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -2340,25 +2142,6 @@ mod tests {
 
         assert!(request.auto_start_cleanup, "shell clean should auto-start cleanup");
         assert_eq!(request.paths.len(), 2, "only unique existing paths should remain");
-    }
-
-    #[test]
-    fn headless_shell_request_parser_extracts_existing_paths() {
-        let temp_dir = std::env::temp_dir().join("tagsweep-shell-headless");
-        fs::create_dir_all(&temp_dir).expect("create temp dir");
-
-        let sample = temp_dir.join("sample.jpg");
-        fs::write(&sample, b"sample").expect("write sample file");
-
-        let request = collect_headless_shell_request_from_strings(vec![
-            "tagsweep.exe".to_string(),
-            SHELL_CLEAN_HEADLESS_ARG.to_string(),
-            sample.to_string_lossy().to_string(),
-        ])
-        .expect("parse headless shell open request");
-
-        assert_eq!(request.paths.len(), 1, "headless shell request should keep the file path");
-        assert!(request.auto_start_cleanup, "headless shell request should still auto-start cleanup");
     }
 
     #[test]

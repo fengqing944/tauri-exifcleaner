@@ -199,6 +199,12 @@ export function WorkbenchPanel(props: {
             ref={props.tableShellRef}
             onMouseLeave={props.onClearHover}
           >
+            <div className="queue-table-note">
+              <span>悬停看摘要，点击固定，方向键切换。</span>
+              <span>
+                已加载 {props.previewFiles.length} / {props.fileCount}
+              </span>
+            </div>
             <div className="table-head compact-table-head">
               <span>选中的文件</span>
               <span># 处理前</span>

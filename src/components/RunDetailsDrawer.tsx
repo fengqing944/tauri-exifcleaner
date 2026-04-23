@@ -135,6 +135,9 @@ export function RunDetailsDrawer(props: {
               <span title={props.debugLogPath || "未启用"}>
                 日志: {props.debugLogPath ? trimMiddle(props.debugLogPath, 52) : "未启用"}
               </span>
+              {!props.debugLogPath ? (
+                <span>如需诊断可设置环境变量 `TAGSWEEP_DEBUG_LOG=1`。</span>
+              ) : null}
             </div>
             {props.metadataDebugEntries.length ? (
               <div className="debug-entry-list">

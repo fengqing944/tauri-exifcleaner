@@ -81,6 +81,13 @@ button {
   font-weight: 700;
 }
 
+.topbar-note {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #334155;
+  line-height: 1.45;
+}
+
 .brand-block span,
 .topbar-meta span,
 .panel-header p,
@@ -123,6 +130,17 @@ button {
   gap: 8px;
 }
 
+.topbar-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid #dbe2ea;
+  color: #334155;
+}
+
 .topbar-toolbar {
   display: flex;
   align-items: center;
@@ -137,6 +155,10 @@ button {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.toolbar-button {
+  min-width: 104px;
 }
 
 .toolbar-meta-group {
@@ -160,6 +182,13 @@ button {
 .toolbar-slider input[type="range"] {
   width: 100%;
   accent-color: #2563eb;
+}
+
+.toolbar-slider-value {
+  min-width: 28px;
+  text-align: center;
+  font-size: 12px;
+  color: #0f172a;
 }
 
 .workspace {
@@ -400,6 +429,12 @@ button {
   background: #f8fafc;
 }
 
+.button-active {
+  background: #eef4ff;
+  border-color: #bfd4ff;
+  color: #1d4ed8;
+}
+
 .button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -530,6 +565,18 @@ button {
   grid-template-columns: minmax(0, 1.5fr) 88px 88px 96px;
   gap: 12px;
   align-items: start;
+}
+
+.queue-table-note {
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #e8edf3;
+  background: #fbfcfe;
+  font-size: 10px;
+  color: #64748b;
 }
 
 .table-head {

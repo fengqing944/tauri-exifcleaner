@@ -180,16 +180,21 @@ export function useWorkbenchController() {
     }
 
     if (options?.replaceQueue) {
-      await invoke("clear_queue");
-      startTransition(() => {
-        setQueueView(null);
-        setQueueFiles([]);
-        setSummary(null);
-        setRunFailures([]);
-        setProgress(EMPTY_PROGRESS);
-        setErrorMessage(null);
-        setFileStates({});
-      });
+      try {
+        await invoke("clear_queue");
+        startTransition(() => {
+          setQueueView(null);
+          setQueueFiles([]);
+          setSummary(null);
+          setRunFailures([]);
+          setProgress(EMPTY_PROGRESS);
+          setErrorMessage(null);
+          setFileStates({});
+        });
+      } catch (error) {
+        setErrorMessage(toMessage(error));
+        return;
+      }
     }
 
     setIsScanning(true);

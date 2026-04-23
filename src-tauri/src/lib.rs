@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs,
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -653,7 +653,11 @@ fn ensure_queue_spool_path(store: &mut QueueStore) -> PathBuf {
     path
 }
 
-fn append_queued_file(store: &mut QueueStore, file: &QueuedFile) -> Result<(), String> {
+fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
     let spool_path = ensure_queue_spool_path(store);
     let mut spool = fs::OpenOptions::new()
         .create(true)
@@ -661,26 +665,33 @@ fn append_queued_file(store: &mut QueueStore, file: &QueuedFile) -> Result<(), S
         .read(true)
         .open(&spool_path)
         .map_err(|error| format!("无法打开队列暂存文件: {error}"))?;
-    let offset = spool
+    let mut next_offset = spool
         .seek(SeekFrom::End(0))
         .map_err(|error| format!("无法定位队列暂存文件: {error}"))?;
-    let serialized =
-        serde_json::to_string(file).map_err(|error| format!("无法写入队列文件信息: {error}"))?;
-    spool
-        .write_all(serialized.as_bytes())
-        .and_then(|_| spool.write_all(b"\n"))
-        .map_err(|error| format!("无法写入队列暂存文件: {error}"))?;
-    store.queue_offsets.push(offset);
-    store.file_count += 1;
-    if store.preview_files.len() < MAX_QUEUE_PREVIEW_FILES {
-        store.preview_files.push(file.clone());
+
+    for file in files {
+        let serialized = serde_json::to_string(file)
+            .map_err(|error| format!("无法写入队列文件信息: {error}"))?;
+        spool
+            .write_all(serialized.as_bytes())
+            .and_then(|_| spool.write_all(b"\n"))
+            .map_err(|error| format!("无法写入队列暂存文件: {error}"))?;
+
+        store.queue_offsets.push(next_offset);
+        next_offset += serialized.len() as u64 + 1;
+        store.file_count += 1;
+        if store.preview_files.len() < MAX_QUEUE_PREVIEW_FILES {
+            store.preview_files.push(file.clone());
+        }
     }
+
     Ok(())
 }
 
-fn read_queue_file_at(path: &Path, offset: u64) -> Result<QueuedFile, String> {
-    let file = fs::File::open(path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
-    let mut reader = BufReader::new(file);
+fn read_queue_file_at<R>(reader: &mut R, offset: u64) -> Result<QueuedFile, String>
+where
+    R: BufRead + Seek,
+{
     reader
         .seek(SeekFrom::Start(offset))
         .map_err(|error| format!("无法定位队列暂存条目: {error}"))?;
@@ -701,24 +712,27 @@ fn read_queue_files_page(
         return Ok(Vec::new());
     };
 
-    store
+    let offsets = store
         .queue_offsets
         .iter()
         .skip(offset)
         .take(limit)
-        .map(|entry_offset| read_queue_file_at(path, *entry_offset))
-        .collect()
-}
+        .copied()
+        .collect::<Vec<_>>();
+    let file = fs::File::open(path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
+    let mut reader = BufReader::new(file);
+    let mut page = Vec::with_capacity(offsets.len());
 
-fn read_all_queue_files(store: &QueueStore) -> Result<Vec<QueuedFile>, String> {
-    if store.file_count == 0 {
-        return Ok(Vec::new());
+    for entry_offset in offsets {
+        page.push(read_queue_file_at(&mut reader, entry_offset)?);
     }
 
-    read_queue_files_page(store, 0, store.file_count)
+    Ok(page)
 }
 
 fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) -> Result<(), String> {
+    let mut appended_files = Vec::with_capacity(batch.files.len());
+
     for file in batch.files {
         let file_key = dedupe_key(Path::new(&file.source_path));
         if !store.file_keys.insert(file_key) {
@@ -744,9 +758,10 @@ fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) -> Result<(), Stri
             );
         }
 
-        append_queued_file(store, &file)?;
+        appended_files.push(file);
     }
 
+    append_queued_files(store, &appended_files)?;
     store.ignored_count += batch.ignored_count;
     merge_ignored_samples(&mut store.ignored_samples, batch.ignored_samples);
     Ok(())
@@ -1169,7 +1184,7 @@ async fn run_cleanup(
     }
 
     let run_result = async {
-        let (planned_files, tracked_preview_files, tracked_paths) = {
+        let (total, tracked_preview_files, tracked_paths, queue_file_path, queue_offsets) = {
             let store = queue_state.inner.lock().unwrap();
             let tracked_preview_files = store.preview_files.clone();
             let tracked_paths = store
@@ -1179,13 +1194,15 @@ async fn run_cleanup(
                 .map(|file| dedupe_key(Path::new(&file.source_path)))
                 .collect::<HashSet<_>>();
             (
-                plan_output_paths(&read_all_queue_files(&store)?, &options)?,
+                store.file_count,
                 tracked_preview_files,
                 tracked_paths,
+                store.queue_file_path.clone(),
+                store.queue_offsets.clone(),
             )
         };
 
-        if planned_files.is_empty() {
+        if total == 0 {
             return Ok(CleanupSummary {
                 total: 0,
                 succeeded: 0,
@@ -1198,13 +1215,26 @@ async fn run_cleanup(
         }
 
         let exiftool_path = resolve_exiftool(&app)?;
-        let total = planned_files.len();
         let concurrency = options
             .parallelism
             .clamp(1, max_parallelism())
             .min(total.max(1));
 
-        let queue = Arc::new(Mutex::new(VecDeque::from(planned_files)));
+        let (planned_sender, planned_receiver) =
+            std_mpsc::sync_channel::<PlannedCleanupFile>((concurrency * 4).max(16));
+        let producer_options = options.clone();
+        let producer_cancel_flag = cancel_flag.clone();
+        let producer_handle = thread::spawn(move || {
+            produce_planned_cleanup_files(
+                queue_file_path,
+                queue_offsets,
+                producer_options,
+                planned_sender,
+                producer_cancel_flag,
+            )
+        });
+
+        let queue = Arc::new(Mutex::new(planned_receiver));
         let (sender, mut receiver) = mpsc::unbounded_channel::<WorkerEvent>();
         let mut worker_handles = Vec::with_capacity(concurrency);
 
@@ -1352,6 +1382,16 @@ async fn run_cleanup(
             }
         }
 
+        match producer_handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                fatal_error.get_or_insert(error);
+            }
+            Err(_) => {
+                fatal_error.get_or_insert_with(|| "清理规划线程异常退出。".to_string());
+            }
+        }
+
         if let Some(error) = fatal_error {
             return Err(error);
         }
@@ -1396,7 +1436,7 @@ async fn run_cleanup(
 
 fn run_cleanup_worker(
     worker_index: usize,
-    queue: Arc<Mutex<VecDeque<PlannedCleanupFile>>>,
+    queue: Arc<Mutex<std_mpsc::Receiver<PlannedCleanupFile>>>,
     sender: mpsc::UnboundedSender<WorkerEvent>,
     options: CleanupOptions,
     exiftool_path: PathBuf,
@@ -1420,11 +1460,11 @@ fn run_cleanup_worker(
         }
 
         let planned_file = {
-            let mut queue = queue.lock().unwrap();
-            queue.pop_front()
+            let queue = queue.lock().unwrap();
+            queue.recv()
         };
 
-        let Some(planned_file) = planned_file else {
+        let Ok(planned_file) = planned_file else {
             break;
         };
 
@@ -1462,55 +1502,94 @@ fn run_cleanup_worker(
     let _ = session.close();
 }
 
-fn plan_output_paths(
-    files: &[QueuedFile],
-    options: &CleanupOptions,
-) -> Result<Vec<PlannedCleanupFile>, String> {
-    let mut planned = Vec::with_capacity(files.len());
+fn produce_planned_cleanup_files(
+    queue_file_path: Option<PathBuf>,
+    queue_offsets: Vec<u64>,
+    options: CleanupOptions,
+    sender: std_mpsc::SyncSender<PlannedCleanupFile>,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    if queue_offsets.is_empty() {
+        return Ok(());
+    }
+
+    let path = queue_file_path.ok_or_else(|| "队列暂存文件不可用。".to_string())?;
+    let file = fs::File::open(&path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
+    let mut reader = BufReader::new(file);
+    let output_root = resolve_output_root(&options)?;
     let mut reserved_paths = HashSet::new();
 
-    let output_root = match options.output_mode {
-        OutputMode::Mirror => Some(PathBuf::from(
+    for offset in queue_offsets {
+        if cancel_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        let queued_file = read_queue_file_at(&mut reader, offset)?;
+        let mut planned_file =
+            build_planned_cleanup_file(&queued_file, &options, output_root.as_deref(), &mut reserved_paths)?;
+
+        loop {
+            match sender.try_send(planned_file) {
+                Ok(()) => break,
+                Err(std_mpsc::TrySendError::Disconnected(_)) => return Ok(()),
+                Err(std_mpsc::TrySendError::Full(returned_file)) => {
+                    if cancel_flag.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    planned_file = returned_file;
+                    thread::sleep(Duration::from_millis(8));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_output_root(options: &CleanupOptions) -> Result<Option<PathBuf>, String> {
+    match options.output_mode {
+        OutputMode::Mirror => Ok(Some(PathBuf::from(
             options
                 .output_dir
                 .as_deref()
                 .ok_or_else(|| "镜像输出模式必须选择输出目录。".to_string())?,
-        )),
+        ))),
+        OutputMode::Overwrite => Ok(None),
+    }
+}
+
+fn build_planned_cleanup_file(
+    file: &QueuedFile,
+    options: &CleanupOptions,
+    output_root: Option<&Path>,
+    reserved_paths: &mut HashSet<String>,
+) -> Result<PlannedCleanupFile, String> {
+    let source_path = PathBuf::from(&file.source_path);
+    let output_path = match options.output_mode {
         OutputMode::Overwrite => None,
+        OutputMode::Mirror => {
+            let base_dir = output_root.ok_or_else(|| "输出目录不可用。".to_string())?;
+
+            let mut candidate = base_dir.to_path_buf();
+            if options.preserve_structure {
+                candidate.push(sanitize_segment(&file.root_label));
+                candidate.push(&file.relative_path);
+            } else {
+                let file_name = Path::new(&file.relative_path)
+                    .file_name()
+                    .map(|value| value.to_os_string())
+                    .unwrap_or_else(|| "unnamed".into());
+                candidate.push(file_name);
+            }
+
+            Some(reserve_unique_path(candidate, reserved_paths))
+        }
     };
 
-    for file in files {
-        let source_path = PathBuf::from(&file.source_path);
-        let output_path = match options.output_mode {
-            OutputMode::Overwrite => None,
-            OutputMode::Mirror => {
-                let base_dir = output_root
-                    .as_ref()
-                    .ok_or_else(|| "输出目录不可用。".to_string())?;
-
-                let mut candidate = base_dir.clone();
-                if options.preserve_structure {
-                    candidate.push(sanitize_segment(&file.root_label));
-                    candidate.push(&file.relative_path);
-                } else {
-                    let file_name = Path::new(&file.relative_path)
-                        .file_name()
-                        .map(|value| value.to_os_string())
-                        .unwrap_or_else(|| "unnamed".into());
-                    candidate.push(file_name);
-                }
-
-                Some(reserve_unique_path(candidate, &mut reserved_paths))
-            }
-        };
-
-        planned.push(PlannedCleanupFile {
-            source_path,
-            output_path,
-        });
-    }
-
-    Ok(planned)
+    Ok(PlannedCleanupFile {
+        source_path,
+        output_path,
+    })
 }
 
 fn execute_cleanup_file(

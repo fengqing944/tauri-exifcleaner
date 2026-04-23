@@ -209,6 +209,12 @@ struct MetadataSnapshotResponse {
     missing: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DebugLogInfo {
+    path: String,
+}
+
 #[derive(Debug, Clone)]
 struct PlannedCleanupFile {
     source_path: PathBuf,
@@ -434,6 +440,13 @@ fn get_queue_files_page(
         .take(page_size)
         .cloned()
         .collect()
+}
+
+#[tauri::command]
+fn get_debug_log_info() -> DebugLogInfo {
+    DebugLogInfo {
+        path: debug_log_path().to_string_lossy().to_string(),
+    }
 }
 
 #[tauri::command]
@@ -733,16 +746,26 @@ fn build_metadata_snapshots(
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
     let exiftool_path = resolve_exiftool(&app)?;
+    let request_count = requests.len();
     if requests.is_empty() {
         return Ok(Vec::new());
     }
 
+    let started_at = Instant::now();
+    append_debug_log(format!(
+        "metadata.start requests={} exiftool={}",
+        request_count,
+        exiftool_path.to_string_lossy()
+    ));
+
     let mut deduped_paths = Vec::new();
     let mut seen = HashSet::new();
+    let mut missing_count = 0_usize;
 
     for request in &requests {
         let file_path = PathBuf::from(&request.file_path);
         if !file_path.is_file() {
+            missing_count += 1;
             continue;
         }
 
@@ -752,7 +775,20 @@ fn build_metadata_snapshots(
         }
     }
 
-    let snapshot_map = read_metadata_snapshot_map(&exiftool_path, &deduped_paths)?;
+    let snapshot_map = match read_metadata_snapshot_map(&exiftool_path, &deduped_paths) {
+        Ok(snapshot_map) => snapshot_map,
+        Err(error) => {
+            append_debug_log(format!(
+                "metadata.error requests={} valid_files={} missing_files={} elapsed_ms={} error={}",
+                request_count,
+                deduped_paths.len(),
+                missing_count,
+                started_at.elapsed().as_millis(),
+                error
+            ));
+            return Err(error);
+        }
+    };
     let mut results = Vec::with_capacity(requests.len());
 
     for request in requests {
@@ -770,7 +806,35 @@ fn build_metadata_snapshots(
         });
     }
 
+    append_debug_log(format!(
+        "metadata.done requests={} valid_files={} missing_files={} resolved_files={} elapsed_ms={}",
+        request_count,
+        deduped_paths.len(),
+        missing_count,
+        snapshot_map.len(),
+        started_at.elapsed().as_millis()
+    ));
+
     Ok(results)
+}
+
+fn debug_log_path() -> PathBuf {
+    std::env::temp_dir().join("metasweep-debug.log")
+}
+
+fn append_debug_log(message: String) {
+    let path = debug_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default();
+        let _ = writeln!(file, "[{timestamp}] {message}");
+    }
 }
 
 fn read_metadata_snapshot_map(
@@ -1754,6 +1818,7 @@ pub fn run() {
             cancel_scan,
             clear_queue,
             get_queue_files_page,
+            get_debug_log_info,
             load_metadata_snapshots,
             run_cleanup,
             cancel_cleanup

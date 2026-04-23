@@ -117,6 +117,28 @@ type MetadataSnapshotResponse = {
   missing: boolean;
 };
 
+type DebugLogInfo = {
+  path: string;
+};
+
+type MetadataDebugState = {
+  status: "idle" | "running" | "success" | "error";
+  lastOrigin: string;
+  pendingBatches: number;
+  pendingFiles: number;
+  lastDurationMs: number;
+  lastResolved: number;
+  lastMissing: number;
+  lastMessage: string;
+};
+
+type MetadataDebugEntry = {
+  id: string;
+  tone: BadgeTone;
+  title: string;
+  detail: string;
+};
+
 type FileRunState = {
   status: CleanupStatus;
   outputPath: string | null;
@@ -138,6 +160,16 @@ const EMPTY_PROGRESS: ProgressState = {
 };
 
 const QUEUE_PAGE_SIZE = 240;
+const EMPTY_METADATA_DEBUG: MetadataDebugState = {
+  status: "idle",
+  lastOrigin: "未开始",
+  pendingBatches: 0,
+  pendingFiles: 0,
+  lastDurationMs: 0,
+  lastResolved: 0,
+  lastMissing: 0,
+  lastMessage: "字段读取尚未开始。",
+};
 
 function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -160,6 +192,9 @@ function App() {
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
   const [isLoadingQueuePage, setIsLoadingQueuePage] = useState(false);
+  const [debugLogPath, setDebugLogPath] = useState<string>("");
+  const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
+  const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
@@ -232,6 +267,68 @@ function App() {
     setFileStates({});
     setHoveredPathKey(null);
     flyoutActiveRef.current = false;
+    setMetadataDebug(EMPTY_METADATA_DEBUG);
+    setMetadataDebugEntries([]);
+  });
+
+  const pushMetadataDebugEntry = useEffectEvent(
+    (tone: BadgeTone, title: string, detail: string) => {
+      const entry: MetadataDebugEntry = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        tone,
+        title,
+        detail,
+      };
+
+      startTransition(() => {
+        setMetadataDebugEntries((current) => [entry, ...current].slice(0, 6));
+      });
+    },
+  );
+
+  const beginMetadataDebug = useEffectEvent((origin: string, requestCount: number) => {
+    startTransition(() => {
+      setMetadataDebug((current) => ({
+        ...current,
+        status: "running",
+        lastOrigin: origin,
+        pendingBatches: current.pendingBatches + 1,
+        pendingFiles: current.pendingFiles + requestCount,
+        lastMessage: `${origin} 发起 ${requestCount} 个字段请求`,
+      }));
+    });
+  });
+
+  const finishMetadataDebug = useEffectEvent((input: {
+    origin: string;
+    requestCount: number;
+    durationMs: number;
+    responseCount: number;
+    missingCount: number;
+    error?: string;
+  }) => {
+    startTransition(() => {
+      setMetadataDebug((current) => ({
+        status: input.error ? "error" : "success",
+        lastOrigin: input.origin,
+        pendingBatches: Math.max(0, current.pendingBatches - 1),
+        pendingFiles: Math.max(0, current.pendingFiles - input.requestCount),
+        lastDurationMs: input.durationMs,
+        lastResolved: Math.max(0, input.responseCount - input.missingCount),
+        lastMissing: input.missingCount,
+        lastMessage: input.error
+          ? `${input.origin} 失败: ${input.error}`
+          : `${input.origin} 完成，返回 ${input.responseCount} 项`,
+      }));
+    });
+
+    pushMetadataDebugEntry(
+      input.error ? "danger" : input.missingCount ? "warning" : "success",
+      input.origin,
+      input.error
+        ? input.error
+        : `耗时 ${input.durationMs} ms，返回 ${input.responseCount} 项，缺失 ${input.missingCount} 项`,
+    );
   });
 
   const refreshQueueFiles = useEffectEvent(async () => {
@@ -359,6 +456,18 @@ function App() {
         }
       });
 
+    void invoke<DebugLogInfo>("get_debug_log_info")
+      .then((info) => {
+        if (!disposed) {
+          setDebugLogPath(info.path);
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setDebugLogPath("");
+        }
+      });
+
     const cleanupProgressListener = listen<CleanupProgressEvent>("cleanup-progress", (event) =>
       handleProgressEvent(event.payload),
     );
@@ -412,6 +521,7 @@ function App() {
 
     let disposed = false;
     const loadingKeys = requests.map((request) => `before:${request.requestKey}`);
+    const startedAt = performance.now();
 
     startTransition(() => {
       setLoadingSnapshots((current) => {
@@ -422,6 +532,7 @@ function App() {
         return next;
       });
     });
+    beginMetadataDebug("列表预读", requests.length);
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
@@ -438,10 +549,25 @@ function App() {
             return next;
           });
         });
+        finishMetadataDebug({
+          origin: "列表预读",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: responses.length,
+          missingCount: responses.filter((response) => response.missing).length,
+        });
       })
       .catch((error) => {
         if (!disposed) {
           setErrorMessage(toMessage(error));
+          finishMetadataDebug({
+            origin: "列表预读",
+            requestCount: requests.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            responseCount: 0,
+            missingCount: 0,
+            error: toMessage(error),
+          });
         }
       })
       .finally(() => {
@@ -476,6 +602,7 @@ function App() {
     }
 
     let disposed = false;
+    const startedAt = performance.now();
     const requests: MetadataSnapshotRequest[] = [
       {
         requestKey: previewPathKey,
@@ -489,6 +616,7 @@ function App() {
         [beforeLoadingKey]: true,
       }));
     });
+    beginMetadataDebug("悬停预读", requests.length);
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
@@ -505,10 +633,25 @@ function App() {
             return next;
           });
         });
+        finishMetadataDebug({
+          origin: "悬停预读",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: responses.length,
+          missingCount: responses.filter((response) => response.missing).length,
+        });
       })
       .catch((error) => {
         if (!disposed) {
           setErrorMessage(toMessage(error));
+          finishMetadataDebug({
+            origin: "悬停预读",
+            requestCount: requests.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            responseCount: 0,
+            missingCount: 0,
+            error: toMessage(error),
+          });
         }
       })
       .finally(() => {
@@ -548,6 +691,7 @@ function App() {
     }
 
     let disposed = false;
+    const startedAt = performance.now();
     const targetPath = rowState.outputPath || previewFile.sourcePath;
     const requests: MetadataSnapshotRequest[] = [
       {
@@ -562,6 +706,7 @@ function App() {
         [afterLoadingKey]: true,
       }));
     });
+    beginMetadataDebug("悬停后览", requests.length);
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
@@ -578,10 +723,25 @@ function App() {
             return next;
           });
         });
+        finishMetadataDebug({
+          origin: "悬停后览",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: responses.length,
+          missingCount: responses.filter((response) => response.missing).length,
+        });
       })
       .catch((error) => {
         if (!disposed) {
           setErrorMessage(toMessage(error));
+          finishMetadataDebug({
+            origin: "悬停后览",
+            requestCount: requests.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            responseCount: 0,
+            missingCount: 0,
+            error: toMessage(error),
+          });
         }
       })
       .finally(() => {
@@ -632,6 +792,7 @@ function App() {
     }
 
     let disposed = false;
+    const startedAt = performance.now();
 
     startTransition(() => {
       setLoadingSnapshots((current) => {
@@ -642,6 +803,7 @@ function App() {
         return next;
       });
     });
+    beginMetadataDebug("任务回填", requests.length);
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
@@ -658,10 +820,25 @@ function App() {
             return next;
           });
         });
+        finishMetadataDebug({
+          origin: "任务回填",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: responses.length,
+          missingCount: responses.filter((response) => response.missing).length,
+        });
       })
       .catch((error) => {
         if (!disposed) {
           setErrorMessage(toMessage(error));
+          finishMetadataDebug({
+            origin: "任务回填",
+            requestCount: requests.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            responseCount: 0,
+            missingCount: 0,
+            error: toMessage(error),
+          });
         }
       })
       .finally(() => {
@@ -1235,6 +1412,57 @@ function App() {
                 ) : (
                   <span>清理开始后，这里会持续显示当前任务状态。</span>
                 )}
+              </div>
+
+              <div className="debug-block">
+                <div className="task-block-head">
+                  <strong>字段调试</strong>
+                  <span>{metadataDebug.lastOrigin}</span>
+                </div>
+                <div className="debug-strip">
+                  <StatusBadge
+                    tone={
+                      metadataDebug.status === "error"
+                        ? "danger"
+                        : metadataDebug.status === "running"
+                          ? "info"
+                          : metadataDebug.status === "success"
+                            ? "success"
+                            : "neutral"
+                    }
+                    label={
+                      metadataDebug.status === "error"
+                        ? "异常"
+                        : metadataDebug.status === "running"
+                          ? "读取中"
+                          : metadataDebug.status === "success"
+                            ? "最近成功"
+                            : "空闲"
+                    }
+                  />
+                  <span>批次 {metadataDebug.pendingBatches}</span>
+                  <span>文件 {metadataDebug.pendingFiles}</span>
+                  <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
+                </div>
+                <div className="debug-copy">
+                  <span>{metadataDebug.lastMessage}</span>
+                  <span>
+                    最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
+                  </span>
+                  <span title={debugLogPath}>
+                    日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
+                  </span>
+                </div>
+                {metadataDebugEntries.length ? (
+                  <div className="debug-entry-list">
+                    {metadataDebugEntries.map((entry) => (
+                      <div key={entry.id} className={`debug-entry ${entry.tone}`}>
+                        <strong>{entry.title}</strong>
+                        <span>{entry.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="task-errors-block">

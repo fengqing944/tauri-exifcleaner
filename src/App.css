@@ -784,6 +784,73 @@ button {
   gap: 8px;
 }
 
+.debug-block {
+  padding: 10px 12px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #f8fafc;
+  display: grid;
+  gap: 8px;
+}
+
+.debug-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #475569;
+}
+
+.debug-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.debug-copy span {
+  font-size: 12px;
+  color: #475569;
+}
+
+.debug-entry-list {
+  display: grid;
+  gap: 6px;
+}
+
+.debug-entry {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  display: grid;
+  gap: 4px;
+}
+
+.debug-entry strong {
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.debug-entry span {
+  font-size: 11px;
+  color: #475569;
+}
+
+.debug-entry.success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.debug-entry.warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.debug-entry.danger {
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+
 .task-block-head {
   display: flex;
   align-items: center;

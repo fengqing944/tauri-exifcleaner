@@ -519,7 +519,6 @@ function App() {
       return;
     }
 
-    let disposed = false;
     const loadingKeys = requests.map((request) => `before:${request.requestKey}`);
     const startedAt = performance.now();
 
@@ -536,10 +535,6 @@ function App() {
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setBeforeSnapshots((current) => {
             const next = { ...current };
@@ -558,23 +553,17 @@ function App() {
         });
       })
       .catch((error) => {
-        if (!disposed) {
-          setErrorMessage(toMessage(error));
-          finishMetadataDebug({
-            origin: "列表预读",
-            requestCount: requests.length,
-            durationMs: Math.round(performance.now() - startedAt),
-            responseCount: 0,
-            missingCount: 0,
-            error: toMessage(error),
-          });
-        }
+        setErrorMessage(toMessage(error));
+        finishMetadataDebug({
+          origin: "列表预读",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: 0,
+          missingCount: 0,
+          error: toMessage(error),
+        });
       })
       .finally(() => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setLoadingSnapshots((current) => {
             const next = { ...current };
@@ -585,10 +574,6 @@ function App() {
           });
         });
       });
-
-    return () => {
-      disposed = true;
-    };
   }, [beforeSnapshots, previewFileKey]);
 
   useEffect(() => {
@@ -601,7 +586,6 @@ function App() {
       return;
     }
 
-    let disposed = false;
     const startedAt = performance.now();
     const requests: MetadataSnapshotRequest[] = [
       {
@@ -620,10 +604,6 @@ function App() {
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setBeforeSnapshots((current) => {
             const next = { ...current };
@@ -642,23 +622,17 @@ function App() {
         });
       })
       .catch((error) => {
-        if (!disposed) {
-          setErrorMessage(toMessage(error));
-          finishMetadataDebug({
-            origin: "悬停预读",
-            requestCount: requests.length,
-            durationMs: Math.round(performance.now() - startedAt),
-            responseCount: 0,
-            missingCount: 0,
-            error: toMessage(error),
-          });
-        }
+        setErrorMessage(toMessage(error));
+        finishMetadataDebug({
+          origin: "悬停预读",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: 0,
+          missingCount: 0,
+          error: toMessage(error),
+        });
       })
       .finally(() => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setLoadingSnapshots((current) => {
             const next = { ...current };
@@ -667,10 +641,6 @@ function App() {
           });
         });
       });
-
-    return () => {
-      disposed = true;
-    };
   }, [beforeSnapshots, previewFile, previewPathKey]);
 
   useEffect(() => {
@@ -690,7 +660,6 @@ function App() {
       return;
     }
 
-    let disposed = false;
     const startedAt = performance.now();
     const targetPath = rowState.outputPath || previewFile.sourcePath;
     const requests: MetadataSnapshotRequest[] = [
@@ -710,10 +679,6 @@ function App() {
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setAfterSnapshots((current) => {
             const next = { ...current };
@@ -732,23 +697,17 @@ function App() {
         });
       })
       .catch((error) => {
-        if (!disposed) {
-          setErrorMessage(toMessage(error));
-          finishMetadataDebug({
-            origin: "悬停后览",
-            requestCount: requests.length,
-            durationMs: Math.round(performance.now() - startedAt),
-            responseCount: 0,
-            missingCount: 0,
-            error: toMessage(error),
-          });
-        }
+        setErrorMessage(toMessage(error));
+        finishMetadataDebug({
+          origin: "悬停后览",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: 0,
+          missingCount: 0,
+          error: toMessage(error),
+        });
       })
       .finally(() => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setLoadingSnapshots((current) => {
             const next = { ...current };
@@ -757,10 +716,6 @@ function App() {
           });
         });
       });
-
-    return () => {
-      disposed = true;
-    };
   }, [afterSnapshots, fileStates, previewFile, previewPathKey]);
 
   useEffect(() => {
@@ -791,7 +746,6 @@ function App() {
       return;
     }
 
-    let disposed = false;
     const startedAt = performance.now();
 
     startTransition(() => {
@@ -807,10 +761,6 @@ function App() {
 
     void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
       .then((responses) => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setAfterSnapshots((current) => {
             const next = { ...current };
@@ -829,23 +779,17 @@ function App() {
         });
       })
       .catch((error) => {
-        if (!disposed) {
-          setErrorMessage(toMessage(error));
-          finishMetadataDebug({
-            origin: "任务回填",
-            requestCount: requests.length,
-            durationMs: Math.round(performance.now() - startedAt),
-            responseCount: 0,
-            missingCount: 0,
-            error: toMessage(error),
-          });
-        }
+        setErrorMessage(toMessage(error));
+        finishMetadataDebug({
+          origin: "任务回填",
+          requestCount: requests.length,
+          durationMs: Math.round(performance.now() - startedAt),
+          responseCount: 0,
+          missingCount: 0,
+          error: toMessage(error),
+        });
       })
       .finally(() => {
-        if (disposed) {
-          return;
-        }
-
         startTransition(() => {
           setLoadingSnapshots((current) => {
             const next = { ...current };
@@ -856,10 +800,6 @@ function App() {
           });
         });
       });
-
-    return () => {
-      disposed = true;
-    };
   }, [afterSnapshots, fileStates, metadataSeedFiles, previewFileKey, summary]);
 
   useEffect(() => {

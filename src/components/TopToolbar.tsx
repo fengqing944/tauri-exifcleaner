@@ -71,14 +71,14 @@ export function TopToolbar(props: {
 
         <div className="toolbar-group toolbar-meta-group">
           <button
-            className={`button toolbar-button ${props.isHelpOpen ? "button-active" : ""}`}
+            className={`button toolbar-button toolbar-button-compact ${props.isHelpOpen ? "button-active" : ""}`}
             type="button"
             onClick={props.onToggleHelp}
           >
             {props.isHelpOpen ? "收起帮助" : "帮助"}
           </button>
           <button
-            className={`button toolbar-button ${props.isSettingsOpen ? "button-active" : ""}`}
+            className={`button toolbar-button toolbar-button-compact ${props.isSettingsOpen ? "button-active" : ""}`}
             type="button"
             onClick={props.onToggleSettings}
           >

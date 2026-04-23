@@ -161,6 +161,13 @@ button {
   min-width: 104px;
 }
 
+.toolbar-button-compact {
+  min-width: 78px;
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
 .toolbar-meta-group {
   min-width: 220px;
   justify-content: flex-end;
@@ -196,7 +203,7 @@ button {
 }
 
 .utility-drawer-head strong {
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .utility-drawer-body {
@@ -218,8 +225,8 @@ button {
   display: grid;
   gap: 8px;
   color: #334155;
-  font-size: 12px;
-  line-height: 1.55;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .utility-list li {
@@ -251,7 +258,7 @@ button {
 }
 
 .utility-note span {
-  font-size: 11px;
+  font-size: 10px;
   color: #475569;
   line-height: 1.5;
 }
@@ -283,7 +290,7 @@ button {
 .setting-footnote {
   display: block;
   margin-top: 3px;
-  font-size: 11px;
+  font-size: 10px;
   color: #475569;
   line-height: 1.5;
 }
@@ -333,7 +340,7 @@ kbd {
   border: 1px solid #cfd8e3;
   background: #ffffff;
   color: #0f172a;
-  font-size: 11px;
+  font-size: 10px;
   font-family:
     "Segoe UI Variable Text",
     "Segoe UI",

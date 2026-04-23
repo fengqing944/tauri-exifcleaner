@@ -130,7 +130,7 @@ export function WorkbenchPanel(props: {
       <div className={`queue-workspace compact-workbench ${props.dropActive ? "is-drop-active" : ""}`}>
         <div className="queue-workspace-toolbar compact-workbench-toolbar">
           <div className="queue-workspace-copy">
-            <strong>{props.fileCount ? "拖到这里可继续追加文件" : "拖放区域与文件列表已合并"}</strong>
+            <strong>{props.fileCount ? "拖到这里可继续追加文件" : "在这里拖放或导入"}</strong>
             <span>
               {props.fileCount
                 ? "列表、进度和调试都已收进同一个工作台。"

@@ -10,10 +10,13 @@ export function TopToolbar(props: {
   toolbarNote: string;
   detailsLabel: string;
   isDetailsOpen: boolean;
-  onParallelismChange: (value: number) => void;
+  isHelpOpen: boolean;
+  isSettingsOpen: boolean;
   onStartCleanup: () => void;
   onCancelCurrent: () => void;
   onToggleDetails: () => void;
+  onToggleHelp: () => void;
+  onToggleSettings: () => void;
 }) {
   return (
     <header className="topbar">
@@ -34,6 +37,7 @@ export function TopToolbar(props: {
               : "ExifTool"}
           </span>
           <span className="topbar-meta-chip">原地覆盖</span>
+          <span className="topbar-meta-chip">并发 {props.parallelism}</span>
         </div>
       </div>
 
@@ -66,17 +70,20 @@ export function TopToolbar(props: {
         </div>
 
         <div className="toolbar-group toolbar-meta-group">
-          <span className="toolbar-label">并发</span>
-          <div className="toolbar-slider">
-            <input
-              type="range"
-              min={1}
-              max={props.runtimeInfo?.parallelismMax ?? 16}
-              value={props.parallelism}
-              onChange={(event) => props.onParallelismChange(Number(event.currentTarget.value))}
-            />
-            <strong className="toolbar-slider-value">{props.parallelism}</strong>
-          </div>
+          <button
+            className={`button toolbar-button ${props.isHelpOpen ? "button-active" : ""}`}
+            type="button"
+            onClick={props.onToggleHelp}
+          >
+            {props.isHelpOpen ? "收起帮助" : "帮助"}
+          </button>
+          <button
+            className={`button toolbar-button ${props.isSettingsOpen ? "button-active" : ""}`}
+            type="button"
+            onClick={props.onToggleSettings}
+          >
+            {props.isSettingsOpen ? "收起设置" : "设置"}
+          </button>
         </div>
       </div>
     </header>

@@ -25,7 +25,7 @@ import {
   toMessage,
 } from "../app-shared";
 
-export function useWorkbenchController() {
+export function useWorkbenchController(options?: { preferredParallelism?: number | null }) {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [queueView, setQueueView] = useState<QueueView | null>(null);
   const [queueFiles, setQueueFiles] = useState<QueuedFile[]>([]);
@@ -352,6 +352,16 @@ export function useWorkbenchController() {
         }
 
         setRuntimeInfo(info);
+        const preferredParallelism = options?.preferredParallelism;
+        if (
+          typeof preferredParallelism === "number" &&
+          Number.isFinite(preferredParallelism) &&
+          preferredParallelism >= 1
+        ) {
+          setParallelism(Math.min(info.parallelismMax, Math.round(preferredParallelism)));
+          return;
+        }
+
         setParallelism(info.parallelismDefault);
       })
       .catch((error) => {

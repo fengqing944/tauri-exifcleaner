@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import {
+  type CleanupSummary,
   type FlyoutPosition,
   EAGER_METADATA_PREFETCH_LIMIT,
   QUEUE_ROW_HEIGHT,
@@ -16,17 +17,25 @@ import {
   clampNumber,
   normalizePath,
 } from "./app-shared";
+import { HelpDrawer } from "./components/HelpDrawer";
+import { SettingsDrawer } from "./components/SettingsDrawer";
 import { TopToolbar } from "./components/TopToolbar";
 import { RunDetailsDrawer } from "./components/RunDetailsDrawer";
 import { WorkbenchPanel } from "./components/WorkbenchPanel";
+import { useDesktopPreferences } from "./hooks/useDesktopPreferences";
 import { useMetadataPreviewState } from "./hooks/useMetadataPreviewState";
 import { useWorkbenchController } from "./hooks/useWorkbenchController";
 
 function App() {
+  const { preferences, setPreference } = useDesktopPreferences();
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [pinnedPathKey, setPinnedPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
-  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(
+    () => preferences.reopenRunDetailsOnLaunch && preferences.lastDetailsOpen,
+  );
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
@@ -36,6 +45,7 @@ function App() {
   const wasScanningRef = useRef(false);
   const wasRunningRef = useRef(false);
   const hadFilesRef = useRef(false);
+  const previousSummaryRef = useRef<CleanupSummary | null>(null);
   const cancelHoverTimer = useEffectEvent(() => {
     if (hoverTimeoutRef.current) {
       window.clearTimeout(hoverTimeoutRef.current);
@@ -48,6 +58,20 @@ function App() {
     flyoutActiveRef.current = false;
     setHoveredPathKey(null);
     setPinnedPathKey(null);
+  });
+
+  const toggleHelpDrawer = useEffectEvent(() => {
+    hidePreview();
+    setIsDetailsOpen(false);
+    setIsSettingsOpen(false);
+    setIsHelpOpen((current) => !current);
+  });
+
+  const toggleSettingsDrawer = useEffectEvent(() => {
+    hidePreview();
+    setIsDetailsOpen(false);
+    setIsHelpOpen(false);
+    setIsSettingsOpen((current) => !current);
   });
 
   const {
@@ -80,7 +104,9 @@ function App() {
     cancelCleanup,
     cancelScan,
     clearQueue,
-  } = useWorkbenchController();
+  } = useWorkbenchController({
+    preferredParallelism: preferences.preferredParallelism,
+  });
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
@@ -145,6 +171,52 @@ function App() {
       applyCleanupPreviewStates(summary.previewStates);
     }
   }, [summary]);
+
+  useEffect(() => {
+    if (!runtimeInfo) {
+      return;
+    }
+
+    const nextPreferredParallelism =
+      parallelism === runtimeInfo.parallelismDefault ? null : parallelism;
+    if (preferences.preferredParallelism === nextPreferredParallelism) {
+      return;
+    }
+
+    setPreference("preferredParallelism", nextPreferredParallelism);
+  }, [parallelism, preferences.preferredParallelism, runtimeInfo, setPreference]);
+
+  useEffect(() => {
+    if (!preferences.reopenRunDetailsOnLaunch) {
+      if (preferences.lastDetailsOpen) {
+        setPreference("lastDetailsOpen", false);
+      }
+      return;
+    }
+
+    if (preferences.lastDetailsOpen !== isDetailsOpen) {
+      setPreference("lastDetailsOpen", isDetailsOpen);
+    }
+  }, [
+    isDetailsOpen,
+    preferences.lastDetailsOpen,
+    preferences.reopenRunDetailsOnLaunch,
+    setPreference,
+  ]);
+
+  useEffect(() => {
+    if (
+      summary &&
+      previousSummaryRef.current !== summary &&
+      summary.failed > 0 &&
+      preferences.autoOpenDetailsOnFailure
+    ) {
+      setIsHelpOpen(false);
+      setIsSettingsOpen(false);
+      setIsDetailsOpen(true);
+    }
+    previousSummaryRef.current = summary;
+  }, [preferences.autoOpenDetailsOnFailure, summary]);
 
   useEffect(() => {
     if (!fileCount && hadFilesRef.current) {
@@ -331,12 +403,22 @@ function App() {
   };
 
   useEffect(() => {
-    if (!previewPathKey && !isDetailsOpen) {
+    if (!previewPathKey && !isDetailsOpen && !isHelpOpen && !isSettingsOpen) {
       return;
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") {
+        return;
+      }
+
+      if (isSettingsOpen) {
+        setIsSettingsOpen(false);
+        return;
+      }
+
+      if (isHelpOpen) {
+        setIsHelpOpen(false);
         return;
       }
 
@@ -374,7 +456,7 @@ function App() {
       window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("pointerdown", handlePointerDown, true);
     };
-  }, [hidePreview, isDetailsOpen, previewPathKey]);
+  }, [hidePreview, isDetailsOpen, isHelpOpen, isSettingsOpen, previewPathKey]);
 
   const activity = buildActivityState({
     summary,
@@ -417,10 +499,17 @@ function App() {
         toolbarNote={toolbarNote}
         detailsLabel={detailsLabel}
         isDetailsOpen={isDetailsOpen}
-        onParallelismChange={setParallelism}
+        isHelpOpen={isHelpOpen}
+        isSettingsOpen={isSettingsOpen}
         onStartCleanup={startCleanup}
         onCancelCurrent={isRunning ? cancelCleanup : cancelScan}
-        onToggleDetails={() => setIsDetailsOpen((current) => !current)}
+        onToggleDetails={() => {
+          setIsHelpOpen(false);
+          setIsSettingsOpen(false);
+          setIsDetailsOpen((current) => !current);
+        }}
+        onToggleHelp={toggleHelpDrawer}
+        onToggleSettings={toggleSettingsDrawer}
       />
 
       <section className="workspace single-workspace">
@@ -479,6 +568,29 @@ function App() {
         debugLogPath={debugLogPath}
         runFailures={runFailures}
         onClose={() => setIsDetailsOpen(false)}
+      />
+
+      <HelpDrawer isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+
+      <SettingsDrawer
+        isOpen={isSettingsOpen}
+        runtimeInfo={runtimeInfo}
+        parallelism={parallelism}
+        autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
+        reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
+        onClose={() => setIsSettingsOpen(false)}
+        onParallelismChange={setParallelism}
+        onResetParallelism={() => {
+          if (runtimeInfo) {
+            setParallelism(runtimeInfo.parallelismDefault);
+          }
+        }}
+        onAutoOpenDetailsOnFailureChange={(value) =>
+          setPreference("autoOpenDetailsOnFailure", value)
+        }
+        onReopenRunDetailsOnLaunchChange={(value) =>
+          setPreference("reopenRunDetailsOnLaunch", value)
+        }
       />
 
       {errorMessage ? <div className="error-strip">{errorMessage}</div> : null}

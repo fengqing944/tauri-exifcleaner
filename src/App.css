@@ -162,7 +162,7 @@ button {
 }
 
 .toolbar-meta-group {
-  min-width: 260px;
+  min-width: 220px;
   justify-content: flex-end;
 }
 
@@ -189,6 +189,157 @@ button {
   text-align: center;
   font-size: 12px;
   color: #0f172a;
+}
+
+.utility-drawer {
+  width: min(500px, calc(100vw - 28px));
+}
+
+.utility-drawer-head strong {
+  font-size: 13px;
+}
+
+.utility-drawer-body {
+  gap: 10px;
+}
+
+.utility-section {
+  padding: 10px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #fbfcfe;
+  display: grid;
+  gap: 10px;
+}
+
+.utility-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.utility-list li {
+  margin: 0;
+}
+
+.ordered-list {
+  padding-left: 20px;
+}
+
+.utility-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.utility-note {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  display: grid;
+  gap: 4px;
+}
+
+.utility-note strong {
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.utility-note span {
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.setting-card {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  display: grid;
+  gap: 10px;
+}
+
+.setting-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setting-head strong,
+.setting-check strong {
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.setting-head span,
+.setting-check span,
+.setting-footnote {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.setting-value {
+  min-width: 28px;
+  text-align: right;
+}
+
+.setting-slider-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.setting-slider-row input[type="range"] {
+  width: 100%;
+  accent-color: #2563eb;
+}
+
+.setting-check {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  cursor: pointer;
+}
+
+.setting-check input {
+  margin: 2px 0 0;
+  accent-color: #2563eb;
+}
+
+.setting-check div {
+  min-width: 0;
+}
+
+kbd {
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid #cfd8e3;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 11px;
+  font-family:
+    "Segoe UI Variable Text",
+    "Segoe UI",
+    "PingFang SC",
+    "Microsoft YaHei UI",
+    sans-serif;
 }
 
 .workspace {

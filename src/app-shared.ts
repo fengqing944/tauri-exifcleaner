@@ -39,6 +39,11 @@ export type ScanSummary = {
   cancelled: boolean;
 };
 
+export type ShellOpenRequest = {
+  paths: string[];
+  autoStartCleanup: boolean;
+};
+
 export type CleanupProgressEvent = {
   total: number;
   completed: number;

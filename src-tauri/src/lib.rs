@@ -32,6 +32,7 @@ const SCAN_BATCH_SIZE: usize = 256;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
+const SHELL_CLEAN_ARG: &str = "--shell-clean";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -51,6 +52,11 @@ struct ScanState {
 #[derive(Default)]
 struct QueueState {
     inner: Mutex<QueueStore>,
+}
+
+#[derive(Default)]
+struct PendingShellRequestState {
+    inner: Mutex<Option<ShellOpenRequest>>,
 }
 
 #[derive(Default)]
@@ -177,6 +183,13 @@ struct ScanProgressEvent {
 struct ScanSummary {
     view: QueueView,
     cancelled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellOpenRequest {
+    paths: Vec<String>,
+    auto_start_cleanup: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -448,6 +461,13 @@ fn get_debug_log_info() -> DebugLogInfo {
     DebugLogInfo {
         path: debug_log_path().to_string_lossy().to_string(),
     }
+}
+
+#[tauri::command]
+fn take_pending_shell_request(
+    shell_request_state: State<'_, PendingShellRequestState>,
+) -> Option<ShellOpenRequest> {
+    shell_request_state.inner.lock().unwrap().take()
 }
 
 #[tauri::command]
@@ -1786,6 +1806,125 @@ fn sanitize_segment(input: &str) -> String {
     }
 }
 
+fn collect_shell_open_request_from_strings<I, S>(args: I) -> Option<ShellOpenRequest>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut seen_marker = false;
+    let mut paths = Vec::new();
+
+    for (index, value) in args.into_iter().enumerate() {
+        if index == 0 {
+            continue;
+        }
+
+        let value = value.as_ref();
+        if !seen_marker {
+            if value == SHELL_CLEAN_ARG {
+                seen_marker = true;
+            }
+            continue;
+        }
+
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            paths.push(trimmed.to_string());
+        }
+    }
+
+    let paths = normalize_shell_paths(paths);
+    if paths.is_empty() {
+        None
+    } else {
+        Some(ShellOpenRequest {
+            paths,
+            auto_start_cleanup: true,
+        })
+    }
+}
+
+fn collect_shell_open_request_from_os_args<I, S>(args: I) -> Option<ShellOpenRequest>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let values = args
+        .into_iter()
+        .map(|value| value.into().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    collect_shell_open_request_from_strings(values)
+}
+
+fn normalize_shell_paths(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+
+    for path in paths {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let path_buf = PathBuf::from(trimmed);
+        if !path_buf.exists() {
+            continue;
+        }
+
+        let key = dedupe_key(&path_buf);
+        if !seen.insert(key) {
+            continue;
+        }
+
+        result.push(path_buf.to_string_lossy().to_string());
+    }
+
+    result
+}
+
+fn merge_shell_open_request(
+    slot: &mut Option<ShellOpenRequest>,
+    incoming: ShellOpenRequest,
+) -> ShellOpenRequest {
+    let mut paths = slot
+        .as_ref()
+        .map(|request| request.paths.clone())
+        .unwrap_or_default();
+    paths.extend(incoming.paths);
+
+    let merged = ShellOpenRequest {
+        paths: normalize_shell_paths(paths),
+        auto_start_cleanup: slot
+            .as_ref()
+            .map(|request| request.auto_start_cleanup)
+            .unwrap_or(false)
+            || incoming.auto_start_cleanup,
+    };
+
+    *slot = Some(merged.clone());
+    merged
+}
+
+fn enqueue_shell_open_request(app: &AppHandle, request: ShellOpenRequest) {
+    let merged_request = {
+        let state = app.state::<PendingShellRequestState>();
+        let mut pending = state.inner.lock().unwrap();
+        merge_shell_open_request(&mut pending, request)
+    };
+
+    if merged_request.paths.is_empty() {
+        return;
+    }
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    let _ = app.emit("shell-open-paths", &merged_request);
+}
+
 fn dedupe_key(path: &Path) -> String {
     let key = path.to_string_lossy().replace('\\', "/");
     if cfg!(target_os = "windows") {
@@ -1822,10 +1961,21 @@ fn configure_hidden_process(command: &mut Command) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let startup_shell_request = collect_shell_open_request_from_os_args(std::env::args_os());
+    let mut builder = tauri::Builder::default();
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        if let Some(request) = collect_shell_open_request_from_strings(argv) {
+            enqueue_shell_open_request(app, request);
+        }
+    }));
+
+    builder
         .manage(CleanupState::default())
         .manage(ScanState::default())
         .manage(QueueState::default())
+        .manage(PendingShellRequestState {
+            inner: Mutex::new(startup_shell_request),
+        })
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             get_runtime_info,
@@ -1834,6 +1984,7 @@ pub fn run() {
             clear_queue,
             get_queue_files_page,
             get_debug_log_info,
+            take_pending_shell_request,
             load_metadata_snapshots,
             run_cleanup,
             cancel_cleanup
@@ -1967,6 +2118,64 @@ mod tests {
 
         assert!(outcome.cancelled, "scan should report cancellation");
         assert!(receiver.try_recv().is_err(), "cancelled scan should not emit queued files");
+    }
+
+    #[test]
+    fn shell_open_request_parser_extracts_unique_existing_paths() {
+        let temp_dir = std::env::temp_dir().join("tagsweep-shell-open");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let first = temp_dir.join("first.jpg");
+        let second = temp_dir.join("second.jpg");
+        fs::write(&first, b"one").expect("write first sample");
+        fs::write(&second, b"two").expect("write second sample");
+
+        let request = collect_shell_open_request_from_strings(vec![
+            "tagsweep.exe".to_string(),
+            SHELL_CLEAN_ARG.to_string(),
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+            first.to_string_lossy().to_string(),
+            temp_dir.join("missing.jpg").to_string_lossy().to_string(),
+        ])
+        .expect("parse shell open request");
+
+        assert!(request.auto_start_cleanup, "shell clean should auto-start cleanup");
+        assert_eq!(request.paths.len(), 2, "only unique existing paths should remain");
+    }
+
+    #[test]
+    fn merge_shell_open_request_preserves_auto_cleanup_and_dedupes_paths() {
+        let temp_dir = std::env::temp_dir().join("tagsweep-shell-merge");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let first = temp_dir.join("first.jpg");
+        let second = temp_dir.join("second.jpg");
+        fs::write(&first, b"one").expect("write first sample");
+        fs::write(&second, b"two").expect("write second sample");
+
+        let mut slot = Some(ShellOpenRequest {
+            paths: vec![first.to_string_lossy().to_string()],
+            auto_start_cleanup: false,
+        });
+        let merged = merge_shell_open_request(
+            &mut slot,
+            ShellOpenRequest {
+                paths: vec![
+                    first.to_string_lossy().to_string(),
+                    second.to_string_lossy().to_string(),
+                ],
+                auto_start_cleanup: true,
+            },
+        );
+
+        assert_eq!(merged.paths.len(), 2, "duplicate shell paths should collapse");
+        assert!(merged.auto_start_cleanup, "cleanup intent should be sticky");
+        assert_eq!(
+            slot.as_ref().map(|request| request.paths.len()),
+            Some(2),
+            "merged request should be stored back in the slot"
+        );
     }
 
     #[test]

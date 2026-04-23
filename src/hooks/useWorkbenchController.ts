@@ -13,15 +13,16 @@ import {
   type RuntimeInfo,
   type ScanProgressEvent,
   type ScanSummary,
+  type ShellOpenRequest,
   EMPTY_PROGRESS,
   QUEUE_PAGE_SIZE,
+  buildFileStateMap,
   createProgressState,
   mergeSummaryFileStates,
   normalizePath,
   normalizeSelection,
   selectionToArray,
   toMessage,
-  buildFileStateMap,
 } from "../app-shared";
 
 export function useWorkbenchController() {
@@ -38,6 +39,8 @@ export function useWorkbenchController() {
   const [summary, setSummary] = useState<CleanupSummary | null>(null);
   const [fileStates, setFileStates] = useState<Record<string, FileRunState>>({});
   const [isLoadingQueuePage, setIsLoadingQueuePage] = useState(false);
+  const [pendingShellRequest, setPendingShellRequest] = useState<ShellOpenRequest | null>(null);
+  const [autoStartCleanupRequested, setAutoStartCleanupRequested] = useState(false);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
@@ -86,6 +89,34 @@ export function useWorkbenchController() {
     setFileStates({});
   });
 
+  const enqueueShellRequest = useEffectEvent((request: ShellOpenRequest | null) => {
+    if (!request) {
+      return;
+    }
+
+    const paths = normalizeSelection(request.paths);
+    if (!paths.length) {
+      return;
+    }
+
+    startTransition(() => {
+      setPendingShellRequest((current) => ({
+        paths: normalizeSelection([...(current?.paths ?? []), ...paths]),
+        autoStartCleanup:
+          Boolean(current?.autoStartCleanup) || Boolean(request.autoStartCleanup),
+      }));
+    });
+  });
+
+  const pullPendingShellRequest = useEffectEvent(async () => {
+    try {
+      const request = await invoke<ShellOpenRequest | null>("take_pending_shell_request");
+      enqueueShellRequest(request);
+    } catch (error) {
+      setErrorMessage(toMessage(error));
+    }
+  });
+
   const refreshQueueFiles = useEffectEvent(async () => {
     try {
       setIsLoadingQueuePage(true);
@@ -128,7 +159,8 @@ export function useWorkbenchController() {
     }
   });
 
-  const scanInputPaths = useEffectEvent(async (paths: string[]) => {
+  const scanInputPaths = useEffectEvent(
+    async (paths: string[], options?: { autoStartCleanup?: boolean }) => {
     if (isRunning) {
       setErrorMessage("请等待当前清理任务结束后再追加导入。");
       return;
@@ -159,6 +191,9 @@ export function useWorkbenchController() {
         setProgress(createProgressState(result.view.supportedCount));
       });
       await refreshQueueFiles();
+      if (options?.autoStartCleanup && result.view.supportedCount > 0) {
+        setAutoStartCleanupRequested(true);
+      }
     } catch (error) {
       setErrorMessage(toMessage(error));
     } finally {
@@ -297,6 +332,7 @@ export function useWorkbenchController() {
 
         setRuntimeInfo(info);
         setParallelism(info.parallelismDefault);
+        void pullPendingShellRequest();
       })
       .catch((error) => {
         if (!disposed) {
@@ -313,6 +349,9 @@ export function useWorkbenchController() {
     const scanProgressListener = listen<ScanProgressEvent>("scan-progress", (event) =>
       handleScanProgressEvent(event.payload),
     );
+    const shellOpenListener = listen("shell-open-paths", () => {
+      void pullPendingShellRequest();
+    });
 
     void getCurrentWindow()
       .onDragDropEvent((event) => handleWindowDrop(event as never))
@@ -329,9 +368,22 @@ export function useWorkbenchController() {
       void cleanupProgressListener.then((unlisten) => unlisten());
       void cleanupFileListener.then((unlisten) => unlisten());
       void scanProgressListener.then((unlisten) => unlisten());
+      void shellOpenListener.then((unlisten) => unlisten());
       unlistenWindowDrop?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!pendingShellRequest || isScanning || isRunning) {
+      return;
+    }
+
+    const request = pendingShellRequest;
+    setPendingShellRequest(null);
+    void scanInputPaths(request.paths, {
+      autoStartCleanup: request.autoStartCleanup,
+    });
+  }, [isRunning, isScanning, pendingShellRequest]);
 
   useEffect(() => {
     if (!summary || !queueFiles.length) {
@@ -397,6 +449,15 @@ export function useWorkbenchController() {
 
     return () => window.clearInterval(timer);
   }, [isRunning, summary]);
+
+  useEffect(() => {
+    if (!autoStartCleanupRequested || isScanning || isRunning || !fileCount) {
+      return;
+    }
+
+    setAutoStartCleanupRequested(false);
+    void startCleanup();
+  }, [autoStartCleanupRequested, fileCount, isRunning, isScanning]);
 
   return {
     runtimeInfo,

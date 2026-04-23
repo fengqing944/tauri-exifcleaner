@@ -482,11 +482,11 @@ function App() {
       : `最近任务成功 ${summary.succeeded} 项，失败 ${summary.failed} 项`
     : isRunning
       ? `正在清理 ${progress.completed}/${progress.total || fileCount} 项，完成度 ${progressPercent}%`
-      : isScanning
+    : isScanning
         ? "正在扫描文件并加入队列"
         : fileCount
           ? `当前队列 ${fileCount} 项，可以直接开始清理`
-          : "拖入文件或文件夹开始使用";
+          : "";
 
   return (
     <main className="app-shell">

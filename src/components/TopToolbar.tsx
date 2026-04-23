@@ -24,7 +24,7 @@ export function TopToolbar(props: {
         <div className="brand-block">
           <strong>TagSweep</strong>
           <span>元数据痕迹清理工具</span>
-          <div className="topbar-note">{props.toolbarNote}</div>
+          {props.toolbarNote ? <div className="topbar-note">{props.toolbarNote}</div> : null}
         </div>
         <div className="topbar-meta">
           <StatusBadge

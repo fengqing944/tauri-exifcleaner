@@ -18,8 +18,8 @@ export function TopToolbar(props: {
     <header className="topbar">
       <div className="topbar-main">
         <div className="brand-block">
-          <strong>TraceSweep</strong>
-          <span>隐私元数据清理工具</span>
+          <strong>TagSweep</strong>
+          <span>元数据痕迹清理工具</span>
         </div>
         <div className="topbar-meta">
           <StatusBadge

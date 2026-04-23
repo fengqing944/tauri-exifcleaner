@@ -823,7 +823,7 @@ fn build_metadata_snapshots(
 }
 
 fn debug_log_path() -> PathBuf {
-    std::env::temp_dir().join("tracesweep-debug.log")
+    std::env::temp_dir().join("tagsweep-debug.log")
 }
 
 fn append_debug_log(message: String) {
@@ -1011,7 +1011,7 @@ where
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
     let path = std::env::temp_dir().join(format!(
-            "tracesweep-{prefix}-{}-{timestamp}.args",
+            "tagsweep-{prefix}-{}-{timestamp}.args",
         std::process::id()
     ));
     let mut content = String::new();
@@ -1703,7 +1703,7 @@ fn default_output_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .desktop_dir()
         .or_else(|_| app.path().download_dir())
-        .map(|path| path.join("TraceSweep Output"))
+        .map(|path| path.join("TagSweep Output"))
         .map_err(|error| format!("无法解析默认输出目录: {error}"))
 }
 

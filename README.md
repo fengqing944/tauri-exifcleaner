@@ -1,4 +1,4 @@
-# TraceSweep
+# TagSweep
 
 基于 `Tauri 2`、`Rust`、`React 19` 实现的桌面版元数据清理器，目标是做成一个独立设计、现代化、性能更强、交互更像原生程序的元数据清理应用。
 
@@ -57,7 +57,7 @@ npm run tauri build
 
 本地已成功打包生成：
 
-- `G:\Demo\tauri-exifcleaner\src-tauri\target\release\bundle\nsis\TraceSweep_0.1.3_x64-setup.exe`
+- `G:\Demo\tauri-exifcleaner\src-tauri\target\release\bundle\nsis\TagSweep_0.1.3_x64-setup.exe`
 
 ## 项目结构
 

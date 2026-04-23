@@ -1819,20 +1819,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metasweep"
-version = "0.1.3"
-dependencies = [
- "num_cpus",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "walkdir",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3267,6 +3253,20 @@ dependencies = [
  "pkg-config",
  "toml 0.8.2",
  "version-compare",
+]
+
+[[package]]
+name = "tagsweep"
+version = "0.1.3"
+dependencies = [
+ "num_cpus",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+ "walkdir",
 ]
 
 [[package]]

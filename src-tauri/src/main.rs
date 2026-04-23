@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    metasweep_lib::run()
+    tagsweep_lib::run()
 }

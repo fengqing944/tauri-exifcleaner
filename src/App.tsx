@@ -12,17 +12,10 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  type BadgeTone,
   type CleanupProgressEvent,
   type CleanupSummary,
-  type DebugLogInfo,
   type FileRunState,
   type FlyoutPosition,
-  type MetadataDebugEntry,
-  type MetadataDebugState,
-  type MetadataPreviewSnapshot,
-  type MetadataSnapshotRequest,
-  type MetadataSnapshotResponse,
   type ProgressState,
   type QueuedFile,
   type QueueView,
@@ -30,12 +23,10 @@ import {
   type ScanProgressEvent,
   type ScanSummary,
   EAGER_METADATA_PREFETCH_LIMIT,
-  EMPTY_METADATA_DEBUG,
   EMPTY_PROGRESS,
   QUEUE_PAGE_SIZE,
   SMALL_QUEUE_EAGER_LOAD_THRESHOLD,
   buildActivityState,
-  buildAfterSnapshotMap,
   buildFileStateMap,
   clampNumber,
   createProgressState,
@@ -47,6 +38,7 @@ import {
 } from "./app-shared";
 import { TopToolbar } from "./components/TopToolbar";
 import { WorkbenchPanel } from "./components/WorkbenchPanel";
+import { useMetadataPreviewState } from "./hooks/useMetadataPreviewState";
 
 function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -61,17 +53,9 @@ function App() {
   const [runFailures, setRunFailures] = useState<Array<{ sourcePath: string; error: string }>>([]);
   const [summary, setSummary] = useState<CleanupSummary | null>(null);
   const [fileStates, setFileStates] = useState<Record<string, FileRunState>>({});
-  const [beforeSnapshots, setBeforeSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>(
-    {},
-  );
-  const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>({});
-  const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
   const [isLoadingQueuePage, setIsLoadingQueuePage] = useState(false);
-  const [debugLogPath, setDebugLogPath] = useState<string>("");
-  const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
-  const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const dropActiveRef = useRef(false);
@@ -100,7 +84,6 @@ function App() {
 
     return previewFiles.slice(0, Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT));
   }, [allQueueFilesLoaded, fileCount, previewFiles]);
-  const previewFileKey = metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|");
 
   const runningPreviewPathKey =
     previewFiles
@@ -112,6 +95,25 @@ function App() {
   const previewPathKey = hoveredPathKey ? deferredHoveredPathKey : null;
   const previewFile =
     previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
+
+  const {
+    beforeSnapshots,
+    afterSnapshots,
+    loadingSnapshots,
+    debugLogPath,
+    metadataDebug,
+    metadataDebugEntries,
+    resetMetadataState,
+    clearAfterSnapshots,
+    applyCleanupPreviewStates,
+  } = useMetadataPreviewState({
+    metadataSeedFiles,
+    previewFile,
+    previewPathKey,
+    fileStates,
+    summary,
+    onError: setErrorMessage,
+  });
 
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
@@ -145,74 +147,10 @@ function App() {
     pendingProgressRef.current = null;
     setSummary(null);
     setRunFailures([]);
-    setBeforeSnapshots({});
-    setAfterSnapshots({});
-    setLoadingSnapshots({});
     setFileStates({});
     setHoveredPathKey(null);
     flyoutActiveRef.current = false;
-    setMetadataDebug(EMPTY_METADATA_DEBUG);
-    setMetadataDebugEntries([]);
-  });
-
-  const pushMetadataDebugEntry = useEffectEvent(
-    (tone: BadgeTone, title: string, detail: string) => {
-      const entry: MetadataDebugEntry = {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-        tone,
-        title,
-        detail,
-      };
-
-      startTransition(() => {
-        setMetadataDebugEntries((current) => [entry, ...current].slice(0, 6));
-      });
-    },
-  );
-
-  const beginMetadataDebug = useEffectEvent((origin: string, requestCount: number) => {
-    startTransition(() => {
-      setMetadataDebug((current) => ({
-        ...current,
-        status: "running",
-        lastOrigin: origin,
-        pendingBatches: current.pendingBatches + 1,
-        pendingFiles: current.pendingFiles + requestCount,
-        lastMessage: `${origin} 发起 ${requestCount} 个字段请求`,
-      }));
-    });
-  });
-
-  const finishMetadataDebug = useEffectEvent((input: {
-    origin: string;
-    requestCount: number;
-    durationMs: number;
-    responseCount: number;
-    missingCount: number;
-    error?: string;
-  }) => {
-    startTransition(() => {
-      setMetadataDebug((current) => ({
-        status: input.error ? "error" : "success",
-        lastOrigin: input.origin,
-        pendingBatches: Math.max(0, current.pendingBatches - 1),
-        pendingFiles: Math.max(0, current.pendingFiles - input.requestCount),
-        lastDurationMs: input.durationMs,
-        lastResolved: Math.max(0, input.responseCount - input.missingCount),
-        lastMissing: input.missingCount,
-        lastMessage: input.error
-          ? `${input.origin} 失败: ${input.error}`
-          : `${input.origin} 完成，返回 ${input.responseCount} 项`,
-      }));
-    });
-
-    pushMetadataDebugEntry(
-      input.error ? "danger" : input.missingCount ? "warning" : "success",
-      input.origin,
-      input.error
-        ? input.error
-        : `耗时 ${input.durationMs} ms，返回 ${input.responseCount} 项，缺失 ${input.missingCount} 项`,
-    );
+    resetMetadataState();
   });
 
   const refreshQueueFiles = useEffectEvent(async () => {
@@ -340,18 +278,6 @@ function App() {
         }
       });
 
-    void invoke<DebugLogInfo>("get_debug_log_info")
-      .then((info) => {
-        if (!disposed) {
-          setDebugLogPath(info.path);
-        }
-      })
-      .catch(() => {
-        if (!disposed) {
-          setDebugLogPath("");
-        }
-      });
-
     const cleanupProgressListener = listen<CleanupProgressEvent>("cleanup-progress", (event) =>
       handleProgressEvent(event.payload),
     );
@@ -383,308 +309,6 @@ function App() {
       unlistenWindowDrop?.();
     };
   }, [handleCleanupFileEvent, handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
-
-  useEffect(() => {
-    if (!metadataSeedFiles.length) {
-      return;
-    }
-
-    const requests = metadataSeedFiles
-      .filter((file) => {
-        const pathKey = normalizePath(file.sourcePath);
-        return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
-      })
-      .map((file) => ({
-        requestKey: normalizePath(file.sourcePath),
-        filePath: file.sourcePath,
-      }));
-
-    if (!requests.length) {
-      return;
-    }
-
-    const loadingKeys = requests.map((request) => `before:${request.requestKey}`);
-    const startedAt = performance.now();
-
-    startTransition(() => {
-      setLoadingSnapshots((current) => {
-        const next = { ...current };
-        for (const key of loadingKeys) {
-          next[key] = true;
-        }
-        return next;
-      });
-    });
-    beginMetadataDebug("列表预读", requests.length);
-
-    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
-      .then((responses) => {
-        startTransition(() => {
-          setBeforeSnapshots((current) => {
-            const next = { ...current };
-            for (const response of responses) {
-              next[response.requestKey] = response.snapshot;
-            }
-            return next;
-          });
-        });
-        finishMetadataDebug({
-          origin: "列表预读",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: responses.length,
-          missingCount: responses.filter((response) => response.missing).length,
-        });
-      })
-      .catch((error) => {
-        setErrorMessage(toMessage(error));
-        finishMetadataDebug({
-          origin: "列表预读",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: 0,
-          missingCount: 0,
-          error: toMessage(error),
-        });
-      })
-      .finally(() => {
-        startTransition(() => {
-          setLoadingSnapshots((current) => {
-            const next = { ...current };
-            for (const key of loadingKeys) {
-              delete next[key];
-            }
-            return next;
-          });
-        });
-      });
-  }, [beforeSnapshots, previewFileKey]);
-
-  useEffect(() => {
-    if (!previewFile || !previewPathKey) {
-      return;
-    }
-
-    const beforeLoadingKey = `before:${previewPathKey}`;
-    if (beforeSnapshots[previewPathKey] || loadingSnapshots[beforeLoadingKey]) {
-      return;
-    }
-
-    const startedAt = performance.now();
-    const requests: MetadataSnapshotRequest[] = [
-      {
-        requestKey: previewPathKey,
-        filePath: previewFile.sourcePath,
-      },
-    ];
-
-    startTransition(() => {
-      setLoadingSnapshots((current) => ({
-        ...current,
-        [beforeLoadingKey]: true,
-      }));
-    });
-    beginMetadataDebug("悬停预读", requests.length);
-
-    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
-      .then((responses) => {
-        startTransition(() => {
-          setBeforeSnapshots((current) => {
-            const next = { ...current };
-            for (const response of responses) {
-              next[response.requestKey] = response.snapshot;
-            }
-            return next;
-          });
-        });
-        finishMetadataDebug({
-          origin: "悬停预读",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: responses.length,
-          missingCount: responses.filter((response) => response.missing).length,
-        });
-      })
-      .catch((error) => {
-        setErrorMessage(toMessage(error));
-        finishMetadataDebug({
-          origin: "悬停预读",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: 0,
-          missingCount: 0,
-          error: toMessage(error),
-        });
-      })
-      .finally(() => {
-        startTransition(() => {
-          setLoadingSnapshots((current) => {
-            const next = { ...current };
-            delete next[beforeLoadingKey];
-            return next;
-          });
-        });
-      });
-  }, [beforeSnapshots, previewFile, previewPathKey]);
-
-  useEffect(() => {
-    if (!previewFile || !previewPathKey) {
-      return;
-    }
-
-    const pathKey = previewPathKey;
-    const rowState = fileStates[pathKey];
-    const afterLoadingKey = `after:${pathKey}`;
-
-    if (
-      rowState?.status !== "success" ||
-      afterSnapshots[pathKey] ||
-      loadingSnapshots[afterLoadingKey]
-    ) {
-      return;
-    }
-
-    const startedAt = performance.now();
-    const targetPath = rowState.outputPath || previewFile.sourcePath;
-    const requests: MetadataSnapshotRequest[] = [
-      {
-        requestKey: pathKey,
-        filePath: targetPath,
-      },
-    ];
-
-    startTransition(() => {
-      setLoadingSnapshots((current) => ({
-        ...current,
-        [afterLoadingKey]: true,
-      }));
-    });
-    beginMetadataDebug("悬停后览", requests.length);
-
-    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
-      .then((responses) => {
-        startTransition(() => {
-          setAfterSnapshots((current) => {
-            const next = { ...current };
-            for (const response of responses) {
-              next[response.requestKey] = response.snapshot;
-            }
-            return next;
-          });
-        });
-        finishMetadataDebug({
-          origin: "悬停后览",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: responses.length,
-          missingCount: responses.filter((response) => response.missing).length,
-        });
-      })
-      .catch((error) => {
-        setErrorMessage(toMessage(error));
-        finishMetadataDebug({
-          origin: "悬停后览",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: 0,
-          missingCount: 0,
-          error: toMessage(error),
-        });
-      })
-      .finally(() => {
-        startTransition(() => {
-          setLoadingSnapshots((current) => {
-            const next = { ...current };
-            delete next[afterLoadingKey];
-            return next;
-          });
-        });
-      });
-  }, [afterSnapshots, fileStates, previewFile, previewPathKey]);
-
-  useEffect(() => {
-    if (!summary || summary.cancelled || !metadataSeedFiles.length) {
-      return;
-    }
-
-    const requests = metadataSeedFiles
-      .map((file) => {
-        const pathKey = normalizePath(file.sourcePath);
-        const rowState = fileStates[pathKey];
-        if (
-          rowState?.status !== "success" ||
-          afterSnapshots[pathKey] ||
-          loadingSnapshots[`after:${pathKey}`]
-        ) {
-          return null;
-        }
-
-        return {
-          requestKey: pathKey,
-          filePath: rowState.outputPath || file.sourcePath,
-        };
-      })
-      .filter((request): request is MetadataSnapshotRequest => Boolean(request));
-
-    if (!requests.length) {
-      return;
-    }
-
-    const startedAt = performance.now();
-
-    startTransition(() => {
-      setLoadingSnapshots((current) => {
-        const next = { ...current };
-        for (const request of requests) {
-          next[`after:${request.requestKey}`] = true;
-        }
-        return next;
-      });
-    });
-    beginMetadataDebug("任务回填", requests.length);
-
-    void invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", { requests })
-      .then((responses) => {
-        startTransition(() => {
-          setAfterSnapshots((current) => {
-            const next = { ...current };
-            for (const response of responses) {
-              next[response.requestKey] = response.snapshot;
-            }
-            return next;
-          });
-        });
-        finishMetadataDebug({
-          origin: "任务回填",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: responses.length,
-          missingCount: responses.filter((response) => response.missing).length,
-        });
-      })
-      .catch((error) => {
-        setErrorMessage(toMessage(error));
-        finishMetadataDebug({
-          origin: "任务回填",
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: 0,
-          missingCount: 0,
-          error: toMessage(error),
-        });
-      })
-      .finally(() => {
-        startTransition(() => {
-          setLoadingSnapshots((current) => {
-            const next = { ...current };
-            for (const request of requests) {
-              delete next[`after:${request.requestKey}`];
-            }
-            return next;
-          });
-        });
-      });
-  }, [afterSnapshots, fileStates, metadataSeedFiles, previewFileKey, summary]);
 
   useEffect(() => {
     if (!summary || !queueFiles.length) {
@@ -815,7 +439,7 @@ function App() {
     setRunFailures([]);
     setSummary(null);
     setFileStates({});
-    setAfterSnapshots({});
+    clearAfterSnapshots();
     setHoveredPathKey(null);
     pendingProgressRef.current = null;
     setProgress(createProgressState(fileCount));
@@ -834,7 +458,7 @@ function App() {
       setSummary(result);
       setRunFailures(result.failures.slice(0, 6));
       setFileStates(buildFileStateMap(result.previewStates));
-      setAfterSnapshots(buildAfterSnapshotMap(result.previewStates));
+      applyCleanupPreviewStates(result.previewStates);
       setProgress({
         total: result.total,
         completed: result.succeeded + result.failed,
@@ -876,9 +500,7 @@ function App() {
       setProgress(EMPTY_PROGRESS);
       setErrorMessage(null);
       setFileStates({});
-      setBeforeSnapshots({});
-      setAfterSnapshots({});
-      setLoadingSnapshots({});
+      resetMetadataState();
       setHoveredPathKey(null);
       flyoutActiveRef.current = false;
     } catch (error) {

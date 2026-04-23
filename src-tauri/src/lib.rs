@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
@@ -61,12 +61,23 @@ struct PendingShellRequestState {
 
 #[derive(Default)]
 struct QueueStore {
-    files: Vec<QueuedFile>,
+    file_count: usize,
+    preview_files: Vec<QueuedFile>,
+    queue_file_path: Option<PathBuf>,
+    queue_offsets: Vec<u64>,
     file_keys: HashSet<String>,
     roots: HashMap<String, RootSummary>,
     total_bytes: u64,
     ignored_count: usize,
     ignored_samples: Vec<String>,
+}
+
+impl Drop for QueueStore {
+    fn drop(&mut self) {
+        if let Some(path) = self.queue_file_path.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,7 +369,7 @@ async fn scan_inputs(
                 ScanWorkerEvent::Batch(batch) => {
                     let view = {
                         let mut store = queue_state.inner.lock().unwrap();
-                        merge_scan_batch(&mut store, batch);
+                        merge_scan_batch(&mut store, batch)?;
                         build_queue_view(&store)
                     };
 
@@ -444,16 +455,10 @@ fn get_queue_files_page(
     queue_state: State<'_, QueueState>,
     offset: usize,
     limit: usize,
-) -> Vec<QueuedFile> {
+) -> Result<Vec<QueuedFile>, String> {
     let store = queue_state.inner.lock().unwrap();
     let page_size = limit.clamp(1, QUEUE_PAGE_SIZE_MAX);
-    store
-        .files
-        .iter()
-        .skip(offset)
-        .take(page_size)
-        .cloned()
-        .collect()
+    read_queue_files_page(&store, offset, page_size)
 }
 
 #[tauri::command]
@@ -627,7 +632,93 @@ fn flush_remaining_scan_batch(
         .map_err(|_| "扫描进度通道已关闭。".to_string())
 }
 
-fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) {
+fn queue_spool_path() -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "tagsweep-queue-{}-{timestamp}.jsonl",
+        std::process::id()
+    ))
+}
+
+fn ensure_queue_spool_path(store: &mut QueueStore) -> PathBuf {
+    if let Some(path) = store.queue_file_path.clone() {
+        return path;
+    }
+
+    let path = queue_spool_path();
+    store.queue_file_path = Some(path.clone());
+    path
+}
+
+fn append_queued_file(store: &mut QueueStore, file: &QueuedFile) -> Result<(), String> {
+    let spool_path = ensure_queue_spool_path(store);
+    let mut spool = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(&spool_path)
+        .map_err(|error| format!("无法打开队列暂存文件: {error}"))?;
+    let offset = spool
+        .seek(SeekFrom::End(0))
+        .map_err(|error| format!("无法定位队列暂存文件: {error}"))?;
+    let serialized =
+        serde_json::to_string(file).map_err(|error| format!("无法写入队列文件信息: {error}"))?;
+    spool
+        .write_all(serialized.as_bytes())
+        .and_then(|_| spool.write_all(b"\n"))
+        .map_err(|error| format!("无法写入队列暂存文件: {error}"))?;
+    store.queue_offsets.push(offset);
+    store.file_count += 1;
+    if store.preview_files.len() < MAX_QUEUE_PREVIEW_FILES {
+        store.preview_files.push(file.clone());
+    }
+    Ok(())
+}
+
+fn read_queue_file_at(path: &Path, offset: u64) -> Result<QueuedFile, String> {
+    let file = fs::File::open(path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
+    let mut reader = BufReader::new(file);
+    reader
+        .seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("无法定位队列暂存条目: {error}"))?;
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .map_err(|error| format!("无法读取队列暂存条目: {error}"))?;
+    serde_json::from_str::<QueuedFile>(line.trim_end())
+        .map_err(|error| format!("无法解析队列暂存条目: {error}"))
+}
+
+fn read_queue_files_page(
+    store: &QueueStore,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<QueuedFile>, String> {
+    let Some(path) = store.queue_file_path.as_deref() else {
+        return Ok(Vec::new());
+    };
+
+    store
+        .queue_offsets
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|entry_offset| read_queue_file_at(path, *entry_offset))
+        .collect()
+}
+
+fn read_all_queue_files(store: &QueueStore) -> Result<Vec<QueuedFile>, String> {
+    if store.file_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    read_queue_files_page(store, 0, store.file_count)
+}
+
+fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) -> Result<(), String> {
     for file in batch.files {
         let file_key = dedupe_key(Path::new(&file.source_path));
         if !store.file_keys.insert(file_key) {
@@ -653,25 +744,21 @@ fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) {
             );
         }
 
-        store.files.push(file);
+        append_queued_file(store, &file)?;
     }
 
     store.ignored_count += batch.ignored_count;
     merge_ignored_samples(&mut store.ignored_samples, batch.ignored_samples);
+    Ok(())
 }
 
 fn build_queue_view(store: &QueueStore) -> QueueView {
     QueueView {
-        supported_count: store.files.len(),
+        supported_count: store.file_count,
         total_bytes: store.total_bytes,
         ignored_count: store.ignored_count,
         ignored_samples: store.ignored_samples.clone(),
-        preview_files: store
-            .files
-            .iter()
-            .take(MAX_QUEUE_PREVIEW_FILES)
-            .cloned()
-            .collect(),
+        preview_files: store.preview_files.clone(),
         root_count: store.roots.len(),
     }
 }
@@ -1084,20 +1171,15 @@ async fn run_cleanup(
     let run_result = async {
         let (planned_files, tracked_preview_files, tracked_paths) = {
             let store = queue_state.inner.lock().unwrap();
-            let tracked_preview_files = store
-                .files
-                .iter()
-                .take(MAX_QUEUE_PREVIEW_FILES)
-                .cloned()
-                .collect::<Vec<_>>();
+            let tracked_preview_files = store.preview_files.clone();
             let tracked_paths = store
-                .files
+                .preview_files
                 .iter()
                 .take(MAX_QUEUE_PREVIEW_FILES)
                 .map(|file| dedupe_key(Path::new(&file.source_path)))
                 .collect::<HashSet<_>>();
             (
-                plan_output_paths(&store.files, &options)?,
+                plan_output_paths(&read_all_queue_files(&store)?, &options)?,
                 tracked_preview_files,
                 tracked_paths,
             )
@@ -2041,7 +2123,8 @@ mod tests {
                 ignored_count: 1,
                 ignored_samples: vec!["C:/ignored/a.txt".to_string()],
             },
-        );
+        )
+        .expect("merge first scan batch");
         merge_scan_batch(
             &mut store,
             ScanBatch {
@@ -2052,9 +2135,11 @@ mod tests {
                 ignored_count: 1,
                 ignored_samples: vec!["C:/ignored/a.txt".to_string(), "C:/ignored/b.txt".to_string()],
             },
-        );
+        )
+        .expect("merge second scan batch");
 
         let view = build_queue_view(&store);
+        let page = read_queue_files_page(&store, 8, 4).expect("read paged queue files");
 
         assert_eq!(view.supported_count, 11);
         assert_eq!(
@@ -2064,6 +2149,9 @@ mod tests {
         assert_eq!(view.root_count, 1);
         assert_eq!(view.ignored_count, 2);
         assert_eq!(view.ignored_samples, vec!["C:/ignored/a.txt", "C:/ignored/b.txt"]);
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].relative_path, "8.jpg");
+        assert_eq!(page[2].relative_path, "10.jpg");
     }
 
     #[test]

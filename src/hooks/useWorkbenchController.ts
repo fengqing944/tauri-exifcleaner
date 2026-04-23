@@ -160,7 +160,10 @@ export function useWorkbenchController() {
   });
 
   const scanInputPaths = useEffectEvent(
-    async (paths: string[], options?: { autoStartCleanup?: boolean }) => {
+    async (
+      paths: string[],
+      options?: { autoStartCleanup?: boolean; replaceQueue?: boolean },
+    ) => {
     if (isRunning) {
       setErrorMessage("请等待当前清理任务结束后再追加导入。");
       return;
@@ -174,6 +177,19 @@ export function useWorkbenchController() {
     const cleanedPaths = normalizeSelection(paths);
     if (!cleanedPaths.length) {
       return;
+    }
+
+    if (options?.replaceQueue) {
+      await invoke("clear_queue");
+      startTransition(() => {
+        setQueueView(null);
+        setQueueFiles([]);
+        setSummary(null);
+        setRunFailures([]);
+        setProgress(EMPTY_PROGRESS);
+        setErrorMessage(null);
+        setFileStates({});
+      });
     }
 
     setIsScanning(true);
@@ -332,7 +348,6 @@ export function useWorkbenchController() {
 
         setRuntimeInfo(info);
         setParallelism(info.parallelismDefault);
-        void pullPendingShellRequest();
       })
       .catch((error) => {
         if (!disposed) {
@@ -363,6 +378,8 @@ export function useWorkbenchController() {
         unlistenWindowDrop = unlisten;
       });
 
+    void pullPendingShellRequest();
+
     return () => {
       disposed = true;
       void cleanupProgressListener.then((unlisten) => unlisten());
@@ -382,6 +399,7 @@ export function useWorkbenchController() {
     setPendingShellRequest(null);
     void scanInputPaths(request.paths, {
       autoStartCleanup: request.autoStartCleanup,
+      replaceQueue: true,
     });
   }, [isRunning, isScanning, pendingShellRequest]);
 

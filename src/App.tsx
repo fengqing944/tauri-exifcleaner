@@ -6,172 +6,47 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-
-type OutputMode = "mirror" | "overwrite";
-type CleanupStatus = "running" | "success" | "failed" | "cancelled";
-type BadgeTone = "success" | "warning" | "info" | "neutral" | "danger";
-
-type RuntimeInfo = {
-  defaultOutputDir: string;
-  parallelismDefault: number;
-  parallelismMax: number;
-  exiftoolReady: boolean;
-  exiftoolVersion: string | null;
-  exiftoolPath: string | null;
-};
-
-type QueuedFile = {
-  sourcePath: string;
-  relativePath: string;
-  rootLabel: string;
-  rootSourcePath: string;
-  sizeBytes: number;
-  fromDirectory: boolean;
-};
-
-type QueueView = {
-  supportedCount: number;
-  totalBytes: number;
-  ignoredCount: number;
-  ignoredSamples: string[];
-  previewFiles: QueuedFile[];
-  rootCount: number;
-};
-
-type ScanProgressEvent = {
-  view: QueueView;
-  done: boolean;
-  cancelled: boolean;
-};
-
-type ScanSummary = {
-  view: QueueView;
-  cancelled: boolean;
-};
-
-type CleanupProgressEvent = {
-  total: number;
-  completed: number;
-  succeeded: number;
-  failed: number;
-  currentPath: string;
-  outputPath: string | null;
-  status: CleanupStatus;
-  error: string | null;
-};
-
-type CleanupSummary = {
-  total: number;
-  succeeded: number;
-  failed: number;
-  cancelled: boolean;
-  outputDir: string | null;
-  failures: Array<{
-    sourcePath: string;
-    error: string;
-  }>;
-  previewStates: Array<{
-    sourcePath: string;
-    outputPath: string | null;
-    status: CleanupStatus;
-    error: string | null;
-    snapshot: MetadataPreviewSnapshot | null;
-  }>;
-};
-
-type ProgressState = {
-  total: number;
-  completed: number;
-  succeeded: number;
-  failed: number;
-  currentPath: string;
-  currentStatus: string;
-};
-
-type MetadataFieldPreview = {
-  group: string;
-  name: string;
-  valuePreview: string;
-};
-
-type MetadataPreviewSnapshot = {
-  count: number;
-  fields: MetadataFieldPreview[];
-  truncated: boolean;
-};
-
-type MetadataSnapshotRequest = {
-  requestKey: string;
-  filePath: string;
-};
-
-type MetadataSnapshotResponse = {
-  requestKey: string;
-  snapshot: MetadataPreviewSnapshot;
-  missing: boolean;
-};
-
-type DebugLogInfo = {
-  path: string;
-};
-
-type MetadataDebugState = {
-  status: "idle" | "running" | "success" | "error";
-  lastOrigin: string;
-  pendingBatches: number;
-  pendingFiles: number;
-  lastDurationMs: number;
-  lastResolved: number;
-  lastMissing: number;
-  lastMessage: string;
-};
-
-type MetadataDebugEntry = {
-  id: string;
-  tone: BadgeTone;
-  title: string;
-  detail: string;
-};
-
-type FileRunState = {
-  status: CleanupStatus;
-  outputPath: string | null;
-  error: string | null;
-};
-
-type FlyoutPosition = {
-  left: number;
-  top: number;
-};
-
-const EMPTY_PROGRESS: ProgressState = {
-  total: 0,
-  completed: 0,
-  succeeded: 0,
-  failed: 0,
-  currentPath: "",
-  currentStatus: "idle",
-};
-
-const QUEUE_PAGE_SIZE = 240;
-const EAGER_METADATA_PREFETCH_LIMIT = 48;
-const SMALL_QUEUE_EAGER_LOAD_THRESHOLD = 96;
-const EMPTY_METADATA_DEBUG: MetadataDebugState = {
-  status: "idle",
-  lastOrigin: "未开始",
-  pendingBatches: 0,
-  pendingFiles: 0,
-  lastDurationMs: 0,
-  lastResolved: 0,
-  lastMissing: 0,
-  lastMessage: "字段读取尚未开始。",
-};
+import {
+  type BadgeTone,
+  type CleanupProgressEvent,
+  type CleanupSummary,
+  type DebugLogInfo,
+  type FileRunState,
+  type FlyoutPosition,
+  type MetadataDebugEntry,
+  type MetadataDebugState,
+  type MetadataPreviewSnapshot,
+  type MetadataSnapshotRequest,
+  type MetadataSnapshotResponse,
+  type ProgressState,
+  type QueuedFile,
+  type QueueView,
+  type RuntimeInfo,
+  type ScanProgressEvent,
+  type ScanSummary,
+  EAGER_METADATA_PREFETCH_LIMIT,
+  EMPTY_METADATA_DEBUG,
+  EMPTY_PROGRESS,
+  QUEUE_PAGE_SIZE,
+  SMALL_QUEUE_EAGER_LOAD_THRESHOLD,
+  buildActivityState,
+  buildAfterSnapshotMap,
+  buildFileStateMap,
+  clampNumber,
+  createProgressState,
+  mergeSummaryFileStates,
+  normalizePath,
+  normalizeSelection,
+  selectionToArray,
+  toMessage,
+} from "./app-shared";
+import { TopToolbar } from "./components/TopToolbar";
+import { WorkbenchPanel } from "./components/WorkbenchPanel";
 
 function App() {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -214,7 +89,7 @@ function App() {
   const previewFiles = queueFiles.length ? queueFiles : queueView?.previewFiles ?? [];
   const ignoredCount = queueView?.ignoredCount ?? 0;
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
-  const outputMode: OutputMode = "overwrite";
+  const outputMode = "overwrite" as const;
   const canStart = fileCount > 0 && !isScanning && !isRunning;
   const hasMoreQueueFiles = queueFiles.length < fileCount;
   const allQueueFilesLoaded = fileCount > 0 && !hasMoreQueueFiles;
@@ -1120,738 +995,68 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div className="topbar-main">
-          <div className="brand-block">
-            <strong>MetaSweep</strong>
-            <span>元数据清理工具</span>
-          </div>
-          <div className="topbar-meta">
-            <StatusBadge
-              tone={runtimeInfo?.exiftoolReady ? "success" : "warning"}
-              label={runtimeInfo?.exiftoolReady ? "引擎就绪" : "引擎未就绪"}
-            />
-            <span>{runtimeInfo?.exiftoolVersion ? `ExifTool ${runtimeInfo.exiftoolVersion}` : "ExifTool"}</span>
-            <span>原地覆盖</span>
-          </div>
-        </div>
-
-        <div className="topbar-toolbar">
-          <div className="toolbar-group">
-            <button
-              className="button button-primary"
-              type="button"
-              disabled={!canStart}
-              onClick={startCleanup}
-            >
-              开始清理
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={!isRunning && !isScanning}
-              onClick={isRunning ? cancelCleanup : cancelScan}
-            >
-              {isRunning ? "取消清理" : "取消扫描"}
-            </button>
-          </div>
-
-          <div className="toolbar-group toolbar-meta-group">
-            <span className="toolbar-label">并发</span>
-            <div className="toolbar-slider">
-              <input
-                type="range"
-                min={1}
-                max={runtimeInfo?.parallelismMax ?? 16}
-                value={parallelism}
-                onChange={(event) => setParallelism(Number(event.currentTarget.value))}
-              />
-              <strong>{parallelism}</strong>
-            </div>
-          </div>
-        </div>
-      </header>
+      <TopToolbar
+        runtimeInfo={runtimeInfo}
+        canStart={canStart}
+        isRunning={isRunning}
+        isScanning={isScanning}
+        parallelism={parallelism}
+        onParallelismChange={setParallelism}
+        onStartCleanup={startCleanup}
+        onCancelCurrent={isRunning ? cancelCleanup : cancelScan}
+      />
 
       <section className="workspace single-workspace">
         <section className="content">
-          <Panel
-            title="工作台"
-            subtitle="导入、列表、任务状态和调试都集中在这里，整体更紧凑。"
-            aside={
-              isScanning ? (
-                <StatusBadge tone="info" label="扫描中" />
-              ) : isRunning ? (
-                <StatusBadge tone="info" label="处理中" />
-              ) : summary ? (
-                <StatusBadge tone={summary.cancelled ? "warning" : "success"} label={summary.cancelled ? "已取消" : "已完成"} />
-              ) : (
-                <StatusBadge tone={dropActive ? "info" : "neutral"} label={dropActive ? "释放导入" : "待命"} />
-              )
-            }
-          >
-            <div className={`queue-workspace compact-workbench ${dropActive ? "is-drop-active" : ""}`}>
-              <div className="queue-workspace-toolbar compact-workbench-toolbar">
-                <div className="queue-workspace-copy">
-                  <strong>{fileCount ? "拖到这里可继续追加文件" : "拖放区域与文件列表已合并"}</strong>
-                  <span>{fileCount ? "列表、进度和调试都已收进同一个工作台。" : "拖放图像、视频或 PDF 到这里，或直接点击按钮导入。"}</span>
-                </div>
-
-                <div className="import-actions compact-actions">
-                  <button className="button button-primary" type="button" onClick={addFiles} disabled={isBusy}>
-                    添加文件
-                  </button>
-                  <button className="button" type="button" onClick={addFolders} disabled={isBusy}>
-                    添加文件夹
-                  </button>
-                  <button className="button button-danger" type="button" onClick={clearQueue} disabled={isBusy}>
-                    清空
-                  </button>
-                </div>
-              </div>
-
-              <div className="workbench-meta-row">
-                <div className="summary-strip compact-summary-strip">
-                  <StatChip label="输入根" value={String(rootCount)} />
-                  <StatChip label="候选" value={String(fileCount)} />
-                  <StatChip label="大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
-                  <StatChip label="成功" value={String(progress.succeeded)} />
-                  <StatChip label="失败" value={String(progress.failed)} />
-                  <StatChip label="忽略" value={String(ignoredCount)} />
-                </div>
-
-                <div className="activity-strip compact-activity-strip">
-                  <div className="activity-main">
-                    <span className="activity-label">{activity.label}</span>
-                    <strong title={activity.title}>{trimMiddle(activity.title, 72)}</strong>
-                  </div>
-                  <div className="activity-stats">
-                    <span>
-                      {progress.completed}/{progress.total || fileCount}
-                    </span>
-                    <span>{progressPercent}%</span>
-                    <span>{progress.currentStatus}</span>
-                  </div>
-                </div>
-              </div>
-
-              {ignoredCount > 0 ? (
-                <div className="message warning compact-message">
-                  已忽略 {ignoredCount} 个不支持的项目。
-                  {queueView?.ignoredSamples.length ? ` 示例: ${queueView.ignoredSamples.join(" · ")}` : ""}
-                </div>
-              ) : null}
-
-              {!fileCount ? (
-                <button
-                  className={`dropzone queue-dropstage compact-dropstage ${dropActive ? "active" : ""}`}
-                  type="button"
-                  disabled={isBusy}
-                  onClick={addFiles}
-                >
-                  <strong>拖入文件或点击导入</strong>
-                  <span>支持多文件、多文件夹和递归扫描。这里就是你的主工作区。</span>
-                </button>
-              ) : (
-                <div
-                  className={`table-shell queue-list-shell compact-list-shell ${previewFile ? "is-flyout-open" : ""}`}
-                  ref={tableShellRef}
-                  onMouseLeave={() => clearHover()}
-                >
-                  <div className="table-head compact-table-head">
-                    <span>选中的文件</span>
-                    <span># 处理前</span>
-                    <span># 处理后</span>
-                    <span>状态</span>
-                  </div>
-
-                  <div className="table-body queue-scroll-body compact-scroll-body" ref={queueBodyRef}>
-                    {previewFiles.map((file) => {
-                      const pathKey = normalizePath(file.sourcePath);
-                      const rowState = fileStates[pathKey];
-                      const beforeSnapshot = beforeSnapshots[pathKey];
-                      const afterSnapshot = afterSnapshots[pathKey];
-                      const beforeLoading = Boolean(loadingSnapshots[`before:${pathKey}`]);
-                      const afterLoading = Boolean(loadingSnapshots[`after:${pathKey}`]);
-                      const isPreviewing = hoveredPathKey === pathKey;
-                      const isActive = highlightedPathKey === pathKey && isRunning;
-                      const rowStatus = getRowStatusDescriptor(rowState);
-
-                      return (
-                        <div
-                          key={file.sourcePath}
-                          className={`queue-row compact-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
-                          onMouseEnter={(event) => scheduleHover(pathKey, event)}
-                          onMouseLeave={() => clearHover()}
-                        >
-                          <div className="queue-file">
-                            <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
-                            <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
-                          </div>
-                          <span className="queue-count">
-                            {beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "读取中" : "—"}
-                          </span>
-                          <span className="queue-count">
-                            {resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
-                          </span>
-                          <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {hasMoreQueueFiles ? (
-                    <div className="queue-scroll-hint">
-                      {isLoadingQueuePage ? "正在继续载入列表..." : "继续向下滚动以载入更多文件"}
-                    </div>
-                  ) : null}
-
-                  {previewFile ? (
-                    <div
-                      className="preview-flyout-shell"
-                      style={{ left: `${flyoutPosition.left}px`, top: `${flyoutPosition.top}px` }}
-                      onMouseEnter={handleFlyoutEnter}
-                      onMouseLeave={handleFlyoutLeave}
-                    >
-                      <MetadataPreviewFlyout
-                        file={previewFile}
-                        beforeSnapshot={previewBeforeSnapshot}
-                        afterSnapshot={previewAfterSnapshot}
-                        rowState={previewRowState}
-                        beforeLoading={previewBeforeLoading}
-                        afterLoading={previewAfterLoading}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-
-            <div className="workbench-bottom">
-              <div className={`task-callout compact-callout ${summary?.cancelled ? "warning" : summary ? "success" : "neutral"}`}>
-                {summary ? (
-                  summary.cancelled ? (
-                    <span>任务已取消，已完成 {summary.succeeded + summary.failed}/{summary.total} 项。</span>
-                  ) : (
-                    <span>任务完成，成功 {summary.succeeded} 项，失败 {summary.failed} 项。</span>
-                  )
-                ) : (
-                  <span>清理开始后，这里会持续显示当前任务状态。</span>
-                )}
-              </div>
-
-              <details
-                className="details-block"
-                open={isRunning || metadataDebug.status === "error" || runFailures.length > 0}
-              >
-                <summary>
-                  <span>运行详情</span>
-                  <span>
-                    {metadataDebug.status === "running"
-                      ? "字段读取中"
-                      : runFailures.length
-                        ? `${runFailures.length} 条错误`
-                        : "展开调试与错误"}
-                  </span>
-                </summary>
-
-                <div className="workbench-aux-grid">
-                  <div className="debug-block compact-debug-block">
-                    <div className="task-block-head">
-                      <strong>字段调试</strong>
-                      <span>{metadataDebug.lastOrigin}</span>
-                    </div>
-                    <div className="debug-strip">
-                      <StatusBadge
-                        tone={
-                          metadataDebug.status === "error"
-                            ? "danger"
-                            : metadataDebug.status === "running"
-                              ? "info"
-                              : metadataDebug.status === "success"
-                                ? "success"
-                                : "neutral"
-                        }
-                        label={
-                          metadataDebug.status === "error"
-                            ? "异常"
-                            : metadataDebug.status === "running"
-                              ? "读取中"
-                              : metadataDebug.status === "success"
-                                ? "最近成功"
-                                : "空闲"
-                        }
-                      />
-                      <span>批次 {metadataDebug.pendingBatches}</span>
-                      <span>文件 {metadataDebug.pendingFiles}</span>
-                      <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
-                    </div>
-                    <div className="debug-copy">
-                      <span>{metadataDebug.lastMessage}</span>
-                      <span>
-                        最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
-                      </span>
-                      <span title={debugLogPath}>
-                        日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
-                      </span>
-                    </div>
-                    {metadataDebugEntries.length ? (
-                      <div className="debug-entry-list">
-                        {metadataDebugEntries.map((entry) => (
-                          <div key={entry.id} className={`debug-entry ${entry.tone}`}>
-                            <strong>{entry.title}</strong>
-                            <span>{entry.detail}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="task-errors-block compact-error-block">
-                    <div className="task-block-head">
-                      <strong>最近错误</strong>
-                      <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
-                    </div>
-                    {runFailures.length ? (
-                      <div className="failure-list task-failure-list">
-                        {runFailures.map((failure) => (
-                          <div key={failure.sourcePath} className="failure-row compact-failure-row">
-                            <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
-                            <span>{failure.error}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
-                    )}
-                  </div>
-                </div>
-              </details>
-            </div>
-          </Panel>
+          <WorkbenchPanel
+            dropActive={dropActive}
+            isScanning={isScanning}
+            isRunning={isRunning}
+            isBusy={isBusy}
+            summary={summary}
+            fileCount={fileCount}
+            rootCount={rootCount}
+            ignoredCount={ignoredCount}
+            queueView={queueView}
+            progress={progress}
+            progressPercent={progressPercent}
+            activity={activity}
+            previewFiles={previewFiles}
+            fileStates={fileStates}
+            beforeSnapshots={beforeSnapshots}
+            afterSnapshots={afterSnapshots}
+            loadingSnapshots={loadingSnapshots}
+            hoveredPathKey={hoveredPathKey}
+            highlightedPathKey={highlightedPathKey}
+            hasMoreQueueFiles={hasMoreQueueFiles}
+            isLoadingQueuePage={isLoadingQueuePage}
+            previewFile={previewFile}
+            previewRowState={previewRowState}
+            previewBeforeSnapshot={previewBeforeSnapshot}
+            previewAfterSnapshot={previewAfterSnapshot}
+            previewBeforeLoading={previewBeforeLoading}
+            previewAfterLoading={previewAfterLoading}
+            flyoutPosition={flyoutPosition}
+            metadataDebug={metadataDebug}
+            metadataDebugEntries={metadataDebugEntries}
+            debugLogPath={debugLogPath}
+            runFailures={runFailures}
+            tableShellRef={tableShellRef}
+            queueBodyRef={queueBodyRef}
+            onAddFiles={addFiles}
+            onAddFolders={addFolders}
+            onClearQueue={clearQueue}
+            onScheduleHover={scheduleHover}
+            onClearHover={clearHover}
+            onFlyoutEnter={handleFlyoutEnter}
+            onFlyoutLeave={handleFlyoutLeave}
+          />
         </section>
       </section>
 
       {errorMessage ? <div className="error-strip">{errorMessage}</div> : null}
     </main>
   );
-}
-
-function Panel(props: {
-  title: string;
-  subtitle: string;
-  children: ReactNode;
-  aside?: ReactNode;
-}) {
-  return (
-    <section className="panel">
-      <header className="panel-header">
-        <div>
-          <h2>{props.title}</h2>
-          <p>{props.subtitle}</p>
-        </div>
-        {props.aside}
-      </header>
-      {props.children}
-    </section>
-  );
-}
-
-function StatusBadge(props: { tone: BadgeTone; label: string }) {
-  return <span className={`badge ${props.tone}`}>{props.label}</span>;
-}
-
-function StatChip(props: { label: string; value: string }) {
-  return (
-    <div className="stat-chip">
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
-    </div>
-  );
-}
-
-function EmptyBox(props: { title: string; description: string }) {
-  return (
-    <div className="empty-box">
-      <strong>{props.title}</strong>
-      <span>{props.description}</span>
-    </div>
-  );
-}
-
-function MetadataPreviewFlyout(props: {
-  file: QueuedFile;
-  beforeSnapshot?: MetadataPreviewSnapshot;
-  afterSnapshot?: MetadataPreviewSnapshot;
-  rowState?: FileRunState;
-  beforeLoading: boolean;
-  afterLoading: boolean;
-}) {
-  const fileTitle = getLeafName(props.file.relativePath || props.file.sourcePath);
-  const fileContext = getParentPath(props.file.relativePath || props.file.sourcePath);
-
-  return (
-    <div className="preview-detail-panel">
-      <div className="preview-panel-head">
-        <div className="preview-panel-title">
-          <strong title={props.file.sourcePath}>{trimMiddle(fileTitle, 24)}</strong>
-          <span title={fileContext}>{trimMiddle(fileContext || props.file.sourcePath, 34)}</span>
-        </div>
-        <span className={`row-pill ${getRowStatusDescriptor(props.rowState).tone}`}>
-          {props.rowState ? getRowStatusDescriptor(props.rowState).label : "字段预览"}
-        </span>
-      </div>
-
-      <div className="preview-summary-grid">
-        <div className="preview-summary-card">
-          <span>处理前</span>
-          <strong>
-            {props.beforeSnapshot
-              ? props.beforeSnapshot.count
-              : props.beforeLoading
-                ? "读取中"
-                : "—"}
-          </strong>
-        </div>
-        <div className="preview-summary-card">
-          <span>处理后</span>
-          <strong>{resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}</strong>
-        </div>
-      </div>
-
-      <div className="preview-card-grid compare-grid">
-        <MetadataColumn
-          title="处理前"
-          snapshot={props.beforeSnapshot}
-          loading={props.beforeLoading}
-          emptyText="正在读取字段摘要..."
-        />
-
-        <MetadataColumn
-          title="处理后"
-          snapshot={props.afterSnapshot}
-          loading={props.afterLoading}
-          emptyText={resolveAfterEmptyText(props.rowState)}
-        />
-      </div>
-    </div>
-  );
-}
-
-function MetadataColumn(props: {
-  title: string;
-  snapshot?: MetadataPreviewSnapshot;
-  loading: boolean;
-  emptyText: string;
-}) {
-  const visibleFields = props.snapshot ? props.snapshot.fields : [];
-
-  return (
-    <section className="preview-column">
-      <header>
-        <strong>{props.title}</strong>
-        <span>{props.snapshot ? `${props.snapshot.count} 条` : props.loading ? "读取中" : "暂无"}</span>
-      </header>
-
-      {props.snapshot ? (
-        visibleFields.length ? (
-          <div className="preview-fields">
-            {visibleFields.map((field) => (
-              <div
-                key={`${field.group}:${field.name}`}
-                className="preview-field"
-                title={`${field.group} · ${field.name}\n${field.valuePreview}`}
-              >
-                <div className="preview-field-head">
-                  <strong title={`${field.group} · ${field.name}`}>{field.name}</strong>
-                  <span className="preview-field-group">{field.group}</span>
-                </div>
-                <span className="preview-field-value">{field.valuePreview}</span>
-              </div>
-            ))}
-            {props.snapshot.truncated ? <div className="preview-note">内容已裁剪</div> : null}
-          </div>
-        ) : (
-          <div className="preview-empty">没有可展示的字段。</div>
-        )
-      ) : (
-        <div className="preview-empty">{props.loading ? "正在读取字段..." : props.emptyText}</div>
-      )}
-    </section>
-  );
-}
-
-function selectionToArray(selection: string | string[] | null): string[] {
-  if (!selection) {
-    return [];
-  }
-
-  return Array.isArray(selection) ? selection : [selection];
-}
-
-function normalizeSelection(paths: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-
-  for (const path of paths) {
-    const trimmed = path.trim();
-    if (!trimmed) {
-      continue;
-    }
-
-    const key = normalizePath(trimmed);
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    result.push(trimmed);
-  }
-
-  return result;
-}
-
-function createProgressState(total: number): ProgressState {
-  return {
-    total,
-    completed: 0,
-    succeeded: 0,
-    failed: 0,
-    currentPath: "",
-    currentStatus: "idle",
-  };
-}
-
-function normalizePath(path: string): string {
-  return path.split("\\").join("/").toLowerCase();
-}
-
-function formatBytes(bytes: number): string {
-  if (!bytes) {
-    return "0 B";
-  }
-
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / 1024 ** exponent;
-  return `${value.toFixed(value >= 100 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
-}
-
-function trimMiddle(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-
-  const head = Math.max(12, Math.floor(maxLength / 2) - 2);
-  const tail = Math.max(10, Math.floor(maxLength / 2) - 4);
-  return `${value.slice(0, head)}...${value.slice(-tail)}`;
-}
-
-function getLeafName(path: string): string {
-  const normalized = path.split("\\").join("/");
-  const parts = normalized.split("/");
-  return parts[parts.length - 1] || path;
-}
-
-function getParentPath(path: string): string {
-  const normalized = path.split("\\").join("/");
-  const parts = normalized.split("/");
-  if (parts.length <= 1) {
-    return "";
-  }
-  return parts.slice(0, -1).join("/");
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function buildFileStateMap(
-  previewStates: Array<{
-    sourcePath: string;
-    outputPath: string | null;
-    status: CleanupStatus;
-    error: string | null;
-    snapshot: MetadataPreviewSnapshot | null;
-  }>,
-): Record<string, FileRunState> {
-  return previewStates.reduce<Record<string, FileRunState>>((result, item) => {
-    result[normalizePath(item.sourcePath)] = {
-      status: item.status,
-      outputPath: item.outputPath,
-      error: item.error,
-    };
-    return result;
-  }, {});
-}
-
-function buildAfterSnapshotMap(
-  previewStates: Array<{
-    sourcePath: string;
-    outputPath: string | null;
-    status: CleanupStatus;
-    error: string | null;
-    snapshot: MetadataPreviewSnapshot | null;
-  }>,
-): Record<string, MetadataPreviewSnapshot> {
-  return previewStates.reduce<Record<string, MetadataPreviewSnapshot>>((result, item) => {
-    if (item.snapshot) {
-      result[normalizePath(item.sourcePath)] = item.snapshot;
-    }
-    return result;
-  }, {});
-}
-
-function mergeSummaryFileStates(
-  current: Record<string, FileRunState>,
-  queueFiles: QueuedFile[],
-  summary: CleanupSummary,
-): Record<string, FileRunState> {
-  const next = { ...current };
-  const previewStateMap = buildFileStateMap(summary.previewStates);
-  const failureMap = new Map(
-    summary.failures.map((failure) => [
-      normalizePath(failure.sourcePath),
-      failure.error,
-    ]),
-  );
-
-  for (const [pathKey, state] of Object.entries(previewStateMap)) {
-    next[pathKey] = state;
-  }
-
-  for (const file of queueFiles) {
-    const pathKey = normalizePath(file.sourcePath);
-    if (previewStateMap[pathKey]) {
-      continue;
-    }
-
-    const failure = failureMap.get(pathKey);
-    if (failure) {
-      next[pathKey] = {
-        status: "failed",
-        outputPath: null,
-        error: failure,
-      };
-      continue;
-    }
-
-    if (!summary.cancelled) {
-      next[pathKey] = {
-        status: "success",
-        outputPath: next[pathKey]?.outputPath ?? null,
-        error: null,
-      };
-    }
-  }
-
-  return next;
-}
-
-function toMessage(error: unknown): string {
-  if (typeof error === "string") {
-    return error;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "发生了未知错误。";
-}
-
-function getRowStatusDescriptor(rowState?: FileRunState): { label: string; tone: BadgeTone } {
-  switch (rowState?.status) {
-    case "running":
-      return { label: "处理中", tone: "info" };
-    case "success":
-      return { label: "已清理", tone: "success" };
-    case "failed":
-      return { label: "失败", tone: "danger" };
-    case "cancelled":
-      return { label: "已取消", tone: "warning" };
-    default:
-      return { label: "待处理", tone: "neutral" };
-  }
-}
-
-function resolveAfterCountLabel(
-  snapshot: MetadataPreviewSnapshot | undefined,
-  rowState: FileRunState | undefined,
-  loading: boolean,
-): string {
-  if (snapshot) {
-    return String(snapshot.count);
-  }
-  if (loading) {
-    return "读取中";
-  }
-  if (rowState?.status === "success") {
-    return "0";
-  }
-  if (rowState?.status === "running") {
-    return "处理中";
-  }
-  return "—";
-}
-
-function resolveAfterEmptyText(rowState?: FileRunState): string {
-  if (!rowState) {
-    return "清理完成后可查看处理后的字段。";
-  }
-  if (rowState.status === "running") {
-    return "正在处理当前文件...";
-  }
-  if (rowState.status === "failed") {
-    return rowState.error || "当前文件处理失败，未生成处理后结果。";
-  }
-  if (rowState.status === "success") {
-    return "没有可展示的处理后字段。";
-  }
-  if (rowState.status === "cancelled") {
-    return "任务已取消，处理后结果不可用。";
-  }
-  return "清理完成后可查看处理后的字段。";
-}
-
-function buildActivityState(input: {
-  summary: CleanupSummary | null;
-  isRunning: boolean;
-  isScanning: boolean;
-  fileCount: number;
-  progress: ProgressState;
-}) {
-  if (input.summary) {
-    return {
-      label: input.summary.cancelled ? "任务已取消" : "任务已完成",
-      title: input.summary.cancelled
-        ? `已完成 ${input.summary.succeeded + input.summary.failed}/${input.summary.total} 项`
-        : `成功 ${input.summary.succeeded} 项，失败 ${input.summary.failed} 项`,
-    };
-  }
-
-  if (input.isRunning) {
-    return {
-      label: "当前正在清理",
-      title: input.progress.currentPath || "正在准备下一项",
-    };
-  }
-
-  if (input.isScanning) {
-    return {
-      label: "扫描中",
-      title: "正在把文件加入队列",
-    };
-  }
-
-  if (input.fileCount) {
-    return {
-      label: "准备就绪",
-      title: `队列中共有 ${input.fileCount} 个文件，悬停任意行可看字段摘要`,
-    };
-  }
-
-  return {
-    label: "等待导入",
-    title: "拖放文件或文件夹后，这里会直接显示紧凑表格和字段预览。",
-  };
 }
 
 export default App;

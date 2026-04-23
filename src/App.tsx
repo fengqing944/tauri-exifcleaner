@@ -28,6 +28,9 @@ function App() {
   const flyoutActiveRef = useRef(false);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const queueBodyRef = useRef<HTMLDivElement | null>(null);
+  const wasScanningRef = useRef(false);
+  const wasRunningRef = useRef(false);
+  const hadFilesRef = useRef(false);
   const cancelHoverTimer = useEffectEvent(() => {
     if (hoverTimeoutRef.current) {
       window.clearTimeout(hoverTimeoutRef.current);
@@ -116,31 +119,34 @@ function App() {
   });
 
   useEffect(() => {
-    if (isScanning) {
+    if (isScanning && !wasScanningRef.current) {
       resetMetadataState();
       hidePreview();
     }
-  }, [hidePreview, isScanning, resetMetadataState]);
+    wasScanningRef.current = isScanning;
+  }, [isScanning]);
 
   useEffect(() => {
-    if (isRunning) {
+    if (isRunning && !wasRunningRef.current) {
       clearAfterSnapshots();
       hidePreview();
     }
-  }, [clearAfterSnapshots, hidePreview, isRunning]);
+    wasRunningRef.current = isRunning;
+  }, [isRunning]);
 
   useEffect(() => {
     if (summary?.previewStates.length) {
       applyCleanupPreviewStates(summary.previewStates);
     }
-  }, [applyCleanupPreviewStates, summary]);
+  }, [summary]);
 
   useEffect(() => {
-    if (!fileCount) {
+    if (!fileCount && hadFilesRef.current) {
       resetMetadataState();
       hidePreview();
     }
-  }, [fileCount, hidePreview, resetMetadataState]);
+    hadFilesRef.current = fileCount > 0;
+  }, [fileCount]);
 
   useEffect(() => {
     if (!hoveredPathKey) {
@@ -174,7 +180,7 @@ function App() {
 
     body.addEventListener("scroll", handleScroll);
     return () => body.removeEventListener("scroll", handleScroll);
-  }, [hasMoreQueueFiles, isLoadingQueuePage, loadMoreQueueFiles, previewFiles.length]);
+  }, [hasMoreQueueFiles, isLoadingQueuePage, previewFiles.length]);
 
   const positionFlyout = (event: React.MouseEvent<HTMLDivElement>) => {
     const shell = tableShellRef.current;

@@ -331,7 +331,7 @@ export function useWorkbenchController() {
       void scanProgressListener.then((unlisten) => unlisten());
       unlistenWindowDrop?.();
     };
-  }, [handleCleanupFileEvent, handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
+  }, []);
 
   useEffect(() => {
     if (!summary || !queueFiles.length) {

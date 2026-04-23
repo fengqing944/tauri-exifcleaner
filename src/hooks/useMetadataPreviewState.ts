@@ -186,19 +186,44 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   );
 
   const resetMetadataState = useEffectEvent(() => {
-    setBeforeSnapshots({});
-    setAfterSnapshots({});
-    setLoadingSnapshots({});
-    setMetadataDebug(EMPTY_METADATA_DEBUG);
-    setMetadataDebugEntries([]);
+    setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setLoadingSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setMetadataDebug((current) => {
+      if (
+        current.status === EMPTY_METADATA_DEBUG.status &&
+        current.lastOrigin === EMPTY_METADATA_DEBUG.lastOrigin &&
+        current.pendingBatches === EMPTY_METADATA_DEBUG.pendingBatches &&
+        current.pendingFiles === EMPTY_METADATA_DEBUG.pendingFiles &&
+        current.lastDurationMs === EMPTY_METADATA_DEBUG.lastDurationMs &&
+        current.lastResolved === EMPTY_METADATA_DEBUG.lastResolved &&
+        current.lastMissing === EMPTY_METADATA_DEBUG.lastMissing &&
+        current.lastMessage === EMPTY_METADATA_DEBUG.lastMessage
+      ) {
+        return current;
+      }
+      return EMPTY_METADATA_DEBUG;
+    });
+    setMetadataDebugEntries((current) => (current.length ? [] : current));
   });
 
   const clearAfterSnapshots = useEffectEvent(() => {
-    setAfterSnapshots({});
+    setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
   });
 
   const applyCleanupPreviewStates = useEffectEvent((previewStates: CleanupPreviewState[]) => {
-    setAfterSnapshots(buildAfterSnapshotMap(previewStates));
+    const next = buildAfterSnapshotMap(previewStates);
+    setAfterSnapshots((current) => {
+      const currentKeys = Object.keys(current);
+      const nextKeys = Object.keys(next);
+      if (
+        currentKeys.length === nextKeys.length &&
+        currentKeys.every((key) => current[key] === next[key])
+      ) {
+        return current;
+      }
+      return next;
+    });
   });
 
   useEffect(() => {
@@ -241,7 +266,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       phase: "before",
       requests,
     });
-  }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey, requestSnapshots]);
+  }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey]);
 
   useEffect(() => {
     if (!input.previewFile || !input.previewPathKey) {
@@ -263,13 +288,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         },
       ],
     });
-  }, [
-    beforeSnapshots,
-    input.previewFile,
-    input.previewPathKey,
-    loadingSnapshots,
-    requestSnapshots,
-  ]);
+  }, [beforeSnapshots, input.previewFile, input.previewPathKey, loadingSnapshots]);
 
   useEffect(() => {
     if (!input.previewFile || !input.previewPathKey) {
@@ -292,14 +311,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         },
       ],
     });
-  }, [
-    afterSnapshots,
-    input.fileStates,
-    input.previewFile,
-    input.previewPathKey,
-    loadingSnapshots,
-    requestSnapshots,
-  ]);
+  }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey, loadingSnapshots]);
 
   useEffect(() => {
     if (!input.summary || input.summary.cancelled || !input.metadataSeedFiles.length) {
@@ -326,15 +338,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       phase: "after",
       requests,
     });
-  }, [
-    afterSnapshots,
-    input.fileStates,
-    input.metadataSeedFiles,
-    input.summary,
-    loadingSnapshots,
-    metadataSeedKey,
-    requestSnapshots,
-  ]);
+  }, [afterSnapshots, input.fileStates, input.metadataSeedFiles, input.summary, loadingSnapshots, metadataSeedKey]);
 
   return {
     beforeSnapshots,

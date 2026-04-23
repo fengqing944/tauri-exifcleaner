@@ -31,6 +31,7 @@ const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
+const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -826,6 +827,12 @@ fn append_debug_log(message: String) {
     let path = debug_log_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(metadata) = fs::metadata(&path) {
+        if metadata.len() > DEBUG_LOG_MAX_BYTES {
+            let _ = fs::remove_file(&path);
+        }
     }
 
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {

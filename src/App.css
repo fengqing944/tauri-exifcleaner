@@ -38,10 +38,10 @@ button {
 
 .app-shell {
   min-height: 100vh;
-  padding: 12px;
+  padding: 10px;
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 12px;
+  gap: 10px;
 }
 
 .topbar,
@@ -53,9 +53,9 @@ button {
 }
 
 .topbar {
-  padding: 10px 14px 12px;
+  padding: 8px 12px 10px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .topbar-main {
@@ -71,7 +71,7 @@ button {
 }
 
 .brand-block strong {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
 }
 
@@ -144,10 +144,10 @@ button {
 }
 
 .toolbar-slider {
-  min-width: 220px;
+  min-width: 180px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -158,50 +158,50 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
 }
 
 .content,
 .sidebar,
 .failure-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .panel {
-  padding: 14px;
+  padding: 10px;
 }
 
 .panel-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .panel-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 .panel-header p {
   margin: 4px 0 0;
   line-height: 1.5;
   max-width: 620px;
+  font-size: 11px;
 }
 
 .badge,
 .row-pill {
-  min-height: 26px;
+  min-height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 10px;
+  padding: 0 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   white-space: nowrap;
   border: 1px solid transparent;
 }
@@ -265,10 +265,10 @@ button {
 }
 
 .queue-workspace {
-  margin-top: 12px;
-  padding: 10px;
+  margin-top: 0;
+  padding: 8px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
   background: #f8fafc;
   border: 1px solid #d5dbe3;
   border-radius: 12px;
@@ -293,12 +293,12 @@ button {
 }
 
 .queue-workspace-copy strong {
-  font-size: 13px;
+  font-size: 12px;
   color: #0f172a;
 }
 
 .queue-workspace-copy span {
-  font-size: 12px;
+  font-size: 11px;
   color: #475569;
 }
 
@@ -342,11 +342,11 @@ button {
 }
 
 .compact-actions {
-  min-width: 320px;
+  min-width: 280px;
 }
 
 .queue-dropstage {
-  min-height: 320px;
+  min-height: 220px;
   border-style: dashed;
   border-radius: 12px;
   background: #ffffff;
@@ -356,7 +356,7 @@ button {
 }
 
 .queue-dropstage strong {
-  font-size: 18px;
+  font-size: 16px;
 }
 
 .queue-dropstage span {
@@ -364,13 +364,14 @@ button {
 }
 
 .button {
-  min-height: 36px;
-  padding: 0 12px;
+  min-height: 32px;
+  padding: 0 10px;
   border-radius: 8px;
   color: #0f172a;
   background: #ffffff;
   border: 1px solid #cfd8e3;
   cursor: pointer;
+  font-size: 12px;
 }
 
 .button:hover {
@@ -399,23 +400,23 @@ button {
 }
 
 .summary-strip {
-  padding: 10px;
+  padding: 8px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  gap: 6px;
 }
 
 .stat-chip {
-  padding: 8px 10px;
+  padding: 6px 8px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 
 .stat-chip strong {
-  font-size: 16px;
+  font-size: 14px;
 }
 
 .activity-strip,
@@ -423,7 +424,7 @@ button {
 .empty-box,
 .progress-panel,
 .failure-row {
-  padding: 12px;
+  padding: 10px;
 }
 
 .workspace-overview {
@@ -436,18 +437,18 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .activity-main {
   display: grid;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
 }
 
 .activity-label {
   display: inline-block;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -461,8 +462,9 @@ button {
 .activity-stats {
   min-width: fit-content;
   display: flex;
-  gap: 14px;
+  gap: 10px;
   flex-wrap: wrap;
+  font-size: 11px;
 }
 
 .message.warning {
@@ -488,7 +490,7 @@ button {
 
 .queue-list-shell {
   margin-top: 0;
-  min-height: 440px;
+  min-height: 360px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   background: #ffffff;
@@ -503,10 +505,10 @@ button {
 }
 
 .table-head {
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: #f2f5f8;
   color: #0f172a;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -515,7 +517,7 @@ button {
 }
 
 .queue-scroll-body {
-  max-height: 520px;
+  max-height: 360px;
   overflow: auto;
 }
 
@@ -529,7 +531,7 @@ button {
 
 .queue-row {
   position: relative;
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: #ffffff;
   cursor: default;
 }
@@ -571,7 +573,7 @@ button {
 }
 
 .queue-count {
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
   color: #1e3a8a;
@@ -740,7 +742,7 @@ button {
 }
 
 .progress-head strong {
-  font-size: 24px;
+  font-size: 20px;
 }
 
 .task-board {
@@ -759,11 +761,11 @@ button {
 }
 
 .task-callout {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid #e2e8f0;
   background: #f8fafc;
-  font-size: 12px;
+  font-size: 11px;
   color: #334155;
 }
 
@@ -785,12 +787,12 @@ button {
 }
 
 .debug-block {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid #dbe2ea;
   border-radius: 10px;
   background: #f8fafc;
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .debug-strip {
@@ -808,7 +810,7 @@ button {
 }
 
 .debug-copy span {
-  font-size: 12px;
+  font-size: 11px;
   color: #475569;
 }
 
@@ -818,7 +820,7 @@ button {
 }
 
 .debug-entry {
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid #dbe2ea;
   background: #ffffff;
@@ -827,12 +829,12 @@ button {
 }
 
 .debug-entry strong {
-  font-size: 12px;
+  font-size: 11px;
   color: #0f172a;
 }
 
 .debug-entry span {
-  font-size: 11px;
+  font-size: 10px;
   color: #475569;
 }
 
@@ -859,12 +861,12 @@ button {
 }
 
 .task-block-head strong {
-  font-size: 13px;
+  font-size: 12px;
   color: #0f172a;
 }
 
 .task-block-head span {
-  font-size: 11px;
+  font-size: 10px;
   color: #64748b;
 }
 
@@ -896,6 +898,76 @@ button {
   overflow: auto;
 }
 
+.single-workspace {
+  grid-template-columns: 1fr;
+}
+
+.compact-workbench-toolbar {
+  align-items: start;
+}
+
+.workbench-meta-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(240px, 0.9fr);
+  gap: 8px;
+}
+
+.compact-summary-strip {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.compact-activity-strip {
+  min-height: 100%;
+}
+
+.compact-message {
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+.compact-dropstage {
+  min-height: 180px;
+}
+
+.compact-list-shell {
+  min-height: 320px;
+}
+
+.compact-table-head,
+.compact-row {
+  grid-template-columns: minmax(0, 1.6fr) 72px 72px 84px;
+  gap: 10px;
+}
+
+.compact-scroll-body {
+  max-height: 340px;
+}
+
+.workbench-bottom {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.workbench-aux-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 8px;
+}
+
+.compact-callout {
+  padding: 8px 10px;
+}
+
+.compact-debug-block,
+.compact-error-block {
+  min-height: 100%;
+}
+
+.compact-failure-row {
+  padding: 8px 10px;
+}
+
 .footnote {
   padding: 10px 14px;
   border-top: 1px solid #e2e8f0;
@@ -912,6 +984,11 @@ button {
 
 @media (max-width: 1120px) {
   .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .workbench-meta-row,
+  .workbench-aux-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -935,6 +1012,10 @@ button {
 
   .compact-actions {
     min-width: 0;
+  }
+
+  .compact-summary-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .table-head,
@@ -977,6 +1058,10 @@ button {
   .preview-card-grid.compare-grid,
   .preview-summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  .compact-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .queue-dropstage {

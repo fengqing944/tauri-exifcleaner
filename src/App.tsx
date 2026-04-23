@@ -1172,11 +1172,11 @@ function App() {
         </div>
       </header>
 
-      <section className="workspace">
+      <section className="workspace single-workspace">
         <section className="content">
           <Panel
-            title="文件队列"
-            subtitle="这里负责导入、浏览和字段预览。悬停文件行可以查看清理前后的字段摘要。"
+            title="工作台"
+            subtitle="导入、列表、任务状态和调试都集中在这里，整体更紧凑。"
             aside={
               isScanning ? (
                 <StatusBadge tone="info" label="扫描中" />
@@ -1189,41 +1189,11 @@ function App() {
               )
             }
           >
-            <div className="workspace-overview">
-              <div className="summary-strip">
-                <StatChip label="输入根" value={String(rootCount)} />
-                <StatChip label="候选文件" value={String(fileCount)} />
-                <StatChip label="总大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
-                <StatChip label="忽略项" value={String(ignoredCount)} />
-              </div>
-
-              <div className="activity-strip">
-                <div className="activity-main">
-                  <span className="activity-label">{activity.label}</span>
-                  <strong title={activity.title}>{trimMiddle(activity.title, 88)}</strong>
-                </div>
-                <div className="activity-stats">
-                  <span>
-                    {progress.completed}/{progress.total || fileCount}
-                  </span>
-                  <span>{progressPercent}%</span>
-                  <span>{progress.currentStatus}</span>
-                </div>
-              </div>
-            </div>
-
-            {ignoredCount > 0 ? (
-              <div className="message warning">
-                已忽略 {ignoredCount} 个不支持的项目。
-                {queueView?.ignoredSamples.length ? ` 示例: ${queueView.ignoredSamples.join(" · ")}` : ""}
-              </div>
-            ) : null}
-
-            <div className={`queue-workspace ${dropActive ? "is-drop-active" : ""}`}>
-              <div className="queue-workspace-toolbar">
+            <div className={`queue-workspace compact-workbench ${dropActive ? "is-drop-active" : ""}`}>
+              <div className="queue-workspace-toolbar compact-workbench-toolbar">
                 <div className="queue-workspace-copy">
-                  <strong>{fileCount ? "把文件拖到这个区域可继续追加" : "拖放区域与文件列表已合并"}</strong>
-                  <span>{fileCount ? "下方列表可滚动浏览，悬停任意行查看处理前后字段。" : "拖放图像、视频或 PDF 文件到这里，或使用右侧按钮导入。"}</span>
+                  <strong>{fileCount ? "拖到这里可继续追加文件" : "拖放区域与文件列表已合并"}</strong>
+                  <span>{fileCount ? "列表、进度和调试都已收进同一个工作台。" : "拖放图像、视频或 PDF 到这里，或直接点击按钮导入。"}</span>
                 </div>
 
                 <div className="import-actions compact-actions">
@@ -1239,30 +1209,62 @@ function App() {
                 </div>
               </div>
 
+              <div className="workbench-meta-row">
+                <div className="summary-strip compact-summary-strip">
+                  <StatChip label="输入根" value={String(rootCount)} />
+                  <StatChip label="候选" value={String(fileCount)} />
+                  <StatChip label="大小" value={formatBytes(queueView?.totalBytes ?? 0)} />
+                  <StatChip label="成功" value={String(progress.succeeded)} />
+                  <StatChip label="失败" value={String(progress.failed)} />
+                  <StatChip label="忽略" value={String(ignoredCount)} />
+                </div>
+
+                <div className="activity-strip compact-activity-strip">
+                  <div className="activity-main">
+                    <span className="activity-label">{activity.label}</span>
+                    <strong title={activity.title}>{trimMiddle(activity.title, 72)}</strong>
+                  </div>
+                  <div className="activity-stats">
+                    <span>
+                      {progress.completed}/{progress.total || fileCount}
+                    </span>
+                    <span>{progressPercent}%</span>
+                    <span>{progress.currentStatus}</span>
+                  </div>
+                </div>
+              </div>
+
+              {ignoredCount > 0 ? (
+                <div className="message warning compact-message">
+                  已忽略 {ignoredCount} 个不支持的项目。
+                  {queueView?.ignoredSamples.length ? ` 示例: ${queueView.ignoredSamples.join(" · ")}` : ""}
+                </div>
+              ) : null}
+
               {!fileCount ? (
                 <button
-                  className={`dropzone queue-dropstage ${dropActive ? "active" : ""}`}
+                  className={`dropzone queue-dropstage compact-dropstage ${dropActive ? "active" : ""}`}
                   type="button"
                   disabled={isBusy}
                   onClick={addFiles}
                 >
                   <strong>拖入文件或点击导入</strong>
-                  <span>支持多文件、多文件夹和递归扫描。这里既是导入区，也是之后的文件列表区。</span>
+                  <span>支持多文件、多文件夹和递归扫描。这里就是你的主工作区。</span>
                 </button>
               ) : (
                 <div
-                  className={`table-shell queue-list-shell ${previewFile ? "is-flyout-open" : ""}`}
+                  className={`table-shell queue-list-shell compact-list-shell ${previewFile ? "is-flyout-open" : ""}`}
                   ref={tableShellRef}
                   onMouseLeave={() => clearHover()}
                 >
-                  <div className="table-head">
+                  <div className="table-head compact-table-head">
                     <span>选中的文件</span>
                     <span># 处理前</span>
                     <span># 处理后</span>
                     <span>状态</span>
                   </div>
 
-                  <div className="table-body queue-scroll-body" ref={queueBodyRef}>
+                  <div className="table-body queue-scroll-body compact-scroll-body" ref={queueBodyRef}>
                     {previewFiles.map((file) => {
                       const pathKey = normalizePath(file.sourcePath);
                       const rowState = fileStates[pathKey];
@@ -1277,7 +1279,7 @@ function App() {
                       return (
                         <div
                           key={file.sourcePath}
-                          className={`queue-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
+                          className={`queue-row compact-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
                           onMouseEnter={(event) => scheduleHover(pathKey, event)}
                           onMouseLeave={() => clearHover()}
                         >
@@ -1323,45 +1325,9 @@ function App() {
                 </div>
               )}
             </div>
-          </Panel>
-        </section>
 
-        <aside className="sidebar">
-          <Panel
-            title="任务状态"
-            subtitle="这里集中显示进度、结果和错误。"
-            aside={
-              <StatusBadge
-                tone={isRunning ? "info" : summary ? (summary.cancelled ? "warning" : "success") : "neutral"}
-                label={isRunning ? "处理中" : summary ? (summary.cancelled ? "已取消" : "已完成") : "空闲"}
-              />
-            }
-          >
-            <div className="task-board">
-              <div className="progress-panel task-progress-panel">
-                <div className="progress-head">
-                  <strong>{progressPercent}%</strong>
-                  <span>
-                    {progress.completed}/{progress.total || fileCount}
-                  </span>
-                </div>
-                <div className="progress-track">
-                  <div className="progress-value" style={{ width: `${progressPercent}%` }} />
-                </div>
-                <div className="progress-meta">
-                  <span>成功 {progress.succeeded}</span>
-                  <span>失败 {progress.failed}</span>
-                  <span>{progress.currentStatus}</span>
-                </div>
-              </div>
-
-              <div className="task-stats-strip">
-                <StatChip label="队列" value={String(fileCount)} />
-                <StatChip label="成功" value={String(progress.succeeded)} />
-                <StatChip label="失败" value={String(progress.failed)} />
-              </div>
-
-              <div className={`task-callout ${summary?.cancelled ? "warning" : summary ? "success" : "neutral"}`}>
+            <div className="workbench-bottom">
+              <div className={`task-callout compact-callout ${summary?.cancelled ? "warning" : summary ? "success" : "neutral"}`}>
                 {summary ? (
                   summary.cancelled ? (
                     <span>任务已取消，已完成 {summary.succeeded + summary.failed}/{summary.total} 项。</span>
@@ -1373,78 +1339,80 @@ function App() {
                 )}
               </div>
 
-              <div className="debug-block">
-                <div className="task-block-head">
-                  <strong>字段调试</strong>
-                  <span>{metadataDebug.lastOrigin}</span>
-                </div>
-                <div className="debug-strip">
-                  <StatusBadge
-                    tone={
-                      metadataDebug.status === "error"
-                        ? "danger"
-                        : metadataDebug.status === "running"
-                          ? "info"
-                          : metadataDebug.status === "success"
-                            ? "success"
-                            : "neutral"
-                    }
-                    label={
-                      metadataDebug.status === "error"
-                        ? "异常"
-                        : metadataDebug.status === "running"
-                          ? "读取中"
-                          : metadataDebug.status === "success"
-                            ? "最近成功"
-                            : "空闲"
-                    }
-                  />
-                  <span>批次 {metadataDebug.pendingBatches}</span>
-                  <span>文件 {metadataDebug.pendingFiles}</span>
-                  <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
-                </div>
-                <div className="debug-copy">
-                  <span>{metadataDebug.lastMessage}</span>
-                  <span>
-                    最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
-                  </span>
-                  <span title={debugLogPath}>
-                    日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
-                  </span>
-                </div>
-                {metadataDebugEntries.length ? (
-                  <div className="debug-entry-list">
-                    {metadataDebugEntries.map((entry) => (
-                      <div key={entry.id} className={`debug-entry ${entry.tone}`}>
-                        <strong>{entry.title}</strong>
-                        <span>{entry.detail}</span>
-                      </div>
-                    ))}
+              <div className="workbench-aux-grid">
+                <div className="debug-block compact-debug-block">
+                  <div className="task-block-head">
+                    <strong>字段调试</strong>
+                    <span>{metadataDebug.lastOrigin}</span>
                   </div>
-                ) : null}
-              </div>
+                  <div className="debug-strip">
+                    <StatusBadge
+                      tone={
+                        metadataDebug.status === "error"
+                          ? "danger"
+                          : metadataDebug.status === "running"
+                            ? "info"
+                            : metadataDebug.status === "success"
+                              ? "success"
+                              : "neutral"
+                      }
+                      label={
+                        metadataDebug.status === "error"
+                          ? "异常"
+                          : metadataDebug.status === "running"
+                            ? "读取中"
+                            : metadataDebug.status === "success"
+                              ? "最近成功"
+                              : "空闲"
+                      }
+                    />
+                    <span>批次 {metadataDebug.pendingBatches}</span>
+                    <span>文件 {metadataDebug.pendingFiles}</span>
+                    <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
+                  </div>
+                  <div className="debug-copy">
+                    <span>{metadataDebug.lastMessage}</span>
+                    <span>
+                      最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
+                    </span>
+                    <span title={debugLogPath}>
+                      日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
+                    </span>
+                  </div>
+                  {metadataDebugEntries.length ? (
+                    <div className="debug-entry-list">
+                      {metadataDebugEntries.map((entry) => (
+                        <div key={entry.id} className={`debug-entry ${entry.tone}`}>
+                          <strong>{entry.title}</strong>
+                          <span>{entry.detail}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
 
-              <div className="task-errors-block">
-                <div className="task-block-head">
-                  <strong>最近错误</strong>
-                  <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
-                </div>
-                {runFailures.length ? (
-                  <div className="failure-list task-failure-list">
-                    {runFailures.map((failure) => (
-                      <div key={failure.sourcePath} className="failure-row">
-                        <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
-                        <span>{failure.error}</span>
-                      </div>
-                    ))}
+                <div className="task-errors-block compact-error-block">
+                  <div className="task-block-head">
+                    <strong>最近错误</strong>
+                    <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
                   </div>
-                ) : (
-                  <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
-                )}
+                  {runFailures.length ? (
+                    <div className="failure-list task-failure-list">
+                      {runFailures.map((failure) => (
+                        <div key={failure.sourcePath} className="failure-row compact-failure-row">
+                          <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
+                          <span>{failure.error}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
+                  )}
+                </div>
               </div>
             </div>
           </Panel>
-        </aside>
+        </section>
       </section>
 
       {errorMessage ? <div className="error-strip">{errorMessage}</div> : null}

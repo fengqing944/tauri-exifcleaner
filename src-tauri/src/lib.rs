@@ -2196,6 +2196,7 @@ pub fn run() {
             inner: Mutex::new(startup_shell_request),
         })
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
             get_runtime_info,
             scan_inputs,

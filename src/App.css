@@ -457,6 +457,9 @@ button {
 
 .activity-main strong {
   color: #0f172a;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .activity-stats {
@@ -944,9 +947,62 @@ button {
 }
 
 .workbench-bottom {
-  margin-top: 8px;
+  margin-top: 6px;
   display: grid;
   gap: 8px;
+}
+
+.details-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.18);
+  z-index: 30;
+}
+
+.details-drawer {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: min(460px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #ffffff;
+  border: 1px solid #d5dbe3;
+  border-radius: 12px;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+
+.details-drawer-head {
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fbfcfe;
+}
+
+.details-drawer-head strong {
+  display: block;
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.details-drawer-head span {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #64748b;
+}
+
+.details-drawer-body {
+  padding: 10px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  background: #f8fafc;
 }
 
 .details-block {
@@ -1113,6 +1169,14 @@ button {
     position: static;
     width: 100%;
     margin: 10px 0 0;
+  }
+
+  .details-drawer {
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    width: auto;
+    max-height: calc(100vh - 20px);
   }
 
   .queue-count,

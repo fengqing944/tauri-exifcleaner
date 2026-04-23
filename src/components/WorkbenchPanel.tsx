@@ -5,8 +5,6 @@ import type {
   CleanupSummary,
   FileRunState,
   FlyoutPosition,
-  MetadataDebugEntry,
-  MetadataDebugState,
   MetadataPreviewSnapshot,
   ProgressState,
   QueuedFile,
@@ -19,7 +17,7 @@ import {
   resolveAfterCountLabel,
   trimMiddle,
 } from "../app-shared";
-import { EmptyBox, Panel, StatChip, StatusBadge } from "./AppPrimitives";
+import { Panel, StatChip, StatusBadge } from "./AppPrimitives";
 import { MetadataPreviewFlyout } from "./MetadataPreviewFlyout";
 
 export function WorkbenchPanel(props: {
@@ -51,10 +49,6 @@ export function WorkbenchPanel(props: {
   previewBeforeLoading: boolean;
   previewAfterLoading: boolean;
   flyoutPosition: FlyoutPosition;
-  metadataDebug: MetadataDebugState;
-  metadataDebugEntries: MetadataDebugEntry[];
-  debugLogPath: string;
-  runFailures: Array<{ sourcePath: string; error: string }>;
   tableShellRef: RefObject<HTMLDivElement | null>;
   queueBodyRef: RefObject<HTMLDivElement | null>;
   onAddFiles: () => void;
@@ -228,108 +222,7 @@ export function WorkbenchPanel(props: {
             <span>清理开始后，这里会持续显示当前任务状态。</span>
           )}
         </div>
-
-        <WorkbenchDetails
-          isRunning={props.isRunning}
-          metadataDebug={props.metadataDebug}
-          metadataDebugEntries={props.metadataDebugEntries}
-          debugLogPath={props.debugLogPath}
-          runFailures={props.runFailures}
-        />
       </div>
     </Panel>
-  );
-}
-
-function WorkbenchDetails(props: {
-  isRunning: boolean;
-  metadataDebug: MetadataDebugState;
-  metadataDebugEntries: MetadataDebugEntry[];
-  debugLogPath: string;
-  runFailures: Array<{ sourcePath: string; error: string }>;
-}) {
-  return (
-    <details className="details-block" open={props.isRunning || props.metadataDebug.status === "error" || props.runFailures.length > 0}>
-      <summary>
-        <span>运行详情</span>
-        <span>
-          {props.metadataDebug.status === "running"
-            ? "字段读取中"
-            : props.runFailures.length
-              ? `${props.runFailures.length} 条错误`
-              : "展开调试与错误"}
-        </span>
-      </summary>
-
-      <div className="workbench-aux-grid">
-        <div className="debug-block compact-debug-block">
-          <div className="task-block-head">
-            <strong>字段调试</strong>
-            <span>{props.metadataDebug.lastOrigin}</span>
-          </div>
-          <div className="debug-strip">
-            <StatusBadge
-              tone={
-                props.metadataDebug.status === "error"
-                  ? "danger"
-                  : props.metadataDebug.status === "running"
-                    ? "info"
-                    : props.metadataDebug.status === "success"
-                      ? "success"
-                      : "neutral"
-              }
-              label={
-                props.metadataDebug.status === "error"
-                  ? "异常"
-                  : props.metadataDebug.status === "running"
-                    ? "读取中"
-                    : props.metadataDebug.status === "success"
-                      ? "最近成功"
-                      : "空闲"
-              }
-            />
-            <span>批次 {props.metadataDebug.pendingBatches}</span>
-            <span>文件 {props.metadataDebug.pendingFiles}</span>
-            <span>{props.metadataDebug.lastDurationMs ? `${props.metadataDebug.lastDurationMs} ms` : "等待中"}</span>
-          </div>
-          <div className="debug-copy">
-            <span>{props.metadataDebug.lastMessage}</span>
-            <span>
-              最近返回 {props.metadataDebug.lastResolved} 项，缺失 {props.metadataDebug.lastMissing} 项
-            </span>
-            <span title={props.debugLogPath}>日志: {props.debugLogPath ? trimMiddle(props.debugLogPath, 52) : "未就绪"}</span>
-          </div>
-          {props.metadataDebugEntries.length ? (
-            <div className="debug-entry-list">
-              {props.metadataDebugEntries.map((entry) => (
-                <div key={entry.id} className={`debug-entry ${entry.tone}`}>
-                  <strong>{entry.title}</strong>
-                  <span>{entry.detail}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="task-errors-block compact-error-block">
-          <div className="task-block-head">
-            <strong>最近错误</strong>
-            <span>{props.runFailures.length ? `${props.runFailures.length} 条` : "无错误"}</span>
-          </div>
-          {props.runFailures.length ? (
-            <div className="failure-list task-failure-list">
-              {props.runFailures.map((failure) => (
-                <div key={failure.sourcePath} className="failure-row compact-failure-row">
-                  <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
-                  <span>{failure.error}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
-          )}
-        </div>
-      </div>
-    </details>
   );
 }

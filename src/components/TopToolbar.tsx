@@ -7,9 +7,12 @@ export function TopToolbar(props: {
   isRunning: boolean;
   isScanning: boolean;
   parallelism: number;
+  detailsLabel: string;
+  isDetailsOpen: boolean;
   onParallelismChange: (value: number) => void;
   onStartCleanup: () => void;
   onCancelCurrent: () => void;
+  onToggleDetails: () => void;
 }) {
   return (
     <header className="topbar">
@@ -35,6 +38,10 @@ export function TopToolbar(props: {
           </button>
           <button className="button" type="button" disabled={!props.isRunning && !props.isScanning} onClick={props.onCancelCurrent}>
             {props.isRunning ? "取消清理" : "取消扫描"}
+          </button>
+          <button className="button" type="button" onClick={props.onToggleDetails}>
+            {props.isDetailsOpen ? "收起详情" : "运行详情"}
+            {props.detailsLabel ? ` · ${props.detailsLabel}` : ""}
           </button>
         </div>
 

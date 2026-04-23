@@ -16,6 +16,7 @@ import {
   normalizePath,
 } from "./app-shared";
 import { TopToolbar } from "./components/TopToolbar";
+import { RunDetailsDrawer } from "./components/RunDetailsDrawer";
 import { WorkbenchPanel } from "./components/WorkbenchPanel";
 import { useMetadataPreviewState } from "./hooks/useMetadataPreviewState";
 import { useWorkbenchController } from "./hooks/useWorkbenchController";
@@ -23,6 +24,7 @@ import { useWorkbenchController } from "./hooks/useWorkbenchController";
 function App() {
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
@@ -275,6 +277,12 @@ function App() {
   const previewAfterSnapshot = previewPathKey ? afterSnapshots[previewPathKey] : undefined;
   const previewBeforeLoading = previewPathKey ? Boolean(loadingSnapshots[`before:${previewPathKey}`]) : false;
   const previewAfterLoading = previewPathKey ? Boolean(loadingSnapshots[`after:${previewPathKey}`]) : false;
+  const detailsLabel =
+    metadataDebug.status === "running"
+      ? "读取中"
+      : runFailures.length
+        ? `${runFailures.length} 条错误`
+        : "调试";
 
   return (
     <main className="app-shell">
@@ -284,9 +292,12 @@ function App() {
         isRunning={isRunning}
         isScanning={isScanning}
         parallelism={parallelism}
+        detailsLabel={detailsLabel}
+        isDetailsOpen={isDetailsOpen}
         onParallelismChange={setParallelism}
         onStartCleanup={startCleanup}
         onCancelCurrent={isRunning ? cancelCleanup : cancelScan}
+        onToggleDetails={() => setIsDetailsOpen((current) => !current)}
       />
 
       <section className="workspace single-workspace">
@@ -320,10 +331,6 @@ function App() {
             previewBeforeLoading={previewBeforeLoading}
             previewAfterLoading={previewAfterLoading}
             flyoutPosition={flyoutPosition}
-            metadataDebug={metadataDebug}
-            metadataDebugEntries={metadataDebugEntries}
-            debugLogPath={debugLogPath}
-            runFailures={runFailures}
             tableShellRef={tableShellRef}
             queueBodyRef={queueBodyRef}
             onAddFiles={addFiles}
@@ -336,6 +343,16 @@ function App() {
           />
         </section>
       </section>
+
+      <RunDetailsDrawer
+        isOpen={isDetailsOpen}
+        isRunning={isRunning}
+        metadataDebug={metadataDebug}
+        metadataDebugEntries={metadataDebugEntries}
+        debugLogPath={debugLogPath}
+        runFailures={runFailures}
+        onClose={() => setIsDetailsOpen(false)}
+      />
 
       {errorMessage ? <div className="error-strip">{errorMessage}</div> : null}
     </main>

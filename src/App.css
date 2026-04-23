@@ -562,6 +562,11 @@ button {
   overflow: auto;
 }
 
+.queue-virtual-spacer {
+  width: 100%;
+  pointer-events: none;
+}
+
 .queue-scroll-hint {
   padding: 10px 14px;
   font-size: 12px;

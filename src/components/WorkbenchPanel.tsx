@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { KeyboardEvent, MouseEvent, RefObject } from "react";
 
 import type {
@@ -14,6 +15,9 @@ import {
   formatBytes,
   getRowStatusDescriptor,
   normalizePath,
+  QUEUE_ROW_HEIGHT,
+  QUEUE_VIRTUAL_OVERSCAN,
+  QUEUE_VIRTUALIZE_THRESHOLD,
   resolveAfterCountLabel,
   trimMiddle,
 } from "../app-shared";
@@ -67,6 +71,31 @@ export function WorkbenchPanel(props: {
   onFlyoutLeave: () => void;
   onRegisterRowRef: (pathKey: string, row: HTMLDivElement | null) => void;
 }) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  useEffect(() => {
+    const body = props.queueBodyRef.current;
+    if (!body) {
+      return;
+    }
+
+    const syncViewport = () => {
+      setScrollTop(body.scrollTop);
+      setViewportHeight(body.clientHeight);
+    };
+
+    syncViewport();
+    body.addEventListener("scroll", syncViewport, { passive: true });
+    const observer = new ResizeObserver(syncViewport);
+    observer.observe(body);
+
+    return () => {
+      body.removeEventListener("scroll", syncViewport);
+      observer.disconnect();
+    };
+  }, [props.fileCount, props.queueBodyRef]);
+
   const aside = props.isScanning ? (
     <StatusBadge tone="info" label="扫描中" />
   ) : props.isRunning ? (
@@ -76,6 +105,25 @@ export function WorkbenchPanel(props: {
   ) : (
     <StatusBadge tone={props.dropActive ? "info" : "neutral"} label={props.dropActive ? "释放导入" : "待命"} />
   );
+
+  const shouldVirtualize = props.previewFiles.length > QUEUE_VIRTUALIZE_THRESHOLD;
+  const visibleStart = shouldVirtualize
+    ? Math.max(0, Math.floor(scrollTop / QUEUE_ROW_HEIGHT) - QUEUE_VIRTUAL_OVERSCAN)
+    : 0;
+  const visibleCount = shouldVirtualize
+    ? Math.ceil((viewportHeight || QUEUE_ROW_HEIGHT) / QUEUE_ROW_HEIGHT) +
+      QUEUE_VIRTUAL_OVERSCAN * 2
+    : props.previewFiles.length;
+  const visibleEnd = shouldVirtualize
+    ? Math.min(props.previewFiles.length, visibleStart + visibleCount)
+    : props.previewFiles.length;
+  const visibleFiles = shouldVirtualize
+    ? props.previewFiles.slice(visibleStart, visibleEnd)
+    : props.previewFiles;
+  const topSpacerHeight = shouldVirtualize ? visibleStart * QUEUE_ROW_HEIGHT : 0;
+  const bottomSpacerHeight = shouldVirtualize
+    ? Math.max(0, (props.previewFiles.length - visibleEnd) * QUEUE_ROW_HEIGHT)
+    : 0;
 
   return (
     <Panel title="工作台" subtitle="导入、列表、任务状态和调试都集中在这里，整体更紧凑。" aside={aside}>
@@ -159,7 +207,15 @@ export function WorkbenchPanel(props: {
             </div>
 
             <div className="table-body queue-scroll-body compact-scroll-body" ref={props.queueBodyRef}>
-              {props.previewFiles.map((file) => {
+              {topSpacerHeight ? (
+                <div
+                  aria-hidden="true"
+                  className="queue-virtual-spacer"
+                  style={{ height: `${topSpacerHeight}px` }}
+                />
+              ) : null}
+
+              {visibleFiles.map((file) => {
                 const pathKey = normalizePath(file.sourcePath);
                 const rowState = props.fileStates[pathKey];
                 const beforeSnapshot = props.beforeSnapshots[pathKey];
@@ -197,6 +253,14 @@ export function WorkbenchPanel(props: {
                   </div>
                 );
               })}
+
+              {bottomSpacerHeight ? (
+                <div
+                  aria-hidden="true"
+                  className="queue-virtual-spacer"
+                  style={{ height: `${bottomSpacerHeight}px` }}
+                />
+              ) : null}
             </div>
 
             {props.hasMoreQueueFiles ? (

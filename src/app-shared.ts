@@ -158,6 +158,9 @@ export const EMPTY_PROGRESS: ProgressState = {
 export const QUEUE_PAGE_SIZE = 240;
 export const EAGER_METADATA_PREFETCH_LIMIT = 48;
 export const SMALL_QUEUE_EAGER_LOAD_THRESHOLD = 96;
+export const QUEUE_ROW_HEIGHT = 58;
+export const QUEUE_VIRTUALIZE_THRESHOLD = 180;
+export const QUEUE_VIRTUAL_OVERSCAN = 8;
 
 export const EMPTY_METADATA_DEBUG: MetadataDebugState = {
   status: "idle",
@@ -357,7 +360,7 @@ export function resolveAfterCountLabel(
     return "读取中";
   }
   if (rowState?.status === "success") {
-    return "0";
+    return "待读取";
   }
   if (rowState?.status === "running") {
     return "处理中";

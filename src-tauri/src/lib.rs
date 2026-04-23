@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
@@ -31,6 +32,7 @@ const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
+const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
 
@@ -64,8 +66,8 @@ struct QueueStore {
     file_count: usize,
     preview_files: Vec<QueuedFile>,
     queue_file_path: Option<PathBuf>,
-    queue_offsets: Vec<u64>,
-    file_keys: HashSet<String>,
+    queue_page_offsets: Vec<u64>,
+    file_hashes: HashSet<u64>,
     roots: HashMap<String, RootSummary>,
     total_bytes: u64,
     ignored_count: usize,
@@ -464,7 +466,11 @@ fn get_queue_files_page(
 #[tauri::command]
 fn get_debug_log_info() -> DebugLogInfo {
     DebugLogInfo {
-        path: debug_log_path().to_string_lossy().to_string(),
+        path: if debug_logging_enabled() {
+            debug_log_path().to_string_lossy().to_string()
+        } else {
+            String::new()
+        },
     }
 }
 
@@ -670,6 +676,10 @@ fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(
         .map_err(|error| format!("无法定位队列暂存文件: {error}"))?;
 
     for file in files {
+        if store.file_count % QUEUE_INDEX_STRIDE == 0 {
+            store.queue_page_offsets.push(next_offset);
+        }
+
         let serialized = serde_json::to_string(file)
             .map_err(|error| format!("无法写入队列文件信息: {error}"))?;
         spool
@@ -677,7 +687,6 @@ fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(
             .and_then(|_| spool.write_all(b"\n"))
             .map_err(|error| format!("无法写入队列暂存文件: {error}"))?;
 
-        store.queue_offsets.push(next_offset);
         next_offset += serialized.len() as u64 + 1;
         store.file_count += 1;
         if store.preview_files.len() < MAX_QUEUE_PREVIEW_FILES {
@@ -688,18 +697,19 @@ fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(
     Ok(())
 }
 
-fn read_queue_file_at<R>(reader: &mut R, offset: u64) -> Result<QueuedFile, String>
+fn read_queue_file_line<R>(reader: &mut R) -> Result<Option<QueuedFile>, String>
 where
-    R: BufRead + Seek,
+    R: BufRead,
 {
-    reader
-        .seek(SeekFrom::Start(offset))
-        .map_err(|error| format!("无法定位队列暂存条目: {error}"))?;
     let mut line = String::new();
-    reader
+    let bytes = reader
         .read_line(&mut line)
         .map_err(|error| format!("无法读取队列暂存条目: {error}"))?;
+    if bytes == 0 {
+        return Ok(None);
+    }
     serde_json::from_str::<QueuedFile>(line.trim_end())
+        .map(Some)
         .map_err(|error| format!("无法解析队列暂存条目: {error}"))
 }
 
@@ -712,19 +722,37 @@ fn read_queue_files_page(
         return Ok(Vec::new());
     };
 
-    let offsets = store
-        .queue_offsets
-        .iter()
-        .skip(offset)
-        .take(limit)
-        .copied()
-        .collect::<Vec<_>>();
+    if offset >= store.file_count {
+        return Ok(Vec::new());
+    }
+
+    let block_index = offset / QUEUE_INDEX_STRIDE;
+    let Some(block_offset) = store.queue_page_offsets.get(block_index).copied() else {
+        return Ok(Vec::new());
+    };
+    let skip_within_block = offset % QUEUE_INDEX_STRIDE;
     let file = fs::File::open(path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
     let mut reader = BufReader::new(file);
-    let mut page = Vec::with_capacity(offsets.len());
+    let mut page = Vec::with_capacity(limit);
+    reader
+        .seek(SeekFrom::Start(block_offset))
+        .map_err(|error| format!("无法定位队列暂存文件: {error}"))?;
 
-    for entry_offset in offsets {
-        page.push(read_queue_file_at(&mut reader, entry_offset)?);
+    for _ in 0..skip_within_block {
+        let mut discarded = String::new();
+        let bytes = reader
+            .read_line(&mut discarded)
+            .map_err(|error| format!("无法跳过队列暂存条目: {error}"))?;
+        if bytes == 0 {
+            return Ok(page);
+        }
+    }
+
+    for _ in 0..limit {
+        match read_queue_file_line(&mut reader)? {
+            Some(file) => page.push(file),
+            None => break,
+        }
     }
 
     Ok(page)
@@ -734,8 +762,8 @@ fn merge_scan_batch(store: &mut QueueStore, batch: ScanBatch) -> Result<(), Stri
     let mut appended_files = Vec::with_capacity(batch.files.len());
 
     for file in batch.files {
-        let file_key = dedupe_key(Path::new(&file.source_path));
-        if !store.file_keys.insert(file_key) {
+        let file_hash = dedupe_hash(Path::new(&file.source_path));
+        if !store.file_hashes.insert(file_hash) {
             continue;
         }
 
@@ -878,11 +906,7 @@ fn build_metadata_snapshots(
     }
 
     let started_at = Instant::now();
-    append_debug_log(format!(
-        "metadata.start requests={} exiftool={}",
-        request_count,
-        exiftool_path.to_string_lossy()
-    ));
+    append_debug_log(format!("metadata.start requests={request_count}"));
 
     let mut deduped_paths = Vec::new();
     let mut seen = HashSet::new();
@@ -910,7 +934,7 @@ fn build_metadata_snapshots(
                 deduped_paths.len(),
                 missing_count,
                 started_at.elapsed().as_millis(),
-                error
+                sanitize_debug_message(&error)
             ));
             return Err(error);
         }
@@ -948,7 +972,39 @@ fn debug_log_path() -> PathBuf {
     std::env::temp_dir().join("tagsweep-debug.log")
 }
 
+fn debug_logging_enabled() -> bool {
+    matches!(
+        std::env::var("TAGSWEEP_DEBUG_LOG").ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "True")
+    )
+}
+
+fn sanitize_debug_message(message: &str) -> String {
+    let flattened = message.replace('\r', " ").replace('\n', " ");
+    let scrubbed = flattened
+        .split_whitespace()
+        .map(|token| {
+            if token.contains(":\\")
+                || token.contains(":/")
+                || token.starts_with("\\\\")
+                || token.starts_with('/')
+            {
+                "<path>"
+            } else {
+                token
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    truncate_text(&scrubbed, 180)
+}
+
 fn append_debug_log(message: String) {
+    if !debug_logging_enabled() {
+        return;
+    }
+
     let path = debug_log_path();
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -1184,7 +1240,7 @@ async fn run_cleanup(
     }
 
     let run_result = async {
-        let (total, tracked_preview_files, tracked_paths, queue_file_path, queue_offsets) = {
+        let (total, tracked_preview_files, tracked_paths, queue_file_path) = {
             let store = queue_state.inner.lock().unwrap();
             let tracked_preview_files = store.preview_files.clone();
             let tracked_paths = store
@@ -1198,7 +1254,6 @@ async fn run_cleanup(
                 tracked_preview_files,
                 tracked_paths,
                 store.queue_file_path.clone(),
-                store.queue_offsets.clone(),
             )
         };
 
@@ -1227,7 +1282,6 @@ async fn run_cleanup(
         let producer_handle = thread::spawn(move || {
             produce_planned_cleanup_files(
                 queue_file_path,
-                queue_offsets,
                 producer_options,
                 planned_sender,
                 producer_cancel_flag,
@@ -1504,27 +1558,25 @@ fn run_cleanup_worker(
 
 fn produce_planned_cleanup_files(
     queue_file_path: Option<PathBuf>,
-    queue_offsets: Vec<u64>,
     options: CleanupOptions,
     sender: std_mpsc::SyncSender<PlannedCleanupFile>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    if queue_offsets.is_empty() {
-        return Ok(());
-    }
-
     let path = queue_file_path.ok_or_else(|| "队列暂存文件不可用。".to_string())?;
     let file = fs::File::open(&path).map_err(|error| format!("无法读取队列暂存文件: {error}"))?;
     let mut reader = BufReader::new(file);
     let output_root = resolve_output_root(&options)?;
     let mut reserved_paths = HashSet::new();
 
-    for offset in queue_offsets {
+    loop {
         if cancel_flag.load(Ordering::Relaxed) {
             break;
         }
 
-        let queued_file = read_queue_file_at(&mut reader, offset)?;
+        let queued_file = match read_queue_file_line(&mut reader)? {
+            Some(file) => file,
+            None => break,
+        };
         let mut planned_file =
             build_planned_cleanup_file(&queued_file, &options, output_root.as_deref(), &mut reserved_paths)?;
 
@@ -2093,6 +2145,12 @@ fn dedupe_key(path: &Path) -> String {
     } else {
         key
     }
+}
+
+fn dedupe_hash(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    dedupe_key(path).hash(&mut hasher);
+    hasher.finish()
 }
 
 fn push_ignored_sample(samples: &mut Vec<String>, path: &Path) {

@@ -10,6 +10,7 @@ import {
 import {
   type FlyoutPosition,
   EAGER_METADATA_PREFETCH_LIMIT,
+  QUEUE_ROW_HEIGHT,
   SMALL_QUEUE_EAGER_LOAD_THRESHOLD,
   buildActivityState,
   clampNumber,
@@ -276,6 +277,25 @@ function App() {
       const nextPathKey = normalizePath(nextFile.sourcePath);
       const nextRow = rowRefs.current.get(nextPathKey);
       if (!nextRow) {
+        const body = queueBodyRef.current;
+        if (!body) {
+          return;
+        }
+
+        body.scrollTo({
+          top: Math.max(0, nextIndex * QUEUE_ROW_HEIGHT - QUEUE_ROW_HEIGHT * 2),
+          behavior: "auto",
+        });
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            const revealedRow = rowRefs.current.get(nextPathKey);
+            if (!revealedRow) {
+              return;
+            }
+            anchorPreview(nextPathKey, revealedRow);
+            revealedRow.focus();
+          });
+        });
         return;
       }
 

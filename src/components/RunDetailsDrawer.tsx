@@ -132,7 +132,9 @@ export function RunDetailsDrawer(props: {
               <span>
                 最近返回 {props.metadataDebug.lastResolved} 项，缺失 {props.metadataDebug.lastMissing} 项
               </span>
-              <span title={props.debugLogPath}>日志: {props.debugLogPath ? trimMiddle(props.debugLogPath, 52) : "未就绪"}</span>
+              <span title={props.debugLogPath || "未启用"}>
+                日志: {props.debugLogPath ? trimMiddle(props.debugLogPath, 52) : "未启用"}
+              </span>
             </div>
             {props.metadataDebugEntries.length ? (
               <div className="debug-entry-list">

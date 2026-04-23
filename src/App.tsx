@@ -7,75 +7,75 @@ import {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
-  type CleanupProgressEvent,
-  type CleanupSummary,
-  type FileRunState,
   type FlyoutPosition,
-  type ProgressState,
-  type QueuedFile,
-  type QueueView,
-  type RuntimeInfo,
-  type ScanProgressEvent,
-  type ScanSummary,
   EAGER_METADATA_PREFETCH_LIMIT,
-  EMPTY_PROGRESS,
-  QUEUE_PAGE_SIZE,
   SMALL_QUEUE_EAGER_LOAD_THRESHOLD,
   buildActivityState,
-  buildFileStateMap,
   clampNumber,
-  createProgressState,
-  mergeSummaryFileStates,
   normalizePath,
-  normalizeSelection,
-  selectionToArray,
-  toMessage,
 } from "./app-shared";
 import { TopToolbar } from "./components/TopToolbar";
 import { WorkbenchPanel } from "./components/WorkbenchPanel";
 import { useMetadataPreviewState } from "./hooks/useMetadataPreviewState";
+import { useWorkbenchController } from "./hooks/useWorkbenchController";
 
 function App() {
-  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
-  const [queueView, setQueueView] = useState<QueueView | null>(null);
-  const [queueFiles, setQueueFiles] = useState<QueuedFile[]>([]);
-  const [dropActive, setDropActive] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [parallelism, setParallelism] = useState(2);
-  const [progress, setProgress] = useState<ProgressState>(EMPTY_PROGRESS);
-  const [runFailures, setRunFailures] = useState<Array<{ sourcePath: string; error: string }>>([]);
-  const [summary, setSummary] = useState<CleanupSummary | null>(null);
-  const [fileStates, setFileStates] = useState<Record<string, FileRunState>>({});
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
-  const [isLoadingQueuePage, setIsLoadingQueuePage] = useState(false);
 
-  const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
-  const dropActiveRef = useRef(false);
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const queueBodyRef = useRef<HTMLDivElement | null>(null);
+  const cancelHoverTimer = useEffectEvent(() => {
+    if (hoverTimeoutRef.current) {
+      window.clearTimeout(hoverTimeoutRef.current);
+      hoverTimeoutRef.current = null;
+    }
+  });
+
+  const hidePreview = useEffectEvent(() => {
+    cancelHoverTimer();
+    flyoutActiveRef.current = false;
+    setHoveredPathKey(null);
+  });
+
+  const {
+    runtimeInfo,
+    queueView,
+    dropActive,
+    isScanning,
+    isRunning,
+    errorMessage,
+    setErrorMessage,
+    parallelism,
+    setParallelism,
+    progress,
+    runFailures,
+    summary,
+    fileStates,
+    isLoadingQueuePage,
+    fileCount,
+    rootCount,
+    previewFiles,
+    ignoredCount,
+    activePathKey,
+    isBusy,
+    canStart,
+    hasMoreQueueFiles,
+    loadMoreQueueFiles,
+    addFiles,
+    addFolders,
+    startCleanup,
+    cancelCleanup,
+    cancelScan,
+    clearQueue,
+  } = useWorkbenchController();
 
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const isBusy = isScanning || isRunning;
-  const fileCount = queueView?.supportedCount ?? 0;
-  const rootCount = queueView?.rootCount ?? 0;
-  const previewFiles = queueFiles.length ? queueFiles : queueView?.previewFiles ?? [];
-  const ignoredCount = queueView?.ignoredCount ?? 0;
-  const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
-  const outputMode = "overwrite" as const;
-  const canStart = fileCount > 0 && !isScanning && !isRunning;
-  const hasMoreQueueFiles = queueFiles.length < fileCount;
   const allQueueFilesLoaded = fileCount > 0 && !hasMoreQueueFiles;
   const metadataSeedFiles = useMemo(() => {
     if (allQueueFilesLoaded && fileCount <= SMALL_QUEUE_EAGER_LOAD_THRESHOLD) {
@@ -115,210 +115,32 @@ function App() {
     onError: setErrorMessage,
   });
 
-  const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
-    pendingProgressRef.current = payload;
-  });
-
-  const handleCleanupFileEvent = useEffectEvent((payload: CleanupProgressEvent) => {
-    const pathKey = normalizePath(payload.currentPath);
-
-    startTransition(() => {
-      setFileStates((current) => ({
-        ...current,
-        [pathKey]: {
-          status: payload.status,
-          outputPath: payload.outputPath,
-          error: payload.error,
-        },
-      }));
-    });
-  });
-
-  const handleScanProgressEvent = useEffectEvent((payload: ScanProgressEvent) => {
-    startTransition(() => {
-      setQueueView(payload.view);
-      setProgress(createProgressState(payload.view.supportedCount));
-      setSummary(null);
-      setRunFailures([]);
-    });
-  });
-
-  const resetRunState = useEffectEvent(() => {
-    pendingProgressRef.current = null;
-    setSummary(null);
-    setRunFailures([]);
-    setFileStates({});
-    setHoveredPathKey(null);
-    flyoutActiveRef.current = false;
-    resetMetadataState();
-  });
-
-  const refreshQueueFiles = useEffectEvent(async () => {
-    try {
-      setIsLoadingQueuePage(true);
-      const files = await invoke<QueuedFile[]>("get_queue_files_page", {
-        offset: 0,
-        limit: QUEUE_PAGE_SIZE,
-      });
-      startTransition(() => {
-        setQueueFiles(files);
-      });
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    } finally {
-      setIsLoadingQueuePage(false);
-    }
-  });
-
-  const loadMoreQueueFiles = useEffectEvent(async () => {
-    if (isLoadingQueuePage || queueFiles.length >= fileCount || !fileCount) {
-      return;
-    }
-
-    try {
-      setIsLoadingQueuePage(true);
-      const files = await invoke<QueuedFile[]>("get_queue_files_page", {
-        offset: queueFiles.length,
-        limit: QUEUE_PAGE_SIZE,
-      });
-      if (!files.length) {
-        return;
-      }
-
-      startTransition(() => {
-        setQueueFiles((current) => [...current, ...files]);
-      });
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    } finally {
-      setIsLoadingQueuePage(false);
-    }
-  });
-
-  const scanInputPaths = useEffectEvent(async (paths: string[]) => {
-    if (isRunning) {
-      setErrorMessage("请等待当前清理任务结束后再追加导入。");
-      return;
-    }
-
+  useEffect(() => {
     if (isScanning) {
-      setErrorMessage("扫描尚未完成，请等待当前导入结束或先取消扫描。");
-      return;
+      resetMetadataState();
+      hidePreview();
     }
-
-    const cleanedPaths = normalizeSelection(paths);
-    if (!cleanedPaths.length) {
-      return;
-    }
-
-    setIsScanning(true);
-    setErrorMessage(null);
-    resetRunState();
-    setQueueFiles([]);
-
-    try {
-      const result = await invoke<ScanSummary>("scan_inputs", {
-        inputPaths: cleanedPaths,
-      });
-
-      startTransition(() => {
-        setQueueView(result.view);
-        setProgress(createProgressState(result.view.supportedCount));
-      });
-      await refreshQueueFiles();
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    } finally {
-      setIsScanning(false);
-    }
-  });
-
-  const handleWindowDrop = useEffectEvent((event: { payload: { type: string; paths?: string[] } }) => {
-    switch (event.payload.type) {
-      case "enter":
-        if (!dropActiveRef.current) {
-          dropActiveRef.current = true;
-          setDropActive(true);
-        }
-        break;
-      case "leave":
-        if (dropActiveRef.current) {
-          dropActiveRef.current = false;
-          setDropActive(false);
-        }
-        break;
-      case "drop":
-        if (dropActiveRef.current) {
-          dropActiveRef.current = false;
-          setDropActive(false);
-        }
-        void scanInputPaths(event.payload.paths ?? []);
-        break;
-      default:
-        break;
-    }
-  });
+  }, [hidePreview, isScanning, resetMetadataState]);
 
   useEffect(() => {
-    let disposed = false;
-    let unlistenWindowDrop: (() => void) | undefined;
-
-    void invoke<RuntimeInfo>("get_runtime_info")
-      .then((info) => {
-        if (disposed) {
-          return;
-        }
-
-        setRuntimeInfo(info);
-        setParallelism(info.parallelismDefault);
-      })
-      .catch((error) => {
-        if (!disposed) {
-          setErrorMessage(toMessage(error));
-        }
-      });
-
-    const cleanupProgressListener = listen<CleanupProgressEvent>("cleanup-progress", (event) =>
-      handleProgressEvent(event.payload),
-    );
-    const cleanupFileListener = listen<CleanupProgressEvent>("cleanup-file", (event) =>
-      handleCleanupFileEvent(event.payload),
-    );
-    const scanProgressListener = listen<ScanProgressEvent>("scan-progress", (event) =>
-      handleScanProgressEvent(event.payload),
-    );
-
-    void getCurrentWindow()
-      .onDragDropEvent((event) => handleWindowDrop(event as never))
-      .then((unlisten) => {
-        if (disposed) {
-          unlisten();
-          return;
-        }
-        unlistenWindowDrop = unlisten;
-      });
-
-    return () => {
-      disposed = true;
-      if (hoverTimeoutRef.current) {
-        window.clearTimeout(hoverTimeoutRef.current);
-      }
-      void cleanupProgressListener.then((unlisten) => unlisten());
-      void cleanupFileListener.then((unlisten) => unlisten());
-      void scanProgressListener.then((unlisten) => unlisten());
-      unlistenWindowDrop?.();
-    };
-  }, [handleCleanupFileEvent, handleProgressEvent, handleScanProgressEvent, handleWindowDrop]);
+    if (isRunning) {
+      clearAfterSnapshots();
+      hidePreview();
+    }
+  }, [clearAfterSnapshots, hidePreview, isRunning]);
 
   useEffect(() => {
-    if (!summary || !queueFiles.length) {
-      return;
+    if (summary?.previewStates.length) {
+      applyCleanupPreviewStates(summary.previewStates);
     }
+  }, [applyCleanupPreviewStates, summary]);
 
-    startTransition(() => {
-      setFileStates((current) => mergeSummaryFileStates(current, queueFiles, summary));
-    });
-  }, [queueFiles, summary]);
+  useEffect(() => {
+    if (!fileCount) {
+      resetMetadataState();
+      hidePreview();
+    }
+  }, [fileCount, hidePreview, resetMetadataState]);
 
   useEffect(() => {
     if (!hoveredPathKey) {
@@ -353,173 +175,6 @@ function App() {
     body.addEventListener("scroll", handleScroll);
     return () => body.removeEventListener("scroll", handleScroll);
   }, [hasMoreQueueFiles, isLoadingQueuePage, loadMoreQueueFiles, previewFiles.length]);
-
-  useEffect(() => {
-    if (!isRunning) {
-      if (summary) {
-        return;
-      }
-
-      const payload = pendingProgressRef.current;
-      if (payload) {
-        pendingProgressRef.current = null;
-        setProgress({
-          total: payload.total,
-          completed: payload.completed,
-          succeeded: payload.succeeded,
-          failed: payload.failed,
-          currentPath: payload.currentPath,
-          currentStatus: payload.status,
-        });
-      }
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      const payload = pendingProgressRef.current;
-      if (!payload) {
-        return;
-      }
-
-      pendingProgressRef.current = null;
-      startTransition(() => {
-        setProgress({
-          total: payload.total,
-          completed: payload.completed,
-          succeeded: payload.succeeded,
-          failed: payload.failed,
-          currentPath: payload.currentPath,
-          currentStatus: payload.status,
-        });
-
-        if (payload.status === "failed" && payload.error) {
-          setRunFailures((current) =>
-            [
-              {
-                sourcePath: payload.currentPath,
-                error: payload.error ?? "处理失败",
-              },
-              ...current,
-            ].slice(0, 6),
-          );
-        }
-      });
-    }, 220);
-
-    return () => window.clearInterval(timer);
-  }, [isRunning, summary]);
-
-  const addFiles = async () => {
-    const selection = await open({
-      title: "选择一个或多个文件",
-      multiple: true,
-      directory: false,
-    });
-
-    await scanInputPaths(selectionToArray(selection));
-  };
-
-  const addFolders = async () => {
-    const selection = await open({
-      title: "选择一个或多个文件夹",
-      multiple: true,
-      directory: true,
-    });
-
-    await scanInputPaths(selectionToArray(selection));
-  };
-
-  const startCleanup = async () => {
-    if (!fileCount || !canStart) {
-      return;
-    }
-
-    setIsRunning(true);
-    setErrorMessage(null);
-    setRunFailures([]);
-    setSummary(null);
-    setFileStates({});
-    clearAfterSnapshots();
-    setHoveredPathKey(null);
-    pendingProgressRef.current = null;
-    setProgress(createProgressState(fileCount));
-
-    try {
-      const result = await invoke<CleanupSummary>("run_cleanup", {
-        options: {
-          outputMode,
-          outputDir: null,
-          parallelism,
-          preserveStructure: true,
-        },
-      });
-
-      pendingProgressRef.current = null;
-      setSummary(result);
-      setRunFailures(result.failures.slice(0, 6));
-      setFileStates(buildFileStateMap(result.previewStates));
-      applyCleanupPreviewStates(result.previewStates);
-      setProgress({
-        total: result.total,
-        completed: result.succeeded + result.failed,
-        succeeded: result.succeeded,
-        failed: result.failed,
-        currentPath: "",
-        currentStatus: result.cancelled ? "cancelled" : "done",
-      });
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    } finally {
-      setIsRunning(false);
-    }
-  };
-
-  const cancelCleanup = async () => {
-    try {
-      await invoke<boolean>("cancel_cleanup");
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    }
-  };
-
-  const cancelScan = async () => {
-    try {
-      await invoke<boolean>("cancel_scan");
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    }
-  };
-
-  const clearQueue = async () => {
-    try {
-      await invoke("clear_queue");
-      setQueueView(null);
-      setQueueFiles([]);
-      setSummary(null);
-      setRunFailures([]);
-      setProgress(EMPTY_PROGRESS);
-      setErrorMessage(null);
-      setFileStates({});
-      resetMetadataState();
-      setHoveredPathKey(null);
-      flyoutActiveRef.current = false;
-    } catch (error) {
-      setErrorMessage(toMessage(error));
-    }
-  };
-
-  const cancelHoverTimer = () => {
-    if (hoverTimeoutRef.current) {
-      window.clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-  };
-
-  const hidePreview = () => {
-    cancelHoverTimer();
-    flyoutActiveRef.current = false;
-    setHoveredPathKey(null);
-  };
 
   const positionFlyout = (event: React.MouseEvent<HTMLDivElement>) => {
     const shell = tableShellRef.current;

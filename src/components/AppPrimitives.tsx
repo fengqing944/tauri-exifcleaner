@@ -4,7 +4,7 @@ import type { BadgeTone } from "../app-shared";
 
 export function Panel(props: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   children: ReactNode;
   aside?: ReactNode;
 }) {
@@ -13,7 +13,7 @@ export function Panel(props: {
       <header className="panel-header">
         <div>
           <h2>{props.title}</h2>
-          <p>{props.subtitle}</p>
+          {props.subtitle ? <p>{props.subtitle}</p> : null}
         </div>
         {props.aside}
       </header>

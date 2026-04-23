@@ -126,16 +126,12 @@ export function WorkbenchPanel(props: {
     : 0;
 
   return (
-    <Panel title="工作台" subtitle="导入、列表、任务状态和调试都集中在这里，整体更紧凑。" aside={aside}>
+    <Panel title="工作台" aside={aside}>
       <div className={`queue-workspace compact-workbench ${props.dropActive ? "is-drop-active" : ""}`}>
         <div className="queue-workspace-toolbar compact-workbench-toolbar">
           <div className="queue-workspace-copy">
             <strong>{props.fileCount ? "拖到这里可继续追加文件" : "在这里拖放或导入"}</strong>
-            <span>
-              {props.fileCount
-                ? "列表、进度和调试都已收进同一个工作台。"
-                : "拖放图像、视频或 PDF 到这里，或直接点击按钮导入。"}
-            </span>
+            {props.fileCount ? <span>列表、进度和调试都已收进同一个工作台。</span> : null}
           </div>
 
           <div className="import-actions compact-actions">
@@ -191,7 +187,6 @@ export function WorkbenchPanel(props: {
             onClick={props.onAddFiles}
           >
             <strong>拖入文件或点击导入</strong>
-            <span>支持多文件、多文件夹和递归扫描。这里就是你的主工作区。</span>
           </button>
         ) : (
           <div

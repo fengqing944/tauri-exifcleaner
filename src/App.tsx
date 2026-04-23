@@ -160,6 +160,8 @@ const EMPTY_PROGRESS: ProgressState = {
 };
 
 const QUEUE_PAGE_SIZE = 240;
+const EAGER_METADATA_PREFETCH_LIMIT = 48;
+const SMALL_QUEUE_EAGER_LOAD_THRESHOLD = 96;
 const EMPTY_METADATA_DEBUG: MetadataDebugState = {
   status: "idle",
   lastOrigin: "未开始",
@@ -210,13 +212,20 @@ function App() {
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
   const previewFiles = queueFiles.length ? queueFiles : queueView?.previewFiles ?? [];
-  const metadataSeedFiles = useMemo(() => previewFiles.slice(0, 24), [previewFiles]);
   const ignoredCount = queueView?.ignoredCount ?? 0;
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
-  const previewFileKey = metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|");
   const outputMode: OutputMode = "overwrite";
   const canStart = fileCount > 0 && !isScanning && !isRunning;
   const hasMoreQueueFiles = queueFiles.length < fileCount;
+  const allQueueFilesLoaded = fileCount > 0 && !hasMoreQueueFiles;
+  const metadataSeedFiles = useMemo(() => {
+    if (allQueueFilesLoaded && fileCount <= SMALL_QUEUE_EAGER_LOAD_THRESHOLD) {
+      return previewFiles;
+    }
+
+    return previewFiles.slice(0, Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT));
+  }, [allQueueFilesLoaded, fileCount, previewFiles]);
+  const previewFileKey = metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|");
 
   const runningPreviewPathKey =
     previewFiles

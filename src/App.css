@@ -574,7 +574,8 @@ button {
   position: relative;
   padding: 9px 12px;
   background: #ffffff;
-  cursor: default;
+  cursor: pointer;
+  outline: none;
 }
 
 .queue-row + .queue-row {
@@ -589,6 +590,18 @@ button {
 .queue-row.is-hovered {
   background: #f5f8fc;
   z-index: 3;
+}
+
+.queue-row.is-selected {
+  background: #eef4ff;
+  box-shadow: inset 2px 0 0 #3b82f6;
+}
+
+.queue-row:focus-visible {
+  background: #eef4ff;
+  box-shadow:
+    inset 2px 0 0 #2563eb,
+    inset 0 0 0 1px #93c5fd;
 }
 
 .queue-file {
@@ -1035,6 +1048,7 @@ button {
   border-radius: 12px;
   box-shadow: 0 16px 36px rgba(15, 23, 42, 0.18);
   overflow: hidden;
+  outline: none;
 }
 
 .details-drawer-head {

@@ -1,3 +1,6 @@
+import { useEffect, useRef } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+
 import type { MetadataDebugEntry, MetadataDebugState } from "../app-shared";
 import { trimMiddle } from "../app-shared";
 import { EmptyBox, StatusBadge } from "./AppPrimitives";
@@ -11,13 +14,72 @@ export function RunDetailsDrawer(props: {
   runFailures: Array<{ sourcePath: string; error: string }>;
   onClose: () => void;
 }) {
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      props.onClose();
+      return;
+    }
+
+    if (event.key !== "Tab") {
+      return;
+    }
+
+    const drawer = drawerRef.current;
+    if (!drawer) {
+      return;
+    }
+
+    const focusableElements = Array.from(
+      drawer.querySelectorAll<HTMLElement>(
+        'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((element) => !element.hasAttribute("disabled"));
+
+    if (!focusableElements.length) {
+      event.preventDefault();
+      drawer.focus();
+      return;
+    }
+
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+    const activeElement = document.activeElement as HTMLElement | null;
+
+    if (event.shiftKey) {
+      if (!activeElement || activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      }
+      return;
+    }
+
+    if (activeElement === lastElement) {
+      event.preventDefault();
+      firstElement.focus();
+    }
+  };
+
   if (!props.isOpen) {
     return null;
   }
 
   return (
     <div className="details-drawer-backdrop" onClick={props.onClose}>
-      <aside className="details-drawer" onClick={(event) => event.stopPropagation()}>
+      <aside
+        ref={drawerRef}
+        className="details-drawer"
+        tabIndex={-1}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
+      >
         <div className="details-drawer-head">
           <div>
             <strong>运行详情</strong>
@@ -29,7 +91,7 @@ export function RunDetailsDrawer(props: {
                   : "调试与错误信息"}
             </span>
           </div>
-          <button className="button" type="button" onClick={props.onClose}>
+          <button ref={closeButtonRef} className="button" type="button" onClick={props.onClose}>
             关闭
           </button>
         </div>

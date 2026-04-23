@@ -23,11 +23,13 @@ import { useWorkbenchController } from "./hooks/useWorkbenchController";
 
 function App() {
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
+  const [pinnedPathKey, setPinnedPathKey] = useState<string | null>(null);
   const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const queueBodyRef = useRef<HTMLDivElement | null>(null);
   const wasScanningRef = useRef(false);
@@ -44,6 +46,7 @@ function App() {
     cancelHoverTimer();
     flyoutActiveRef.current = false;
     setHoveredPathKey(null);
+    setPinnedPathKey(null);
   });
 
   const {
@@ -97,7 +100,7 @@ function App() {
 
   const highlightedPathKey = runningPreviewPathKey || activePathKey;
   const deferredHoveredPathKey = useDeferredValue(hoveredPathKey);
-  const previewPathKey = hoveredPathKey ? deferredHoveredPathKey : null;
+  const previewPathKey = pinnedPathKey ?? (hoveredPathKey ? deferredHoveredPathKey : null);
   const previewFile =
     previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
 
@@ -151,18 +154,19 @@ function App() {
   }, [fileCount]);
 
   useEffect(() => {
-    if (!hoveredPathKey) {
+    if (!previewPathKey) {
       return;
     }
 
     const stillVisible = previewFiles.some(
-      (file) => normalizePath(file.sourcePath) === hoveredPathKey,
+      (file) => normalizePath(file.sourcePath) === previewPathKey,
     );
     if (!stillVisible) {
       setHoveredPathKey(null);
+      setPinnedPathKey(null);
       flyoutActiveRef.current = false;
     }
-  }, [hoveredPathKey, previewFiles]);
+  }, [previewFiles, previewPathKey]);
 
   useEffect(() => {
     const body = queueBodyRef.current;
@@ -184,18 +188,19 @@ function App() {
     return () => body.removeEventListener("scroll", handleScroll);
   }, [hasMoreQueueFiles, isLoadingQueuePage, previewFiles.length]);
 
-  const positionFlyout = (event: React.MouseEvent<HTMLDivElement>) => {
+  const positionFlyout = (rowElement: HTMLDivElement, pointerClientX?: number) => {
     const shell = tableShellRef.current;
     if (!shell) {
       return;
     }
 
     const shellRect = shell.getBoundingClientRect();
-    const rowRect = event.currentTarget.getBoundingClientRect();
+    const rowRect = rowElement.getBoundingClientRect();
     const estimatedWidth = Math.min(480, Math.max(340, shell.clientWidth - 24));
     const estimatedHeight = 360;
-    const preferredLeft = event.clientX - shellRect.left - estimatedWidth - 14;
-    const fallbackLeft = event.clientX - shellRect.left + 16;
+    const anchorX = pointerClientX ?? rowRect.left + rowRect.width * 0.72;
+    const preferredLeft = anchorX - shellRect.left - estimatedWidth - 14;
+    const fallbackLeft = anchorX - shellRect.left + 16;
     const nextLeft = clampNumber(
       preferredLeft >= 12 ? preferredLeft : fallbackLeft,
       12,
@@ -210,15 +215,79 @@ function App() {
     setFlyoutPosition({ left: nextLeft, top: nextTop });
   };
 
+  const registerRowRef = useEffectEvent((pathKey: string, element: HTMLDivElement | null) => {
+    if (element) {
+      rowRefs.current.set(pathKey, element);
+    } else {
+      rowRefs.current.delete(pathKey);
+    }
+  });
+
   const scheduleHover = (pathKey: string, event: React.MouseEvent<HTMLDivElement>) => {
+    if (pinnedPathKey && pinnedPathKey !== pathKey) {
+      return;
+    }
     cancelHoverTimer();
-    positionFlyout(event);
+    positionFlyout(event.currentTarget, event.clientX);
     startTransition(() => {
       setHoveredPathKey(pathKey);
     });
   };
 
+  const anchorPreview = useEffectEvent((pathKey: string, rowElement: HTMLDivElement) => {
+    cancelHoverTimer();
+    flyoutActiveRef.current = true;
+    positionFlyout(rowElement);
+    startTransition(() => {
+      setPinnedPathKey(pathKey);
+      setHoveredPathKey(null);
+    });
+  });
+
+  const handlePreviewKeyDown = useEffectEvent(
+    (pathKey: string, rowElement: HTMLDivElement, event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        anchorPreview(pathKey, rowElement);
+        return;
+      }
+
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+
+      const currentIndex = previewFiles.findIndex(
+        (file) => normalizePath(file.sourcePath) === pathKey,
+      );
+      if (currentIndex < 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const nextIndex =
+        event.key === "ArrowDown"
+          ? Math.min(previewFiles.length - 1, currentIndex + 1)
+          : Math.max(0, currentIndex - 1);
+      const nextFile = previewFiles[nextIndex];
+      if (!nextFile) {
+        return;
+      }
+
+      const nextPathKey = normalizePath(nextFile.sourcePath);
+      const nextRow = rowRefs.current.get(nextPathKey);
+      if (!nextRow) {
+        return;
+      }
+
+      anchorPreview(nextPathKey, nextRow);
+      nextRow.focus();
+    },
+  );
+
   const clearHover = () => {
+    if (pinnedPathKey) {
+      return;
+    }
     cancelHoverTimer();
     hoverTimeoutRef.current = window.setTimeout(() => {
       if (flyoutActiveRef.current) {
@@ -234,17 +303,37 @@ function App() {
   };
 
   const handleFlyoutLeave = () => {
+    if (pinnedPathKey) {
+      return;
+    }
     flyoutActiveRef.current = false;
     clearHover();
   };
 
   useEffect(() => {
-    if (!previewPathKey) {
+    if (!previewPathKey && !isDetailsOpen) {
       return;
     }
 
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      if (isDetailsOpen) {
+        setIsDetailsOpen(false);
+        return;
+      }
+
+      if (previewPathKey) {
+        hidePreview();
+      }
+    };
+
     const handleWindowBlur = () => {
-      hidePreview();
+      if (previewPathKey) {
+        hidePreview();
+      }
     };
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -256,14 +345,16 @@ function App() {
       hidePreview();
     };
 
+    window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("pointerdown", handlePointerDown, true);
 
     return () => {
+      window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("pointerdown", handlePointerDown, true);
     };
-  }, [previewPathKey]);
+  }, [hidePreview, isDetailsOpen, previewPathKey]);
 
   const activity = buildActivityState({
     summary,
@@ -321,6 +412,7 @@ function App() {
             afterSnapshots={afterSnapshots}
             loadingSnapshots={loadingSnapshots}
             hoveredPathKey={hoveredPathKey}
+            selectedPreviewPathKey={pinnedPathKey}
             highlightedPathKey={highlightedPathKey}
             hasMoreQueueFiles={hasMoreQueueFiles}
             isLoadingQueuePage={isLoadingQueuePage}
@@ -337,9 +429,12 @@ function App() {
             onAddFolders={addFolders}
             onClearQueue={clearQueue}
             onScheduleHover={scheduleHover}
+            onAnchorPreview={anchorPreview}
+            onPreviewKeyDown={handlePreviewKeyDown}
             onClearHover={clearHover}
             onFlyoutEnter={handleFlyoutEnter}
             onFlyoutLeave={handleFlyoutLeave}
+            onRegisterRowRef={registerRowRef}
           />
         </section>
       </section>

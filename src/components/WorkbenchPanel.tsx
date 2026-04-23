@@ -1,4 +1,4 @@
-import type { MouseEvent, RefObject } from "react";
+import type { KeyboardEvent, MouseEvent, RefObject } from "react";
 
 import type {
   ActivityState,
@@ -39,6 +39,7 @@ export function WorkbenchPanel(props: {
   afterSnapshots: Record<string, MetadataPreviewSnapshot>;
   loadingSnapshots: Record<string, boolean>;
   hoveredPathKey: string | null;
+  selectedPreviewPathKey: string | null;
   highlightedPathKey: string;
   hasMoreQueueFiles: boolean;
   isLoadingQueuePage: boolean;
@@ -55,9 +56,16 @@ export function WorkbenchPanel(props: {
   onAddFolders: () => void;
   onClearQueue: () => void;
   onScheduleHover: (pathKey: string, event: MouseEvent<HTMLDivElement>) => void;
+  onAnchorPreview: (pathKey: string, row: HTMLDivElement) => void;
+  onPreviewKeyDown: (
+    pathKey: string,
+    row: HTMLDivElement,
+    event: KeyboardEvent<HTMLDivElement>,
+  ) => void;
   onClearHover: () => void;
   onFlyoutEnter: () => void;
   onFlyoutLeave: () => void;
+  onRegisterRowRef: (pathKey: string, row: HTMLDivElement | null) => void;
 }) {
   const aside = props.isScanning ? (
     <StatusBadge tone="info" label="扫描中" />
@@ -159,15 +167,25 @@ export function WorkbenchPanel(props: {
                 const beforeLoading = Boolean(props.loadingSnapshots[`before:${pathKey}`]);
                 const afterLoading = Boolean(props.loadingSnapshots[`after:${pathKey}`]);
                 const isPreviewing = props.hoveredPathKey === pathKey;
+                const isSelected = props.selectedPreviewPathKey === pathKey;
                 const isActive = props.highlightedPathKey === pathKey && props.isRunning;
                 const rowStatus = getRowStatusDescriptor(rowState);
 
                 return (
                   <div
                     key={file.sourcePath}
-                    className={`queue-row compact-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""}`}
+                    ref={(row) => props.onRegisterRowRef(pathKey, row)}
+                    className={`queue-row compact-row ${isActive ? "is-active" : ""} ${isPreviewing ? "is-hovered" : ""} ${isSelected ? "is-selected" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelected}
                     onMouseEnter={(event) => props.onScheduleHover(pathKey, event)}
                     onMouseLeave={props.onClearHover}
+                    onFocus={(event) => props.onAnchorPreview(pathKey, event.currentTarget)}
+                    onClick={(event) => props.onAnchorPreview(pathKey, event.currentTarget)}
+                    onKeyDown={(event) =>
+                      props.onPreviewKeyDown(pathKey, event.currentTarget, event)
+                    }
                   >
                     <div className="queue-file">
                       <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>

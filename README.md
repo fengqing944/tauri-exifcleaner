@@ -57,7 +57,7 @@ npm run tauri build
 
 本地已成功打包生成：
 
-- `G:\Demo\tauri-exifcleaner\src-tauri\target\release\bundle\nsis\TagSweep_0.1.3_x64-setup.exe`
+- `G:\Demo\tauri-exifcleaner\src-tauri\target\release\bundle\nsis\TagSweep_0.1.4_x64-setup.exe`
 
 ## 项目结构
 

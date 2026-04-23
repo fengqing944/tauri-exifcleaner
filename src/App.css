@@ -949,6 +949,38 @@ button {
   gap: 8px;
 }
 
+.details-block {
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #fbfcfe;
+  overflow: hidden;
+}
+
+.details-block summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #334155;
+}
+
+.details-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.details-block[open] summary {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.details-block summary span:first-child {
+  font-weight: 700;
+  color: #0f172a;
+}
+
 .workbench-aux-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);

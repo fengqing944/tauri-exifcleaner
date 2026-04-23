@@ -660,6 +660,7 @@ fn build_cleanup_preview_states(
     tracked_preview_files: &[QueuedFile],
     tracked_preview_states: &HashMap<String, CleanupPreviewState>,
     preview_snapshots: &HashMap<String, MetadataPreviewSnapshot>,
+    failure_map: &HashMap<String, String>,
     cancelled: bool,
 ) -> Vec<CleanupPreviewState> {
     tracked_preview_files
@@ -678,12 +679,14 @@ fn build_cleanup_preview_states(
                 .unwrap_or_else(|| CleanupPreviewState {
                     source_path: file.source_path.clone(),
                     output_path: None,
-                    status: if cancelled {
+                    status: if let Some(_) = failure_map.get(&key) {
+                        "failed".to_string()
+                    } else if cancelled {
                         "cancelled".to_string()
                     } else {
                         "success".to_string()
                     },
-                    error: None,
+                    error: failure_map.get(&key).cloned(),
                     snapshot: preview_snapshots.get(&key).cloned(),
                 })
         })
@@ -1254,6 +1257,10 @@ async fn run_cleanup(
         let cancelled = cancel_flag.load(Ordering::Relaxed);
         let preview_snapshots =
             build_cleanup_preview_snapshot_map(&exiftool_path, &tracked_preview_files, &tracked_preview_states);
+        let failure_map = failures
+            .iter()
+            .map(|failure| (dedupe_key(Path::new(&failure.source_path)), failure.error.clone()))
+            .collect::<HashMap<_, _>>();
 
         Ok(CleanupSummary {
             total,
@@ -1266,6 +1273,7 @@ async fn run_cleanup(
                 &tracked_preview_files,
                 &tracked_preview_states,
                 &preview_snapshots,
+                &failure_map,
                 cancelled,
             ),
         })
@@ -1991,6 +1999,7 @@ mod tests {
             &tracked_preview_files,
             &tracked_preview_states,
             &preview_snapshots,
+            &HashMap::new(),
             false,
         );
         assert_eq!(completed_states.len(), 2);
@@ -2006,6 +2015,7 @@ mod tests {
 
         let cancelled_states = build_cleanup_preview_states(
             &tracked_preview_files,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             true,

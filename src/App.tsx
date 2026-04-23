@@ -1339,77 +1339,93 @@ function App() {
                 )}
               </div>
 
-              <div className="workbench-aux-grid">
-                <div className="debug-block compact-debug-block">
-                  <div className="task-block-head">
-                    <strong>字段调试</strong>
-                    <span>{metadataDebug.lastOrigin}</span>
-                  </div>
-                  <div className="debug-strip">
-                    <StatusBadge
-                      tone={
-                        metadataDebug.status === "error"
-                          ? "danger"
-                          : metadataDebug.status === "running"
-                            ? "info"
-                            : metadataDebug.status === "success"
-                              ? "success"
-                              : "neutral"
-                      }
-                      label={
-                        metadataDebug.status === "error"
-                          ? "异常"
-                          : metadataDebug.status === "running"
-                            ? "读取中"
-                            : metadataDebug.status === "success"
-                              ? "最近成功"
-                              : "空闲"
-                      }
-                    />
-                    <span>批次 {metadataDebug.pendingBatches}</span>
-                    <span>文件 {metadataDebug.pendingFiles}</span>
-                    <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
-                  </div>
-                  <div className="debug-copy">
-                    <span>{metadataDebug.lastMessage}</span>
-                    <span>
-                      最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
-                    </span>
-                    <span title={debugLogPath}>
-                      日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
-                    </span>
-                  </div>
-                  {metadataDebugEntries.length ? (
-                    <div className="debug-entry-list">
-                      {metadataDebugEntries.map((entry) => (
-                        <div key={entry.id} className={`debug-entry ${entry.tone}`}>
-                          <strong>{entry.title}</strong>
-                          <span>{entry.detail}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
+              <details
+                className="details-block"
+                open={isRunning || metadataDebug.status === "error" || runFailures.length > 0}
+              >
+                <summary>
+                  <span>运行详情</span>
+                  <span>
+                    {metadataDebug.status === "running"
+                      ? "字段读取中"
+                      : runFailures.length
+                        ? `${runFailures.length} 条错误`
+                        : "展开调试与错误"}
+                  </span>
+                </summary>
 
-                <div className="task-errors-block compact-error-block">
-                  <div className="task-block-head">
-                    <strong>最近错误</strong>
-                    <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
-                  </div>
-                  {runFailures.length ? (
-                    <div className="failure-list task-failure-list">
-                      {runFailures.map((failure) => (
-                        <div key={failure.sourcePath} className="failure-row compact-failure-row">
-                          <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
-                          <span>{failure.error}</span>
-                        </div>
-                      ))}
+                <div className="workbench-aux-grid">
+                  <div className="debug-block compact-debug-block">
+                    <div className="task-block-head">
+                      <strong>字段调试</strong>
+                      <span>{metadataDebug.lastOrigin}</span>
                     </div>
-                  ) : (
-                    <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
-                  )}
+                    <div className="debug-strip">
+                      <StatusBadge
+                        tone={
+                          metadataDebug.status === "error"
+                            ? "danger"
+                            : metadataDebug.status === "running"
+                              ? "info"
+                              : metadataDebug.status === "success"
+                                ? "success"
+                                : "neutral"
+                        }
+                        label={
+                          metadataDebug.status === "error"
+                            ? "异常"
+                            : metadataDebug.status === "running"
+                              ? "读取中"
+                              : metadataDebug.status === "success"
+                                ? "最近成功"
+                                : "空闲"
+                        }
+                      />
+                      <span>批次 {metadataDebug.pendingBatches}</span>
+                      <span>文件 {metadataDebug.pendingFiles}</span>
+                      <span>{metadataDebug.lastDurationMs ? `${metadataDebug.lastDurationMs} ms` : "等待中"}</span>
+                    </div>
+                    <div className="debug-copy">
+                      <span>{metadataDebug.lastMessage}</span>
+                      <span>
+                        最近返回 {metadataDebug.lastResolved} 项，缺失 {metadataDebug.lastMissing} 项
+                      </span>
+                      <span title={debugLogPath}>
+                        日志: {debugLogPath ? trimMiddle(debugLogPath, 52) : "未就绪"}
+                      </span>
+                    </div>
+                    {metadataDebugEntries.length ? (
+                      <div className="debug-entry-list">
+                        {metadataDebugEntries.map((entry) => (
+                          <div key={entry.id} className={`debug-entry ${entry.tone}`}>
+                            <strong>{entry.title}</strong>
+                            <span>{entry.detail}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="task-errors-block compact-error-block">
+                    <div className="task-block-head">
+                      <strong>最近错误</strong>
+                      <span>{runFailures.length ? `${runFailures.length} 条` : "无错误"}</span>
+                    </div>
+                    {runFailures.length ? (
+                      <div className="failure-list task-failure-list">
+                        {runFailures.map((failure) => (
+                          <div key={failure.sourcePath} className="failure-row compact-failure-row">
+                            <strong title={failure.sourcePath}>{trimMiddle(failure.sourcePath, 42)}</strong>
+                            <span>{failure.error}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyBox title="没有错误项" description="最近一次任务里没有记录失败项。" />
+                    )}
+                  </div>
                 </div>
-              </div>
+              </details>
             </div>
           </Panel>
         </section>

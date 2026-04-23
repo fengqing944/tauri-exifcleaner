@@ -80,6 +80,15 @@ export function WorkbenchPanel(props: {
   return (
     <Panel title="工作台" subtitle="导入、列表、任务状态和调试都集中在这里，整体更紧凑。" aside={aside}>
       <div className={`queue-workspace compact-workbench ${props.dropActive ? "is-drop-active" : ""}`}>
+        <div className="summary-strip compact-summary-strip workbench-top-summary">
+          <StatChip label="输入根" value={String(props.rootCount)} />
+          <StatChip label="候选" value={String(props.fileCount)} />
+          <StatChip label="大小" value={formatBytes(props.queueView?.totalBytes ?? 0)} />
+          <StatChip label="成功" value={String(props.progress.succeeded)} />
+          <StatChip label="失败" value={String(props.progress.failed)} />
+          <StatChip label="忽略" value={String(props.ignoredCount)} />
+        </div>
+
         <div className="queue-workspace-toolbar compact-workbench-toolbar">
           <div className="queue-workspace-copy">
             <strong>{props.fileCount ? "拖到这里可继续追加文件" : "拖放区域与文件列表已合并"}</strong>
@@ -88,6 +97,17 @@ export function WorkbenchPanel(props: {
                 ? "列表、进度和调试都已收进同一个工作台。"
                 : "拖放图像、视频或 PDF 到这里，或直接点击按钮导入。"}
             </span>
+            <div className="queue-workspace-status">
+              <span className="activity-label">{props.activity.label}</span>
+              <strong title={props.activity.title}>{trimMiddle(props.activity.title, 84)}</strong>
+              <div className="activity-stats workbench-activity-stats">
+                <span>
+                  {props.progress.completed}/{props.progress.total || props.fileCount}
+                </span>
+                <span>{props.progressPercent}%</span>
+                <span>{props.progress.currentStatus}</span>
+              </div>
+            </div>
           </div>
 
           <div className="import-actions compact-actions">
@@ -100,31 +120,6 @@ export function WorkbenchPanel(props: {
             <button className="button button-danger" type="button" onClick={props.onClearQueue} disabled={props.isBusy}>
               清空
             </button>
-          </div>
-        </div>
-
-        <div className="workbench-meta-row">
-          <div className="summary-strip compact-summary-strip">
-            <StatChip label="输入根" value={String(props.rootCount)} />
-            <StatChip label="候选" value={String(props.fileCount)} />
-            <StatChip label="大小" value={formatBytes(props.queueView?.totalBytes ?? 0)} />
-            <StatChip label="成功" value={String(props.progress.succeeded)} />
-            <StatChip label="失败" value={String(props.progress.failed)} />
-            <StatChip label="忽略" value={String(props.ignoredCount)} />
-          </div>
-
-          <div className="activity-strip compact-activity-strip">
-            <div className="activity-main">
-              <span className="activity-label">{props.activity.label}</span>
-              <strong title={props.activity.title}>{trimMiddle(props.activity.title, 72)}</strong>
-            </div>
-            <div className="activity-stats">
-              <span>
-                {props.progress.completed}/{props.progress.total || props.fileCount}
-              </span>
-              <span>{props.progressPercent}%</span>
-              <span>{props.progress.currentStatus}</span>
-            </div>
           </div>
         </div>
 

@@ -812,6 +812,16 @@ function App() {
   }, [afterSnapshots, fileStates, metadataSeedFiles, previewFileKey, summary]);
 
   useEffect(() => {
+    if (!summary || !queueFiles.length) {
+      return;
+    }
+
+    startTransition(() => {
+      setFileStates((current) => mergeSummaryFileStates(current, queueFiles, summary));
+    });
+  }, [queueFiles, summary]);
+
+  useEffect(() => {
     if (!hoveredPathKey) {
       return;
     }
@@ -1705,6 +1715,52 @@ function buildAfterSnapshotMap(
     }
     return result;
   }, {});
+}
+
+function mergeSummaryFileStates(
+  current: Record<string, FileRunState>,
+  queueFiles: QueuedFile[],
+  summary: CleanupSummary,
+): Record<string, FileRunState> {
+  const next = { ...current };
+  const previewStateMap = buildFileStateMap(summary.previewStates);
+  const failureMap = new Map(
+    summary.failures.map((failure) => [
+      normalizePath(failure.sourcePath),
+      failure.error,
+    ]),
+  );
+
+  for (const [pathKey, state] of Object.entries(previewStateMap)) {
+    next[pathKey] = state;
+  }
+
+  for (const file of queueFiles) {
+    const pathKey = normalizePath(file.sourcePath);
+    if (previewStateMap[pathKey]) {
+      continue;
+    }
+
+    const failure = failureMap.get(pathKey);
+    if (failure) {
+      next[pathKey] = {
+        status: "failed",
+        outputPath: null,
+        error: failure,
+      };
+      continue;
+    }
+
+    if (!summary.cancelled) {
+      next[pathKey] = {
+        status: "success",
+        outputPath: next[pathKey]?.outputPath ?? null,
+        error: null,
+      };
+    }
+  }
+
+  return next;
 }
 
 function toMessage(error: unknown): string {

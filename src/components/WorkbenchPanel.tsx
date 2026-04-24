@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { KeyboardEvent, MouseEvent, RefObject } from "react";
 
 import type {
@@ -71,6 +71,7 @@ export function WorkbenchPanel(props: {
   onFlyoutEnter: () => void;
   onFlyoutLeave: () => void;
   onRegisterRowRef: (pathKey: string, row: HTMLDivElement | null) => void;
+  onVisibleFilesChange: (files: QueuedFile[]) => void;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -118,13 +119,19 @@ export function WorkbenchPanel(props: {
   const visibleEnd = shouldVirtualize
     ? Math.min(props.previewFiles.length, visibleStart + visibleCount)
     : props.previewFiles.length;
-  const visibleFiles = shouldVirtualize
-    ? props.previewFiles.slice(visibleStart, visibleEnd)
-    : props.previewFiles;
+  const visibleFiles = useMemo(
+    () =>
+      shouldVirtualize ? props.previewFiles.slice(visibleStart, visibleEnd) : props.previewFiles,
+    [props.previewFiles, shouldVirtualize, visibleEnd, visibleStart],
+  );
   const topSpacerHeight = shouldVirtualize ? visibleStart * QUEUE_ROW_HEIGHT : 0;
   const bottomSpacerHeight = shouldVirtualize
     ? Math.max(0, (props.previewFiles.length - visibleEnd) * QUEUE_ROW_HEIGHT)
     : 0;
+
+  useEffect(() => {
+    props.onVisibleFilesChange(visibleFiles);
+  }, [props.onVisibleFilesChange, visibleFiles]);
 
   return (
     <Panel title="工作台" aside={aside}>

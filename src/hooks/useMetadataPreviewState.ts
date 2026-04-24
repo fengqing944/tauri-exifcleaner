@@ -4,6 +4,7 @@ import {
   useEffect,
   useEffectEvent,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -26,6 +27,7 @@ import {
 
 type UseMetadataPreviewStateInput = {
   metadataSeedFiles: QueuedFile[];
+  visibleFiles: QueuedFile[];
   previewFile: QueuedFile | null;
   previewPathKey: string | null;
   fileStates: Record<string, FileRunState>;
@@ -44,10 +46,15 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [debugLogPath, setDebugLogPath] = useState("");
   const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
+  const activeSnapshotRequestKeysRef = useRef(new Set<string>());
 
   const metadataSeedKey = useMemo(
     () => input.metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
     [input.metadataSeedFiles],
+  );
+  const visibleMetadataKey = useMemo(
+    () => input.visibleFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
+    [input.visibleFiles],
   );
 
   const pushMetadataDebugEntry = useEffectEvent(
@@ -120,9 +127,22 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         return;
       }
 
-      const loadingKeys = options.requests.map(
-        (request) => `${options.phase}:${request.requestKey}`,
-      );
+      const requests: MetadataSnapshotRequest[] = [];
+      const loadingKeys: string[] = [];
+      for (const request of options.requests) {
+        const loadingKey = `${options.phase}:${request.requestKey}`;
+        if (activeSnapshotRequestKeysRef.current.has(loadingKey)) {
+          continue;
+        }
+
+        activeSnapshotRequestKeysRef.current.add(loadingKey);
+        loadingKeys.push(loadingKey);
+        requests.push(request);
+      }
+      if (!requests.length) {
+        return;
+      }
+
       const startedAt = performance.now();
 
       startTransition(() => {
@@ -134,11 +154,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           return next;
         });
       });
-      beginMetadataDebug(options.origin, options.requests.length);
+      beginMetadataDebug(options.origin, requests.length);
 
       try {
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
-          requests: options.requests,
+          requests,
         });
 
         startTransition(() => {
@@ -155,7 +175,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
         finishMetadataDebug({
           origin: options.origin,
-          requestCount: options.requests.length,
+          requestCount: requests.length,
           durationMs: Math.round(performance.now() - startedAt),
           responseCount: responses.length,
           missingCount: responses.filter((response) => response.missing).length,
@@ -165,7 +185,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         input.onError(message);
         finishMetadataDebug({
           origin: options.origin,
-          requestCount: options.requests.length,
+          requestCount: requests.length,
           durationMs: Math.round(performance.now() - startedAt),
           responseCount: 0,
           missingCount: 0,
@@ -181,6 +201,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
             return next;
           });
         });
+        for (const key of loadingKeys) {
+          activeSnapshotRequestKeysRef.current.delete(key);
+        }
       }
     },
   );
@@ -269,6 +292,28 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey]);
 
   useEffect(() => {
+    if (!input.visibleFiles.length) {
+      return;
+    }
+
+    const requests = input.visibleFiles
+      .filter((file) => {
+        const pathKey = normalizePath(file.sourcePath);
+        return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
+      })
+      .map((file) => ({
+        requestKey: normalizePath(file.sourcePath),
+        filePath: file.sourcePath,
+      }));
+
+    void requestSnapshots({
+      origin: "可见预读",
+      phase: "before",
+      requests,
+    });
+  }, [beforeSnapshots, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
+
+  useEffect(() => {
     if (!input.previewFile || !input.previewPathKey) {
       return;
     }
@@ -312,6 +357,37 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       ],
     });
   }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey, loadingSnapshots]);
+
+  useEffect(() => {
+    if (!input.visibleFiles.length) {
+      return;
+    }
+
+    const requests = input.visibleFiles
+      .map((file) => {
+        const pathKey = normalizePath(file.sourcePath);
+        const rowState = input.fileStates[pathKey];
+        if (
+          rowState?.status !== "success" ||
+          afterSnapshots[pathKey] ||
+          loadingSnapshots[`after:${pathKey}`]
+        ) {
+          return null;
+        }
+
+        return {
+          requestKey: pathKey,
+          filePath: rowState.outputPath || file.sourcePath,
+        };
+      })
+      .filter((request): request is MetadataSnapshotRequest => Boolean(request));
+
+    void requestSnapshots({
+      origin: "可见后览",
+      phase: "after",
+      requests,
+    });
+  }, [afterSnapshots, input.fileStates, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
 
   useEffect(() => {
     if (!input.summary || input.summary.cancelled || !input.metadataSeedFiles.length) {

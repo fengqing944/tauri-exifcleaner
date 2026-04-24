@@ -1,5 +1,6 @@
 import {
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useEffectEvent,
@@ -10,6 +11,7 @@ import {
 import {
   type CleanupSummary,
   type FlyoutPosition,
+  type QueuedFile,
   EAGER_METADATA_PREFETCH_LIMIT,
   QUEUE_ROW_HEIGHT,
   SMALL_QUEUE_EAGER_LOAD_THRESHOLD,
@@ -36,10 +38,12 @@ function App() {
   );
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [visibleMetadataFiles, setVisibleMetadataFiles] = useState<QueuedFile[]>([]);
 
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const visibleMetadataFileKeyRef = useRef("");
   const tableShellRef = useRef<HTMLDivElement | null>(null);
   const queueBodyRef = useRef<HTMLDivElement | null>(null);
   const wasScanningRef = useRef(false);
@@ -121,6 +125,16 @@ function App() {
     return previewFiles.slice(0, Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT));
   }, [allQueueFilesLoaded, fileCount, previewFiles]);
 
+  const handleVisibleFilesChange = useCallback((files: QueuedFile[]) => {
+    const nextKey = files.map((file) => file.sourcePath).join("|");
+    if (visibleMetadataFileKeyRef.current === nextKey) {
+      return;
+    }
+
+    visibleMetadataFileKeyRef.current = nextKey;
+    setVisibleMetadataFiles(files);
+  }, []);
+
   const runningPreviewPathKey =
     previewFiles
       .map((file) => normalizePath(file.sourcePath))
@@ -144,6 +158,7 @@ function App() {
     applyCleanupPreviewStates,
   } = useMetadataPreviewState({
     metadataSeedFiles,
+    visibleFiles: visibleMetadataFiles,
     previewFile,
     previewPathKey,
     fileStates,
@@ -557,6 +572,7 @@ function App() {
             onFlyoutEnter={handleFlyoutEnter}
             onFlyoutLeave={handleFlyoutLeave}
             onRegisterRowRef={registerRowRef}
+            onVisibleFilesChange={handleVisibleFilesChange}
           />
         </section>
       </section>

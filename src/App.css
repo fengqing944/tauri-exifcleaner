@@ -907,7 +907,8 @@ kbd {
   min-height: 0;
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: start;
   background: #ffffff;
   overflow: hidden;
 }
@@ -958,7 +959,7 @@ kbd {
 
 .queue-scroll-body {
   min-height: 0;
-  height: 100%;
+  max-height: min(360px, 42vh);
   overflow: auto;
 }
 
@@ -1415,6 +1416,7 @@ kbd {
 
 .compact-list-shell {
   min-height: 0;
+  flex: 0 1 auto;
 }
 
 .compact-table-head,

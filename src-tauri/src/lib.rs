@@ -44,6 +44,15 @@ const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
 const METADATA_KEYWORD_MAX_CHARS: usize = 60;
 const METADATA_KEYWORD_MAX_COUNT: usize = 20;
+const CLEAN_REMOVAL_ARGS: &[&str] = &[
+    "-all=",
+    "-QuickTime:CreateDate=",
+    "-QuickTime:ModifyDate=",
+    "-QuickTime:TrackCreateDate=",
+    "-QuickTime:TrackModifyDate=",
+    "-QuickTime:MediaCreateDate=",
+    "-QuickTime:MediaModifyDate=",
+];
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -1154,7 +1163,7 @@ fn map_metadata_field(key: &str, value: &Value) -> Option<MetadataFieldPreview> 
     }
 
     let (group, name) = split_metadata_key(key);
-    if should_skip_metadata_group(group) {
+    if should_skip_metadata_field(group, name, value) {
         return None;
     }
 
@@ -1173,6 +1182,51 @@ fn should_skip_metadata_group(group: &str) -> bool {
     METADATA_GROUPS_TO_SKIP
         .iter()
         .any(|candidate| candidate.eq_ignore_ascii_case(group))
+}
+
+fn should_skip_metadata_field(group: &str, name: &str, value: &Value) -> bool {
+    if should_skip_metadata_group(group) {
+        return true;
+    }
+
+    if is_quicktime_structural_group(group) {
+        return !is_quicktime_user_metadata_field(group, name, value);
+    }
+
+    false
+}
+
+fn is_quicktime_structural_group(group: &str) -> bool {
+    group.eq_ignore_ascii_case("QuickTime") || is_quicktime_track_group(group)
+}
+
+fn is_quicktime_track_group(group: &str) -> bool {
+    group
+        .strip_prefix("Track")
+        .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_quicktime_user_metadata_field(group: &str, name: &str, value: &Value) -> bool {
+    if is_zero_quicktime_timestamp(value) {
+        return false;
+    }
+
+    if group.eq_ignore_ascii_case("QuickTime") {
+        matches!(name, "CreateDate" | "ModifyDate" | "DateTimeOriginal")
+    } else if is_quicktime_track_group(group) {
+        matches!(
+            name,
+            "TrackCreateDate" | "TrackModifyDate" | "MediaCreateDate" | "MediaModifyDate"
+        )
+    } else {
+        false
+    }
+}
+
+fn is_zero_quicktime_timestamp(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|text| text.trim().starts_with("0000:00:00"))
 }
 
 fn summarize_metadata_value(value: &Value) -> String {
@@ -1907,7 +1961,9 @@ impl ExifToolSession {
         self.write_arg("-m")?;
         self.write_arg("-ignoreMinorErrors")?;
         self.write_arg("-P")?;
-        self.write_arg("-all=")?;
+        for arg in CLEAN_REMOVAL_ARGS {
+            self.write_arg(arg)?;
+        }
         for arg in metadata_write_args(options) {
             self.write_arg(&arg)?;
         }
@@ -2981,6 +3037,49 @@ mod tests {
                 "-XMP-xmpRights:WebStatement=https://example.com/rights".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn clean_removal_args_include_quicktime_timestamps() {
+        assert!(CLEAN_REMOVAL_ARGS.contains(&"-all="));
+        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:CreateDate="));
+        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:TrackCreateDate="));
+        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:MediaCreateDate="));
+    }
+
+    #[test]
+    fn metadata_preview_skips_quicktime_structural_fields() {
+        assert!(map_metadata_field(
+            "QuickTime:Duration",
+            &serde_json::json!("1.00 s"),
+        )
+        .is_none());
+        assert!(map_metadata_field(
+            "Track1:ImageWidth",
+            &serde_json::json!(1920),
+        )
+        .is_none());
+        assert!(map_metadata_field(
+            "QuickTime:CreateDate",
+            &serde_json::json!("0000:00:00 00:00:00"),
+        )
+        .is_none());
+
+        let quicktime_date = map_metadata_field(
+            "QuickTime:CreateDate",
+            &serde_json::json!("2026:04:24 12:00:00"),
+        )
+        .expect("QuickTime create date should be shown before cleanup");
+        assert_eq!(quicktime_date.group, "QuickTime");
+        assert_eq!(quicktime_date.name, "CreateDate");
+
+        let item_list_title = map_metadata_field(
+            "ItemList:Title",
+            &serde_json::json!("moeuu"),
+        )
+        .expect("ItemList user metadata should be shown");
+        assert_eq!(item_list_title.group, "ItemList");
+        assert_eq!(item_list_title.name, "Title");
     }
 
     #[test]

@@ -30,12 +30,17 @@ const SUPPORTED_EXTENSIONS: &[&str] = &[
 ];
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
+const SCAN_PROGRESS_INTERVAL_MS: u64 = 350;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
+const SHELL_IMPORT_ARG: &str = "--shell-import";
 const WINDOW_STATE_FILENAME: &str = ".window-state.json";
+const EXIFTOOL_METADATA_TIMEOUT_SECS: u64 = 30;
+const EXIFTOOL_CLEAN_TIMEOUT_SECS: u64 = 90;
+const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -291,12 +296,14 @@ enum WorkerEvent {
 }
 
 struct ExifToolSession {
+    exiftool_path: PathBuf,
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     stderr_events: Receiver<StderrEvent>,
     stderr_thread: Option<thread::JoinHandle<()>>,
     next_execute_id: u64,
+    needs_restart: bool,
 }
 
 enum StderrEvent {
@@ -503,6 +510,7 @@ fn perform_scan_inputs(
         ignored_count: 0,
         ignored_samples: Vec::new(),
     };
+    let mut last_flush_at = Instant::now();
 
     for raw_path in input_paths {
         if cancel_flag.load(Ordering::Relaxed) {
@@ -512,8 +520,7 @@ fn perform_scan_inputs(
         let input_path = PathBuf::from(raw_path);
 
         if !input_path.exists() {
-            batch.ignored_count += 1;
-            push_ignored_sample(&mut batch.ignored_samples, &input_path);
+            record_ignored_path(&sender, &mut batch, &mut last_flush_at, &input_path)?;
             continue;
         }
 
@@ -534,8 +541,7 @@ fn perform_scan_inputs(
 
                 let file_path = entry.into_path();
                 if !is_supported_file(&file_path) {
-                    batch.ignored_count += 1;
-                    push_ignored_sample(&mut batch.ignored_samples, &file_path);
+                    record_ignored_path(&sender, &mut batch, &mut last_flush_at, &file_path)?;
                     continue;
                 }
 
@@ -547,8 +553,7 @@ fn perform_scan_inputs(
                 let metadata = match fs::metadata(&file_path) {
                     Ok(metadata) => metadata,
                     Err(_) => {
-                        batch.ignored_count += 1;
-                        push_ignored_sample(&mut batch.ignored_samples, &file_path);
+                        record_ignored_path(&sender, &mut batch, &mut last_flush_at, &file_path)?;
                         continue;
                     }
                 };
@@ -568,12 +573,11 @@ fn perform_scan_inputs(
                     from_directory: true,
                 });
 
-                flush_scan_batch(&sender, &mut batch)?;
+                flush_scan_batch(&sender, &mut batch, &mut last_flush_at)?;
             }
         } else if input_path.is_file() {
             if !is_supported_file(&input_path) {
-                batch.ignored_count += 1;
-                push_ignored_sample(&mut batch.ignored_samples, &input_path);
+                record_ignored_path(&sender, &mut batch, &mut last_flush_at, &input_path)?;
                 continue;
             }
 
@@ -596,7 +600,7 @@ fn perform_scan_inputs(
                     from_directory: false,
                 });
 
-                flush_scan_batch(&sender, &mut batch)?;
+                flush_scan_batch(&sender, &mut batch, &mut last_flush_at)?;
             }
         }
     }
@@ -611,12 +615,33 @@ fn perform_scan_inputs(
 fn flush_scan_batch(
     sender: &mpsc::UnboundedSender<ScanWorkerEvent>,
     batch: &mut ScanBatch,
+    last_flush_at: &mut Instant,
 ) -> Result<(), String> {
-    if batch.files.len() < SCAN_BATCH_SIZE {
+    if !should_flush_scan_batch(batch, *last_flush_at) {
         return Ok(());
     }
 
-    flush_remaining_scan_batch(sender, batch)
+    flush_remaining_scan_batch(sender, batch)?;
+    *last_flush_at = Instant::now();
+    Ok(())
+}
+
+fn should_flush_scan_batch(batch: &ScanBatch, last_flush_at: Instant) -> bool {
+    !batch.is_empty()
+        && (batch.files.len() >= SCAN_BATCH_SIZE
+            || batch.ignored_count >= SCAN_BATCH_SIZE
+            || last_flush_at.elapsed() >= Duration::from_millis(SCAN_PROGRESS_INTERVAL_MS))
+}
+
+fn record_ignored_path(
+    sender: &mpsc::UnboundedSender<ScanWorkerEvent>,
+    batch: &mut ScanBatch,
+    last_flush_at: &mut Instant,
+    path: &Path,
+) -> Result<(), String> {
+    batch.ignored_count += 1;
+    push_ignored_sample(&mut batch.ignored_samples, path);
+    flush_scan_batch(sender, batch, last_flush_at)
 }
 
 fn flush_remaining_scan_batch(
@@ -1056,9 +1081,11 @@ fn read_metadata_snapshot_map(
         command.current_dir(parent);
     }
 
-    let output = command
-        .output()
-        .map_err(|error| format!("无法读取元数据预览: {error}"));
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
+        "ExifTool 元数据预览",
+    );
     let _ = fs::remove_file(&argfile_path);
     let output = output?;
 
@@ -1538,15 +1565,28 @@ fn run_cleanup_worker(
 
         let outcome = match execute_cleanup_file(&planned_file, &options, &mut session) {
             Ok(outcome) => outcome,
-            Err(error) => FileCleanupOutcome {
-                source_path: planned_file.source_path.to_string_lossy().to_string(),
-                output_path: planned_file
-                    .output_path
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().to_string()),
-                status: "failed",
-                error: Some(error),
-            },
+            Err(error) => {
+                if session.should_restart() {
+                    if let Err(restart_error) = session.restart() {
+                        cancel_flag.store(true, Ordering::Relaxed);
+                        let _ = sender.send(WorkerEvent::Fatal(format!(
+                            "清理引擎 worker {} 重启失败: {restart_error}",
+                            worker_index + 1
+                        )));
+                        break;
+                    }
+                }
+
+                FileCleanupOutcome {
+                    source_path: planned_file.source_path.to_string_lossy().to_string(),
+                    output_path: planned_file
+                        .output_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    status: "failed",
+                    error: Some(error),
+                }
+            }
         };
 
         if sender.send(WorkerEvent::Outcome(outcome)).is_err() {
@@ -1709,12 +1749,14 @@ impl ExifToolSession {
         let stderr_thread = thread::spawn(move || drain_stderr(stderr, stderr_sender));
 
         Ok(Self {
+            exiftool_path: exiftool_path.to_path_buf(),
             child,
             stdin,
             stdout: BufReader::new(stdout),
             stderr_events,
             stderr_thread: Some(stderr_thread),
             next_execute_id: 1,
+            needs_restart: false,
         })
     }
 
@@ -1759,8 +1801,37 @@ impl ExifToolSession {
             .flush()
             .map_err(|error| format!("无法刷新 ExifTool 指令: {error}"))?;
 
-        self.consume_stdout_until_ready(execute_id)?;
-        let result = self.consume_stderr_until_marker(&stderr_marker)?;
+        let finished = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let watchdog = spawn_process_watchdog(
+            self.child.id(),
+            Duration::from_secs(EXIFTOOL_CLEAN_TIMEOUT_SECS),
+            finished.clone(),
+            timed_out.clone(),
+        );
+
+        let command_result = (|| {
+            self.consume_stdout_until_ready(execute_id)?;
+            self.consume_stderr_until_marker(&stderr_marker)
+        })();
+        finished.store(true, Ordering::Relaxed);
+        let _ = watchdog.join();
+
+        if timed_out.load(Ordering::Relaxed) {
+            self.needs_restart = true;
+            return Err(format!(
+                "ExifTool 处理超时，已终止当前 worker（超过 {} 秒）。",
+                EXIFTOOL_CLEAN_TIMEOUT_SECS
+            ));
+        }
+
+        let result = match command_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.mark_restart_if_exited();
+                return Err(error);
+            }
+        };
 
         if !result.stderr_output.is_empty() {
             return Err(result.stderr_output);
@@ -1776,13 +1847,50 @@ impl ExifToolSession {
         let _ = self.write_arg("-stay_open");
         let _ = self.write_arg("False");
         let _ = self.stdin.flush();
-        self.child
+        let finished = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let watchdog = spawn_process_watchdog(
+            self.child.id(),
+            Duration::from_secs(EXIFTOOL_CLOSE_TIMEOUT_SECS),
+            finished.clone(),
+            timed_out.clone(),
+        );
+        let wait_result = self
+            .child
             .wait()
-            .map_err(|error| format!("关闭 ExifTool worker 失败: {error}"))?;
+            .map_err(|error| format!("关闭 ExifTool worker 失败: {error}"));
+        finished.store(true, Ordering::Relaxed);
+        let _ = watchdog.join();
         if let Some(handle) = self.stderr_thread.take() {
             let _ = handle.join();
         }
+        if timed_out.load(Ordering::Relaxed) {
+            return Err(format!(
+                "关闭 ExifTool worker 超时，已强制终止（超过 {} 秒）。",
+                EXIFTOOL_CLOSE_TIMEOUT_SECS
+            ));
+        }
+        wait_result.map(|_| ())
+    }
+
+    fn restart(&mut self) -> Result<(), String> {
+        let exiftool_path = self.exiftool_path.clone();
+        let _ = self.close();
+        *self = Self::new(&exiftool_path)?;
         Ok(())
+    }
+
+    fn should_restart(&self) -> bool {
+        self.needs_restart
+    }
+
+    fn mark_restart_if_exited(&mut self) {
+        match self.child.try_wait() {
+            Ok(Some(_)) | Err(_) => {
+                self.needs_restart = true;
+            }
+            Ok(None) => {}
+        }
     }
 
     fn write_arg(&mut self, value: &str) -> Result<(), String> {
@@ -1836,6 +1944,100 @@ impl ExifToolSession {
                 StderrEvent::Error(error) => return Err(error),
             }
         }
+    }
+}
+
+fn command_output_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+    description: &str,
+) -> Result<std::process::Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("{description} 启动失败: {error}"))?;
+    let process_id = child.id();
+    let finished = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let watchdog = spawn_process_watchdog(
+        process_id,
+        timeout,
+        finished.clone(),
+        timed_out.clone(),
+    );
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("{description} 执行失败: {error}"));
+
+    finished.store(true, Ordering::Relaxed);
+    let _ = watchdog.join();
+
+    if timed_out.load(Ordering::Relaxed) {
+        return Err(format!(
+            "{description} 超时，已强制终止（超过 {} 秒）。",
+            timeout.as_secs()
+        ));
+    }
+
+    output
+}
+
+fn spawn_process_watchdog(
+    process_id: u32,
+    timeout: Duration,
+    finished: Arc<AtomicBool>,
+    timed_out: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let started_at = Instant::now();
+        let poll_interval = Duration::from_millis(100);
+
+        while started_at.elapsed() < timeout {
+            if finished.load(Ordering::Relaxed) {
+                return;
+            }
+
+            let remaining = timeout
+                .checked_sub(started_at.elapsed())
+                .unwrap_or_default();
+            thread::sleep(if remaining < poll_interval {
+                remaining
+            } else {
+                poll_interval
+            });
+        }
+
+        if !finished.load(Ordering::Relaxed) {
+            timed_out.store(true, Ordering::Relaxed);
+            terminate_process_by_id(process_id);
+        }
+    })
+}
+
+fn terminate_process_by_id(process_id: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("taskkill");
+        command
+            .arg("/PID")
+            .arg(process_id.to_string())
+            .arg("/T")
+            .arg("/F");
+        configure_hidden_process(&mut command);
+        let _ = command.output();
+    }
+
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg(process_id.to_string())
+            .output();
+        thread::sleep(Duration::from_millis(500));
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(process_id.to_string())
+            .output();
     }
 }
 
@@ -2035,7 +2237,7 @@ where
 
         let value = value.as_ref();
         if !seen_marker {
-            if value == SHELL_CLEAN_ARG {
+            if value == SHELL_CLEAN_ARG || value == SHELL_IMPORT_ARG {
                 seen_marker = true;
             }
             continue;
@@ -2053,7 +2255,7 @@ where
     } else {
         Some(ShellOpenRequest {
             paths,
-            auto_start_cleanup: true,
+            auto_start_cleanup: false,
         })
     }
 }
@@ -2371,6 +2573,45 @@ mod tests {
     }
 
     #[test]
+    fn scan_inputs_emits_batches_for_ignored_files() {
+        let temp_dir = std::env::temp_dir().join("metasweep-scan-ignored-batches");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        for index in 0..(SCAN_BATCH_SIZE + 4) {
+            let path = temp_dir.join(format!("ignored-{index}.txt"));
+            fs::write(path, b"test").expect("write unsupported sample file");
+        }
+
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
+        let outcome = perform_scan_inputs(
+            vec![temp_dir.to_string_lossy().to_string()],
+            cancel_flag,
+            sender,
+        )
+        .expect("scan unsupported directory");
+
+        let mut batches = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            batches.push(event);
+        }
+
+        let ignored_total = batches
+            .iter()
+            .map(|event| match event {
+                ScanWorkerEvent::Batch(batch) => batch.ignored_count,
+            })
+            .sum::<usize>();
+
+        assert!(!outcome.cancelled, "scan should finish without cancellation");
+        assert!(
+            batches.len() >= 2,
+            "expected ignored-only scans to emit intermediate batches"
+        );
+        assert_eq!(ignored_total, SCAN_BATCH_SIZE + 4);
+    }
+
+    #[test]
     fn scan_inputs_can_stop_early_after_cancel() {
         let temp_dir = std::env::temp_dir().join("metasweep-scan-cancel");
         fs::create_dir_all(&temp_dir).expect("create temp dir");
@@ -2414,8 +2655,33 @@ mod tests {
         ])
         .expect("parse shell open request");
 
-        assert!(request.auto_start_cleanup, "shell clean should auto-start cleanup");
+        assert!(
+            !request.auto_start_cleanup,
+            "shell import should wait for an explicit cleanup confirmation"
+        );
         assert_eq!(request.paths.len(), 2, "only unique existing paths should remain");
+    }
+
+    #[test]
+    fn shell_import_request_parser_accepts_new_marker_without_auto_cleanup() {
+        let temp_dir = std::env::temp_dir().join("tagsweep-shell-import");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let first = temp_dir.join("first.jpg");
+        fs::write(&first, b"one").expect("write sample");
+
+        let request = collect_shell_open_request_from_strings(vec![
+            "tagsweep.exe".to_string(),
+            SHELL_IMPORT_ARG.to_string(),
+            first.to_string_lossy().to_string(),
+        ])
+        .expect("parse shell import request");
+
+        assert_eq!(request.paths.len(), 1);
+        assert!(
+            !request.auto_start_cleanup,
+            "new shell import marker should only enqueue files"
+        );
     }
 
     #[test]

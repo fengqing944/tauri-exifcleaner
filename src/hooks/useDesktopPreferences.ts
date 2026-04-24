@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 
+import type { MetadataWritePreferences } from "../app-shared";
+
 export type DesktopPreferences = {
   preferredParallelism: number | null;
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
+  metadataWrite: MetadataWritePreferences;
 };
 
 const STORAGE_KEY = "tagsweep.desktop.preferences.v1";
@@ -14,7 +17,20 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   autoOpenDetailsOnFailure: true,
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
+  metadataWrite: {
+    enabled: false,
+    title: "",
+    author: "",
+  },
 };
+
+function sanitizeTextPreference(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+}
 
 function sanitizePreferences(input: unknown): DesktopPreferences {
   if (!input || typeof input !== "object") {
@@ -43,6 +59,18 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       typeof record.lastDetailsOpen === "boolean"
         ? record.lastDetailsOpen
         : DEFAULT_PREFERENCES.lastDetailsOpen,
+    metadataWrite: {
+      enabled:
+        typeof (record.metadataWrite as Record<string, unknown> | undefined)?.enabled === "boolean"
+          ? Boolean((record.metadataWrite as Record<string, unknown>).enabled)
+          : DEFAULT_PREFERENCES.metadataWrite.enabled,
+      title: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.title,
+      ),
+      author: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.author,
+      ),
+    },
   };
 }
 

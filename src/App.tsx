@@ -106,6 +106,7 @@ function App() {
     clearQueue,
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
+    metadataWrite: preferences.metadataWrite,
   });
 
   const progressPercent = progress.total
@@ -578,6 +579,7 @@ function App() {
         parallelism={parallelism}
         autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
+        metadataWrite={preferences.metadataWrite}
         onClose={() => setIsSettingsOpen(false)}
         onParallelismChange={setParallelism}
         onResetParallelism={() => {
@@ -590,6 +592,9 @@ function App() {
         }
         onReopenRunDetailsOnLaunchChange={(value) =>
           setPreference("reopenRunDetailsOnLaunch", value)
+        }
+        onMetadataWriteChange={(metadataWrite) =>
+          setPreference("metadataWrite", metadataWrite)
         }
       />
 

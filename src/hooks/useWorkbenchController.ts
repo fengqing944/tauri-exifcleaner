@@ -8,6 +8,7 @@ import {
   type CleanupProgressEvent,
   type CleanupSummary,
   type FileRunState,
+  type MetadataWritePreferences,
   type QueuedFile,
   type QueueView,
   type RuntimeInfo,
@@ -25,7 +26,10 @@ import {
   toMessage,
 } from "../app-shared";
 
-export function useWorkbenchController(options?: { preferredParallelism?: number | null }) {
+export function useWorkbenchController(options?: {
+  preferredParallelism?: number | null;
+  metadataWrite?: MetadataWritePreferences;
+}) {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [queueView, setQueueView] = useState<QueueView | null>(null);
   const [queueFiles, setQueueFiles] = useState<QueuedFile[]>([]);
@@ -262,6 +266,11 @@ export function useWorkbenchController(options?: { preferredParallelism?: number
           outputDir: null,
           parallelism,
           preserveStructure: true,
+          metadataWrite: {
+            enabled: Boolean(options?.metadataWrite?.enabled),
+            title: options?.metadataWrite?.title.trim() || null,
+            author: options?.metadataWrite?.author.trim() || null,
+          },
         },
       });
 

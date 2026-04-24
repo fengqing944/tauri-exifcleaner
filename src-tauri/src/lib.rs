@@ -41,6 +41,7 @@ const WINDOW_STATE_FILENAME: &str = ".window-state.json";
 const EXIFTOOL_METADATA_TIMEOUT_SECS: u64 = 30;
 const EXIFTOOL_CLEAN_TIMEOUT_SECS: u64 = 90;
 const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
+const METADATA_WRITE_MAX_CHARS: usize = 120;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -134,6 +135,15 @@ struct CleanupOptions {
     output_dir: Option<String>,
     parallelism: usize,
     preserve_structure: bool,
+    metadata_write: Option<MetadataWriteOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MetadataWriteOptions {
+    enabled: bool,
+    title: Option<String>,
+    author: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1710,6 +1720,44 @@ fn execute_cleanup_file(
     })
 }
 
+fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
+    let Some(metadata_write) = options.metadata_write.as_ref() else {
+        return Vec::new();
+    };
+    if !metadata_write.enabled {
+        return Vec::new();
+    }
+
+    let mut args = Vec::new();
+    if let Some(title) = sanitize_metadata_write_value(metadata_write.title.as_deref()) {
+        args.push(format!("-XMP-dc:Title={title}"));
+    }
+    if let Some(author) = sanitize_metadata_write_value(metadata_write.author.as_deref()) {
+        args.push(format!("-XMP-dc:Creator={author}"));
+    }
+
+    args
+}
+
+fn sanitize_metadata_write_value(value: Option<&str>) -> Option<String> {
+    let value = value?
+        .replace(['\r', '\n'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(
+        trimmed
+            .chars()
+            .take(METADATA_WRITE_MAX_CHARS)
+            .collect::<String>(),
+    )
+}
+
 impl ExifToolSession {
     fn new(exiftool_path: &Path) -> Result<Self, String> {
         let mut command = Command::new(exiftool_path);
@@ -1778,6 +1826,9 @@ impl ExifToolSession {
         self.write_arg("-ignoreMinorErrors")?;
         self.write_arg("-P")?;
         self.write_arg("-all=")?;
+        for arg in metadata_write_args(options) {
+            self.write_arg(&arg)?;
+        }
 
         match options.output_mode {
             OutputMode::Overwrite => {
@@ -2805,6 +2856,38 @@ mod tests {
     }
 
     #[test]
+    fn metadata_write_args_are_disabled_by_default_and_sanitize_values() {
+        let disabled_options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            metadata_write: None,
+        };
+        assert!(metadata_write_args(&disabled_options).is_empty());
+
+        let enabled_options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            metadata_write: Some(MetadataWriteOptions {
+                enabled: true,
+                title: Some("  moeuu\n-title=bad  ".to_string()),
+                author: Some("  zero\r\nartist  ".to_string()),
+            }),
+        };
+
+        assert_eq!(
+            metadata_write_args(&enabled_options),
+            vec![
+                "-XMP-dc:Title=moeuu -title=bad".to_string(),
+                "-XMP-dc:Creator=zero artist".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn persistent_session_can_clean_png_in_place() {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("icons")
@@ -2824,6 +2907,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            metadata_write: None,
         };
 
         let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
@@ -2854,6 +2938,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            metadata_write: None,
         };
 
         let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
@@ -2904,6 +2989,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            metadata_write: None,
         };
 
         let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");

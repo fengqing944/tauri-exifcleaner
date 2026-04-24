@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import type { RuntimeInfo } from "../app-shared";
+import type { MetadataWritePreferences, RuntimeInfo } from "../app-shared";
 import { StatusBadge } from "./AppPrimitives";
 
 export function SettingsDrawer(props: {
@@ -10,11 +10,13 @@ export function SettingsDrawer(props: {
   parallelism: number;
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
+  metadataWrite: MetadataWritePreferences;
   onClose: () => void;
   onParallelismChange: (value: number) => void;
   onResetParallelism: () => void;
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
+  onMetadataWriteChange: (value: MetadataWritePreferences) => void;
 }) {
   const drawerRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -125,6 +127,71 @@ export function SettingsDrawer(props: {
               <span className="setting-footnote">
                 默认值 {props.runtimeInfo?.parallelismDefault ?? "—"}，最大值{" "}
                 {props.runtimeInfo?.parallelismMax ?? "—"}。
+              </span>
+            </div>
+          </section>
+
+          <section className="utility-section">
+            <div className="task-block-head">
+              <strong>清理后标记</strong>
+              <span>默认关闭</span>
+            </div>
+
+            <label className="setting-check">
+              <input
+                type="checkbox"
+                checked={props.metadataWrite.enabled}
+                onChange={(event) =>
+                  props.onMetadataWriteChange({
+                    ...props.metadataWrite,
+                    enabled: event.currentTarget.checked,
+                  })
+                }
+              />
+              <div>
+                <strong>清理后写入标题和作者</strong>
+                <span>开启后会先清空原元数据，再写入你主动填写的 XMP 标题/作者。</span>
+              </div>
+            </label>
+
+            <div className="setting-card">
+              <div className="setting-text-grid">
+                <label className="setting-field">
+                  <span>标题</span>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    value={props.metadataWrite.title}
+                    placeholder="例如 moeuu"
+                    disabled={!props.metadataWrite.enabled}
+                    onChange={(event) =>
+                      props.onMetadataWriteChange({
+                        ...props.metadataWrite,
+                        title: event.currentTarget.value,
+                      })
+                    }
+                  />
+                </label>
+
+                <label className="setting-field">
+                  <span>作者</span>
+                  <input
+                    type="text"
+                    maxLength={120}
+                    value={props.metadataWrite.author}
+                    placeholder="可留空"
+                    disabled={!props.metadataWrite.enabled}
+                    onChange={(event) =>
+                      props.onMetadataWriteChange({
+                        ...props.metadataWrite,
+                        author: event.currentTarget.value,
+                      })
+                    }
+                  />
+                </label>
+              </div>
+              <span className="setting-footnote">
+                如果开启但标题和作者都为空，本次清理会保持纯清理模式。
               </span>
             </div>
           </section>

@@ -88,6 +88,12 @@ export type CleanupSummary = {
   previewStates: CleanupPreviewState[];
 };
 
+export type MetadataWritePreferences = {
+  enabled: boolean;
+  title: string;
+  author: string;
+};
+
 export type ProgressState = {
   total: number;
   completed: number;

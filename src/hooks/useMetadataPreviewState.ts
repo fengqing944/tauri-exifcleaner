@@ -38,6 +38,8 @@ type UseMetadataPreviewStateInput = {
   onError: (message: string) => void;
 };
 
+type SnapshotPhase = "before" | "after";
+
 export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [beforeSnapshots, setBeforeSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>(
     {},
@@ -50,6 +52,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
   const activeSnapshotRequestKeysRef = useRef(new Set<string>());
+  const completedSnapshotRequestKeysRef = useRef(new Set<string>());
 
   const metadataSeedKey = useMemo(
     () => input.metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
@@ -59,6 +62,35 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     () => input.visibleFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
     [input.visibleFiles],
   );
+
+  const snapshotRequestKey = (phase: SnapshotPhase, requestKey: string) =>
+    `${phase}:${requestKey}`;
+
+  const hasSnapshotResult = (
+    phase: SnapshotPhase,
+    requestKey: string,
+    snapshots: Record<string, MetadataPreviewSnapshot>,
+  ) => Boolean(snapshots[requestKey]) || completedSnapshotRequestKeysRef.current.has(
+    snapshotRequestKey(phase, requestKey),
+  );
+
+  const hasSnapshotInFlight = (phase: SnapshotPhase, requestKey: string) =>
+    Boolean(loadingSnapshots[snapshotRequestKey(phase, requestKey)]) ||
+    activeSnapshotRequestKeysRef.current.has(snapshotRequestKey(phase, requestKey));
+
+  const clearCompletedSnapshotKeys = (phase?: SnapshotPhase) => {
+    if (!phase) {
+      completedSnapshotRequestKeysRef.current.clear();
+      return;
+    }
+
+    const prefix = `${phase}:`;
+    for (const key of Array.from(completedSnapshotRequestKeysRef.current)) {
+      if (key.startsWith(prefix)) {
+        completedSnapshotRequestKeysRef.current.delete(key);
+      }
+    }
+  };
 
   const pushMetadataDebugEntry = useEffectEvent(
     (tone: MetadataDebugEntry["tone"], title: string, detail: string) => {
@@ -133,8 +165,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       const requests: MetadataSnapshotRequest[] = [];
       const loadingKeys: string[] = [];
       for (const request of options.requests) {
-        const loadingKey = `${options.phase}:${request.requestKey}`;
-        if (activeSnapshotRequestKeysRef.current.has(loadingKey)) {
+        const loadingKey = snapshotRequestKey(options.phase, request.requestKey);
+        if (
+          activeSnapshotRequestKeysRef.current.has(loadingKey) ||
+          completedSnapshotRequestKeysRef.current.has(loadingKey)
+        ) {
           continue;
         }
 
@@ -163,6 +198,12 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
           requests,
         });
+
+        for (const response of responses) {
+          completedSnapshotRequestKeysRef.current.add(
+            snapshotRequestKey(options.phase, response.requestKey),
+          );
+        }
 
         startTransition(() => {
           const applyResponses =
@@ -212,6 +253,8 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   );
 
   const resetMetadataState = useEffectEvent(() => {
+    activeSnapshotRequestKeysRef.current.clear();
+    clearCompletedSnapshotKeys();
     setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
     setLoadingSnapshots((current) => (Object.keys(current).length ? {} : current));
@@ -234,11 +277,16 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   });
 
   const clearAfterSnapshots = useEffectEvent(() => {
+    clearCompletedSnapshotKeys("after");
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
   });
 
   const applyCleanupPreviewStates = useEffectEvent((previewStates: CleanupPreviewState[]) => {
     const next = buildAfterSnapshotMap(previewStates);
+    for (const pathKey of Object.keys(next)) {
+      completedSnapshotRequestKeysRef.current.add(snapshotRequestKey("after", pathKey));
+    }
+
     setAfterSnapshots((current) => {
       const currentKeys = Object.keys(current);
       const nextKeys = Object.keys(next);
@@ -280,7 +328,10 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     const requests = input.metadataSeedFiles
       .filter((file) => {
         const pathKey = normalizePath(file.sourcePath);
-        return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
+        return (
+          !hasSnapshotResult("before", pathKey, beforeSnapshots) &&
+          !hasSnapshotInFlight("before", pathKey)
+        );
       })
       .map((file) => ({
         requestKey: normalizePath(file.sourcePath),
@@ -301,7 +352,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
     const hasVisibleBeforeLoading = input.visibleFiles.some((file) => {
       const pathKey = normalizePath(file.sourcePath);
-      return loadingSnapshots[`before:${pathKey}`];
+      return hasSnapshotInFlight("before", pathKey);
     });
     if (hasVisibleBeforeLoading) {
       return;
@@ -310,7 +361,10 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     const requests = input.visibleFiles
       .filter((file) => {
         const pathKey = normalizePath(file.sourcePath);
-        return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
+        return (
+          !hasSnapshotResult("before", pathKey, beforeSnapshots) &&
+          !hasSnapshotInFlight("before", pathKey)
+        );
       })
       .slice(0, VISIBLE_METADATA_BEFORE_BATCH_LIMIT)
       .map((file) => ({
@@ -337,8 +391,10 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       return;
     }
 
-    const loadingKey = `before:${input.previewPathKey}`;
-    if (beforeSnapshots[input.previewPathKey] || loadingSnapshots[loadingKey]) {
+    if (
+      hasSnapshotResult("before", input.previewPathKey, beforeSnapshots) ||
+      hasSnapshotInFlight("before", input.previewPathKey)
+    ) {
       return;
     }
 
@@ -360,8 +416,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     }
 
     const rowState = input.fileStates[input.previewPathKey];
-    const loadingKey = `after:${input.previewPathKey}`;
-    if (rowState?.status !== "success" || afterSnapshots[input.previewPathKey] || loadingSnapshots[loadingKey]) {
+    if (
+      rowState?.status !== "success" ||
+      hasSnapshotResult("after", input.previewPathKey, afterSnapshots) ||
+      hasSnapshotInFlight("after", input.previewPathKey)
+    ) {
       return;
     }
 
@@ -384,7 +443,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
     const hasVisibleAfterLoading = input.visibleFiles.some((file) => {
       const pathKey = normalizePath(file.sourcePath);
-      return loadingSnapshots[`after:${pathKey}`];
+      return hasSnapshotInFlight("after", pathKey);
     });
     if (hasVisibleAfterLoading) {
       return;
@@ -396,8 +455,8 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const rowState = input.fileStates[pathKey];
         if (
           rowState?.status !== "success" ||
-          afterSnapshots[pathKey] ||
-          loadingSnapshots[`after:${pathKey}`]
+          hasSnapshotResult("after", pathKey, afterSnapshots) ||
+          hasSnapshotInFlight("after", pathKey)
         ) {
           return null;
         }
@@ -433,7 +492,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       .map((file) => {
         const pathKey = normalizePath(file.sourcePath);
         const rowState = input.fileStates[pathKey];
-        if (rowState?.status !== "success" || afterSnapshots[pathKey] || loadingSnapshots[`after:${pathKey}`]) {
+        if (
+          rowState?.status !== "success" ||
+          hasSnapshotResult("after", pathKey, afterSnapshots) ||
+          hasSnapshotInFlight("after", pathKey)
+        ) {
           return null;
         }
 

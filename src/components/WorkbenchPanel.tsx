@@ -13,6 +13,7 @@ import type {
 } from "../app-shared";
 import {
   formatBytes,
+  formatProgressStatus,
   getRowStatusDescriptor,
   normalizePath,
   QUEUE_ROW_HEIGHT,
@@ -167,7 +168,7 @@ export function WorkbenchPanel(props: {
                 {props.progress.completed}/{props.progress.total || props.fileCount}
               </span>
               <span>{props.progressPercent}%</span>
-              <span>{props.progress.currentStatus}</span>
+              <span>{formatProgressStatus(props.progress.currentStatus)}</span>
             </div>
           </div>
         </div>

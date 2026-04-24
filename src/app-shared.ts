@@ -360,6 +360,25 @@ export function getRowStatusDescriptor(rowState?: FileRunState): { label: string
   }
 }
 
+export function formatProgressStatus(status: string): string {
+  switch (status) {
+    case "idle":
+      return "待命";
+    case "running":
+      return "处理中";
+    case "success":
+      return "已完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+    case "done":
+      return "已完成";
+    default:
+      return status || "待命";
+  }
+}
+
 export function resolveAfterCountLabel(
   snapshot: MetadataPreviewSnapshot | undefined,
   rowState: FileRunState | undefined,

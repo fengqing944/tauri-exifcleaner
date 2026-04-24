@@ -92,6 +92,12 @@ export type MetadataWritePreferences = {
   enabled: boolean;
   title: string;
   author: string;
+  description: string;
+  keywords: string;
+  rights: string;
+  rating: string;
+  label: string;
+  rightsUrl: string;
 };
 
 export type ProgressState = {

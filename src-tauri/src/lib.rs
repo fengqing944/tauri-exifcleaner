@@ -41,7 +41,9 @@ const WINDOW_STATE_FILENAME: &str = ".window-state.json";
 const EXIFTOOL_METADATA_TIMEOUT_SECS: u64 = 30;
 const EXIFTOOL_CLEAN_TIMEOUT_SECS: u64 = 90;
 const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
-const METADATA_WRITE_MAX_CHARS: usize = 120;
+const METADATA_WRITE_MAX_CHARS: usize = 240;
+const METADATA_KEYWORD_MAX_CHARS: usize = 60;
+const METADATA_KEYWORD_MAX_COUNT: usize = 20;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -144,6 +146,12 @@ struct MetadataWriteOptions {
     enabled: bool,
     title: Option<String>,
     author: Option<String>,
+    description: Option<String>,
+    keywords: Option<String>,
+    rights: Option<String>,
+    rating: Option<String>,
+    label: Option<String>,
+    rights_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1735,6 +1743,30 @@ fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
     if let Some(author) = sanitize_metadata_write_value(metadata_write.author.as_deref()) {
         args.push(format!("-XMP-dc:Creator={author}"));
     }
+    if let Some(description) =
+        sanitize_metadata_write_value(metadata_write.description.as_deref())
+    {
+        args.push(format!("-XMP-dc:Description={description}"));
+    }
+    for (index, keyword) in sanitize_metadata_keywords(metadata_write.keywords.as_deref())
+        .into_iter()
+        .enumerate()
+    {
+        let operator = if index == 0 { "=" } else { "+=" };
+        args.push(format!("-XMP-dc:Subject{operator}{keyword}"));
+    }
+    if let Some(rights) = sanitize_metadata_write_value(metadata_write.rights.as_deref()) {
+        args.push(format!("-XMP-dc:Rights={rights}"));
+    }
+    if let Some(rating) = sanitize_metadata_rating(metadata_write.rating.as_deref()) {
+        args.push(format!("-XMP-xmp:Rating={rating}"));
+    }
+    if let Some(label) = sanitize_metadata_write_value(metadata_write.label.as_deref()) {
+        args.push(format!("-XMP-xmp:Label={label}"));
+    }
+    if let Some(rights_url) = sanitize_metadata_write_url(metadata_write.rights_url.as_deref()) {
+        args.push(format!("-XMP-xmpRights:WebStatement={rights_url}"));
+    }
 
     args
 }
@@ -1756,6 +1788,56 @@ fn sanitize_metadata_write_value(value: Option<&str>) -> Option<String> {
             .take(METADATA_WRITE_MAX_CHARS)
             .collect::<String>(),
     )
+}
+
+fn sanitize_metadata_keywords(value: Option<&str>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+
+    let normalized = value.replace(['\r', '\n', ';', '；', '，', '、'], ",");
+    let mut seen = HashSet::new();
+    let mut keywords = Vec::new();
+
+    for keyword in normalized.split(',') {
+        let keyword = keyword.split_whitespace().collect::<Vec<_>>().join(" ");
+        let keyword = keyword.trim();
+        if keyword.is_empty() {
+            continue;
+        }
+
+        let keyword = keyword
+            .chars()
+            .take(METADATA_KEYWORD_MAX_CHARS)
+            .collect::<String>();
+        let normalized_key = keyword.to_lowercase();
+        if seen.insert(normalized_key) {
+            keywords.push(keyword);
+        }
+        if keywords.len() >= METADATA_KEYWORD_MAX_COUNT {
+            break;
+        }
+    }
+
+    keywords
+}
+
+fn sanitize_metadata_rating(value: Option<&str>) -> Option<String> {
+    let rating = value?.trim();
+    match rating {
+        "-1" | "0" | "1" | "2" | "3" | "4" | "5" => Some(rating.to_string()),
+        _ => None,
+    }
+}
+
+fn sanitize_metadata_write_url(value: Option<&str>) -> Option<String> {
+    let value = sanitize_metadata_write_value(value)?;
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 impl ExifToolSession {
@@ -2875,6 +2957,12 @@ mod tests {
                 enabled: true,
                 title: Some("  moeuu\n-title=bad  ".to_string()),
                 author: Some("  zero\r\nartist  ".to_string()),
+                description: Some("  public\ncaption  ".to_string()),
+                keywords: Some("  anime, moeuu；moeuu，clean  ".to_string()),
+                rights: Some("  © moeuu  ".to_string()),
+                rating: Some("5".to_string()),
+                label: Some("  public  ".to_string()),
+                rights_url: Some("https://example.com/rights".to_string()),
             }),
         };
 
@@ -2883,6 +2971,14 @@ mod tests {
             vec![
                 "-XMP-dc:Title=moeuu -title=bad".to_string(),
                 "-XMP-dc:Creator=zero artist".to_string(),
+                "-XMP-dc:Description=public caption".to_string(),
+                "-XMP-dc:Subject=anime".to_string(),
+                "-XMP-dc:Subject+=moeuu".to_string(),
+                "-XMP-dc:Subject+=clean".to_string(),
+                "-XMP-dc:Rights=© moeuu".to_string(),
+                "-XMP-xmp:Rating=5".to_string(),
+                "-XMP-xmp:Label=public".to_string(),
+                "-XMP-xmpRights:WebStatement=https://example.com/rights".to_string(),
             ]
         );
     }

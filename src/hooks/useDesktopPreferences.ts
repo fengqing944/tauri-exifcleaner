@@ -21,6 +21,12 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
     enabled: false,
     title: "",
     author: "",
+    description: "",
+    keywords: "",
+    rights: "",
+    rating: "",
+    label: "",
+    rightsUrl: "",
   },
 };
 
@@ -29,7 +35,7 @@ function sanitizeTextPreference(value: unknown): string {
     return "";
   }
 
-  return value.replace(/[\r\n]+/g, " ").trim().slice(0, 120);
+  return value.replace(/[\r\n]+/g, " ").trim().slice(0, 240);
 }
 
 function sanitizePreferences(input: unknown): DesktopPreferences {
@@ -69,6 +75,24 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       ),
       author: sanitizeTextPreference(
         (record.metadataWrite as Record<string, unknown> | undefined)?.author,
+      ),
+      description: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.description,
+      ),
+      keywords: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.keywords,
+      ),
+      rights: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.rights,
+      ),
+      rating: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.rating,
+      ),
+      label: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.label,
+      ),
+      rightsUrl: sanitizeTextPreference(
+        (record.metadataWrite as Record<string, unknown> | undefined)?.rightsUrl,
       ),
     },
   };

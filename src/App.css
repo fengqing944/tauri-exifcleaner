@@ -403,12 +403,18 @@ button {
   gap: 5px;
 }
 
+.setting-field-wide {
+  grid-column: 1 / -1;
+}
+
 .setting-field span {
   font-size: 10px;
   color: #475569;
 }
 
-.setting-field input {
+.setting-field input,
+.setting-field select,
+.setting-field textarea {
   width: 100%;
   min-height: 32px;
   padding: 0 9px;
@@ -417,9 +423,23 @@ button {
   background: #ffffff;
   color: #0f172a;
   font-size: 12px;
+  font-family: inherit;
 }
 
-.setting-field input:disabled {
+.setting-field textarea {
+  min-height: 74px;
+  padding: 8px 9px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.setting-field select {
+  cursor: pointer;
+}
+
+.setting-field input:disabled,
+.setting-field select:disabled,
+.setting-field textarea:disabled {
   color: #94a3b8;
   background: #f8fafc;
   cursor: not-allowed;
@@ -433,7 +453,7 @@ button {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
   gap: 10px;
-  align-items: start;
+  align-items: center;
   cursor: pointer;
 }
 
@@ -441,6 +461,7 @@ button {
   width: 16px;
   height: 16px;
   margin: 0;
+  align-self: center;
   accent-color: #2563eb;
 }
 
@@ -450,6 +471,54 @@ button {
 
 .setting-check strong {
   line-height: 16px;
+}
+
+.setting-advanced-block {
+  padding: 0;
+  overflow: hidden;
+}
+
+.setting-advanced-block summary {
+  list-style: none;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.setting-advanced-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.setting-advanced-block summary span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.setting-advanced-block summary strong {
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.setting-advanced-block summary small,
+.setting-disclosure {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.setting-advanced-block[open] summary {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.setting-advanced-block[open] .setting-disclosure {
+  color: #2563eb;
+}
+
+.setting-advanced-block > .setting-text-grid {
+  padding: 10px;
 }
 
 kbd {

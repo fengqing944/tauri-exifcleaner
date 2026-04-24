@@ -270,6 +270,12 @@ export function useWorkbenchController(options?: {
             enabled: Boolean(options?.metadataWrite?.enabled),
             title: options?.metadataWrite?.title.trim() || null,
             author: options?.metadataWrite?.author.trim() || null,
+            description: options?.metadataWrite?.description.trim() || null,
+            keywords: options?.metadataWrite?.keywords.trim() || null,
+            rights: options?.metadataWrite?.rights.trim() || null,
+            rating: options?.metadataWrite?.rating.trim() || null,
+            label: options?.metadataWrite?.label.trim() || null,
+            rightsUrl: options?.metadataWrite?.rightsUrl.trim() || null,
           },
         },
       });

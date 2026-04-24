@@ -8,7 +8,7 @@ type SettingsTabId = "execution" | "metadata" | "behavior" | "environment";
 
 const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string; caption: string }> = [
   { id: "execution", label: "执行", caption: "速度" },
-  { id: "metadata", label: "标记", caption: "标题/作者" },
+  { id: "metadata", label: "标记", caption: "公开字段" },
   { id: "behavior", label: "界面", caption: "详情" },
   { id: "environment", label: "环境", caption: "只读" },
 ];
@@ -39,6 +39,13 @@ export function SettingsDrawer(props: {
 
   const activeTabMeta =
     SETTINGS_TABS.find((tab) => tab.id === activeTab) ?? SETTINGS_TABS[0];
+
+  const updateMetadataWrite = (patch: Partial<MetadataWritePreferences>) => {
+    props.onMetadataWriteChange({
+      ...props.metadataWrite,
+      ...patch,
+    });
+  };
 
   const handleTabButtonKeyDown = (
     event: ReactKeyboardEvent<HTMLButtonElement>,
@@ -170,7 +177,7 @@ export function SettingsDrawer(props: {
               <strong>{activeTabMeta.label}</strong>
               <span>
                 {activeTab === "execution" && "调度和性能偏好会自动保存在本机。"}
-                {activeTab === "metadata" && "清理完成后，可选择写入你自己的公开标记。"}
+                {activeTab === "metadata" && "清理完成后，可选择写入你自己的公开 XMP 标记。"}
                 {activeTab === "behavior" && "控制任务详情和失败提示的显示方式。"}
                 {activeTab === "environment" && "当前运行环境信息，仅用于确认状态。"}
               </span>
@@ -215,20 +222,22 @@ export function SettingsDrawer(props: {
                   <input
                     type="checkbox"
                     checked={props.metadataWrite.enabled}
-                    onChange={(event) =>
-                      props.onMetadataWriteChange({
-                        ...props.metadataWrite,
-                        enabled: event.currentTarget.checked,
-                      })
-                    }
+                    onChange={(event) => updateMetadataWrite({ enabled: event.currentTarget.checked })}
                   />
                   <div>
-                    <strong>清理后写入标题和作者</strong>
-                    <span>开启后会先清空原元数据，再写入你主动填写的 XMP 标题/作者。</span>
+                    <strong>清理后写入公开标记</strong>
+                    <span>开启后会先清空原元数据，再写入你主动填写的 XMP 标题、作者、说明等字段。</span>
                   </div>
                 </label>
 
                 <div className="setting-card">
+                  <div className="setting-head">
+                    <div>
+                      <strong>基础标记</strong>
+                      <span>适合图片和视频共同使用的公开字段。</span>
+                    </div>
+                  </div>
+
                   <div className="setting-text-grid">
                     <label className="setting-field">
                       <span>标题</span>
@@ -238,36 +247,124 @@ export function SettingsDrawer(props: {
                         value={props.metadataWrite.title}
                         placeholder="例如 moeuu"
                         disabled={!props.metadataWrite.enabled}
-                        onChange={(event) =>
-                          props.onMetadataWriteChange({
-                            ...props.metadataWrite,
-                            title: event.currentTarget.value,
-                          })
-                        }
+                        onChange={(event) => updateMetadataWrite({ title: event.currentTarget.value })}
                       />
                     </label>
 
                     <label className="setting-field">
-                      <span>作者</span>
+                      <span>作者 / 创作者</span>
                       <input
                         type="text"
                         maxLength={120}
                         value={props.metadataWrite.author}
                         placeholder="可留空"
                         disabled={!props.metadataWrite.enabled}
+                        onChange={(event) => updateMetadataWrite({ author: event.currentTarget.value })}
+                      />
+                    </label>
+
+                    <label className="setting-field setting-field-wide">
+                      <span>描述 / 说明</span>
+                      <textarea
+                        maxLength={240}
+                        rows={3}
+                        value={props.metadataWrite.description}
+                        placeholder="一段公开说明"
+                        disabled={!props.metadataWrite.enabled}
                         onChange={(event) =>
-                          props.onMetadataWriteChange({
-                            ...props.metadataWrite,
-                            author: event.currentTarget.value,
-                          })
+                          updateMetadataWrite({ description: event.currentTarget.value })
                         }
+                      />
+                    </label>
+
+                    <label className="setting-field">
+                      <span>关键词</span>
+                      <input
+                        type="text"
+                        maxLength={240}
+                        value={props.metadataWrite.keywords}
+                        placeholder="用逗号分隔"
+                        disabled={!props.metadataWrite.enabled}
+                        onChange={(event) =>
+                          updateMetadataWrite({ keywords: event.currentTarget.value })
+                        }
+                      />
+                    </label>
+
+                    <label className="setting-field">
+                      <span>版权声明</span>
+                      <input
+                        type="text"
+                        maxLength={240}
+                        value={props.metadataWrite.rights}
+                        placeholder="例如 © moeuu"
+                        disabled={!props.metadataWrite.enabled}
+                        onChange={(event) => updateMetadataWrite({ rights: event.currentTarget.value })}
                       />
                     </label>
                   </div>
                   <span className="setting-footnote">
-                    如果开启但标题和作者都为空，本次清理会保持纯清理模式。
+                    如果开启但所有字段都为空，本次清理会保持纯清理模式。
                   </span>
                 </div>
+
+                <details className="setting-card setting-advanced-block">
+                  <summary>
+                    <span>
+                      <strong>高级标记</strong>
+                      <small>评级、标签、版权链接</small>
+                    </span>
+                    <span className="setting-disclosure" aria-hidden="true">
+                      展开
+                    </span>
+                  </summary>
+
+                  <div className="setting-text-grid">
+                    <label className="setting-field">
+                      <span>评级</span>
+                      <select
+                        value={props.metadataWrite.rating}
+                        disabled={!props.metadataWrite.enabled}
+                        onChange={(event) => updateMetadataWrite({ rating: event.currentTarget.value })}
+                      >
+                        <option value="">不写入</option>
+                        <option value="0">0 星</option>
+                        <option value="1">1 星</option>
+                        <option value="2">2 星</option>
+                        <option value="3">3 星</option>
+                        <option value="4">4 星</option>
+                        <option value="5">5 星</option>
+                        <option value="-1">拒绝</option>
+                      </select>
+                    </label>
+
+                    <label className="setting-field">
+                      <span>颜色标签</span>
+                      <input
+                        type="text"
+                        maxLength={120}
+                        value={props.metadataWrite.label}
+                        placeholder="例如 精选 / 公开"
+                        disabled={!props.metadataWrite.enabled}
+                        onChange={(event) => updateMetadataWrite({ label: event.currentTarget.value })}
+                      />
+                    </label>
+
+                    <label className="setting-field setting-field-wide">
+                      <span>版权说明链接</span>
+                      <input
+                        type="url"
+                        maxLength={240}
+                        value={props.metadataWrite.rightsUrl}
+                        placeholder="https://example.com/rights"
+                        disabled={!props.metadataWrite.enabled}
+                        onChange={(event) =>
+                          updateMetadataWrite({ rightsUrl: event.currentTarget.value })
+                        }
+                      />
+                    </label>
+                  </div>
+                </details>
               </div>
             ) : null}
 

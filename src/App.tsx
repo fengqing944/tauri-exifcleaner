@@ -19,6 +19,7 @@ import {
   clampNumber,
   normalizePath,
 } from "./app-shared";
+import { AboutDrawer } from "./components/AboutDrawer";
 import { HelpDrawer } from "./components/HelpDrawer";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { TopToolbar } from "./components/TopToolbar";
@@ -32,13 +33,19 @@ function App() {
   const { preferences, setPreference } = useDesktopPreferences();
   const [hoveredPathKey, setHoveredPathKey] = useState<string | null>(null);
   const [pinnedPathKey, setPinnedPathKey] = useState<string | null>(null);
-  const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({ left: 16, top: 52 });
+  const [flyoutPosition, setFlyoutPosition] = useState<FlyoutPosition>({
+    left: 16,
+    top: 52,
+  });
   const [isDetailsOpen, setIsDetailsOpen] = useState(
     () => preferences.reopenRunDetailsOnLaunch && preferences.lastDetailsOpen,
   );
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [visibleMetadataFiles, setVisibleMetadataFiles] = useState<QueuedFile[]>([]);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [visibleMetadataFiles, setVisibleMetadataFiles] = useState<
+    QueuedFile[]
+  >([]);
 
   const hoverTimeoutRef = useRef<number | null>(null);
   const flyoutActiveRef = useRef(false);
@@ -68,6 +75,7 @@ function App() {
     hidePreview();
     setIsDetailsOpen(false);
     setIsSettingsOpen(false);
+    setIsAboutOpen(false);
     setIsHelpOpen((current) => !current);
   });
 
@@ -75,7 +83,16 @@ function App() {
     hidePreview();
     setIsDetailsOpen(false);
     setIsHelpOpen(false);
+    setIsAboutOpen(false);
     setIsSettingsOpen((current) => !current);
+  });
+
+  const toggleAboutDrawer = useEffectEvent(() => {
+    hidePreview();
+    setIsDetailsOpen(false);
+    setIsHelpOpen(false);
+    setIsSettingsOpen(false);
+    setIsAboutOpen((current) => !current);
   });
 
   const {
@@ -123,7 +140,10 @@ function App() {
       return previewFiles;
     }
 
-    return previewFiles.slice(0, Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT));
+    return previewFiles.slice(
+      0,
+      Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT),
+    );
   }, [allQueueFilesLoaded, fileCount, previewFiles]);
 
   const handleVisibleFilesChange = useCallback((files: QueuedFile[]) => {
@@ -143,9 +163,12 @@ function App() {
 
   const highlightedPathKey = runningPreviewPathKey || activePathKey;
   const deferredHoveredPathKey = useDeferredValue(hoveredPathKey);
-  const previewPathKey = pinnedPathKey ?? (hoveredPathKey ? deferredHoveredPathKey : null);
+  const previewPathKey =
+    pinnedPathKey ?? (hoveredPathKey ? deferredHoveredPathKey : null);
   const previewFile =
-    previewFiles.find((file) => normalizePath(file.sourcePath) === previewPathKey) ?? null;
+    previewFiles.find(
+      (file) => normalizePath(file.sourcePath) === previewPathKey,
+    ) ?? null;
 
   const {
     beforeSnapshots,
@@ -201,7 +224,12 @@ function App() {
     }
 
     setPreference("preferredParallelism", nextPreferredParallelism);
-  }, [parallelism, preferences.preferredParallelism, runtimeInfo, setPreference]);
+  }, [
+    parallelism,
+    preferences.preferredParallelism,
+    runtimeInfo,
+    setPreference,
+  ]);
 
   useEffect(() => {
     if (!preferences.reopenRunDetailsOnLaunch) {
@@ -230,6 +258,7 @@ function App() {
     ) {
       setIsHelpOpen(false);
       setIsSettingsOpen(false);
+      setIsAboutOpen(false);
       setIsDetailsOpen(true);
     }
     previousSummaryRef.current = summary;
@@ -278,7 +307,10 @@ function App() {
     return () => body.removeEventListener("scroll", handleScroll);
   }, [hasMoreQueueFiles, isLoadingQueuePage, previewFiles.length]);
 
-  const positionFlyout = (rowElement: HTMLDivElement, pointerClientX?: number) => {
+  const positionFlyout = (
+    rowElement: HTMLDivElement,
+    pointerClientX?: number,
+  ) => {
     const shell = tableShellRef.current;
     if (!shell) {
       return;
@@ -305,15 +337,20 @@ function App() {
     setFlyoutPosition({ left: nextLeft, top: nextTop });
   };
 
-  const registerRowRef = useEffectEvent((pathKey: string, element: HTMLDivElement | null) => {
-    if (element) {
-      rowRefs.current.set(pathKey, element);
-    } else {
-      rowRefs.current.delete(pathKey);
-    }
-  });
+  const registerRowRef = useEffectEvent(
+    (pathKey: string, element: HTMLDivElement | null) => {
+      if (element) {
+        rowRefs.current.set(pathKey, element);
+      } else {
+        rowRefs.current.delete(pathKey);
+      }
+    },
+  );
 
-  const scheduleHover = (pathKey: string, event: React.MouseEvent<HTMLDivElement>) => {
+  const scheduleHover = (
+    pathKey: string,
+    event: React.MouseEvent<HTMLDivElement>,
+  ) => {
     if (pinnedPathKey && pinnedPathKey !== pathKey) {
       return;
     }
@@ -324,18 +361,24 @@ function App() {
     });
   };
 
-  const anchorPreview = useEffectEvent((pathKey: string, rowElement: HTMLDivElement) => {
-    cancelHoverTimer();
-    flyoutActiveRef.current = true;
-    positionFlyout(rowElement);
-    startTransition(() => {
-      setPinnedPathKey(pathKey);
-      setHoveredPathKey(null);
-    });
-  });
+  const anchorPreview = useEffectEvent(
+    (pathKey: string, rowElement: HTMLDivElement) => {
+      cancelHoverTimer();
+      flyoutActiveRef.current = true;
+      positionFlyout(rowElement);
+      startTransition(() => {
+        setPinnedPathKey(pathKey);
+        setHoveredPathKey(null);
+      });
+    },
+  );
 
   const handlePreviewKeyDown = useEffectEvent(
-    (pathKey: string, rowElement: HTMLDivElement, event: React.KeyboardEvent<HTMLDivElement>) => {
+    (
+      pathKey: string,
+      rowElement: HTMLDivElement,
+      event: React.KeyboardEvent<HTMLDivElement>,
+    ) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         anchorPreview(pathKey, rowElement);
@@ -482,11 +525,21 @@ function App() {
     fileCount,
     progress,
   });
-  const previewRowState = previewPathKey ? fileStates[previewPathKey] : undefined;
-  const previewBeforeSnapshot = previewPathKey ? beforeSnapshots[previewPathKey] : undefined;
-  const previewAfterSnapshot = previewPathKey ? afterSnapshots[previewPathKey] : undefined;
-  const previewBeforeLoading = previewPathKey ? Boolean(loadingSnapshots[`before:${previewPathKey}`]) : false;
-  const previewAfterLoading = previewPathKey ? Boolean(loadingSnapshots[`after:${previewPathKey}`]) : false;
+  const previewRowState = previewPathKey
+    ? fileStates[previewPathKey]
+    : undefined;
+  const previewBeforeSnapshot = previewPathKey
+    ? beforeSnapshots[previewPathKey]
+    : undefined;
+  const previewAfterSnapshot = previewPathKey
+    ? afterSnapshots[previewPathKey]
+    : undefined;
+  const previewBeforeLoading = previewPathKey
+    ? Boolean(loadingSnapshots[`before:${previewPathKey}`])
+    : false;
+  const previewAfterLoading = previewPathKey
+    ? Boolean(loadingSnapshots[`after:${previewPathKey}`])
+    : false;
   const detailsLabel =
     metadataDebug.status === "running"
       ? "读取中"
@@ -499,7 +552,7 @@ function App() {
       : `最近任务成功 ${summary.succeeded} 项，失败 ${summary.failed} 项`
     : isRunning
       ? `正在清理 ${progress.completed}/${progress.total || fileCount} 项，完成度 ${progressPercent}%`
-    : isScanning
+      : isScanning
         ? "正在扫描文件并加入队列"
         : fileCount
           ? `当前队列 ${fileCount} 项，可以直接开始清理`
@@ -518,15 +571,18 @@ function App() {
         isDetailsOpen={isDetailsOpen}
         isHelpOpen={isHelpOpen}
         isSettingsOpen={isSettingsOpen}
+        isAboutOpen={isAboutOpen}
         onStartCleanup={startCleanup}
         onCancelCurrent={isRunning ? cancelCleanup : cancelScan}
         onToggleDetails={() => {
           setIsHelpOpen(false);
           setIsSettingsOpen(false);
+          setIsAboutOpen(false);
           setIsDetailsOpen((current) => !current);
         }}
         onToggleHelp={toggleHelpDrawer}
         onToggleSettings={toggleSettingsDrawer}
+        onToggleAbout={toggleAboutDrawer}
       />
 
       <section className="workspace single-workspace">
@@ -589,6 +645,8 @@ function App() {
       />
 
       <HelpDrawer isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+
+      <AboutDrawer isOpen={isAboutOpen} onClose={() => setIsAboutOpen(false)} />
 
       <SettingsDrawer
         isOpen={isSettingsOpen}

@@ -12,11 +12,13 @@ export function TopToolbar(props: {
   isDetailsOpen: boolean;
   isHelpOpen: boolean;
   isSettingsOpen: boolean;
+  isAboutOpen: boolean;
   onStartCleanup: () => void;
   onCancelCurrent: () => void;
   onToggleDetails: () => void;
   onToggleHelp: () => void;
   onToggleSettings: () => void;
+  onToggleAbout: () => void;
 }) {
   return (
     <header className="topbar">
@@ -24,7 +26,9 @@ export function TopToolbar(props: {
         <div className="brand-block">
           <strong>TagSweep</strong>
           <span>元数据痕迹清理工具</span>
-          {props.toolbarNote ? <div className="topbar-note">{props.toolbarNote}</div> : null}
+          {props.toolbarNote ? (
+            <div className="topbar-note">{props.toolbarNote}</div>
+          ) : null}
         </div>
         <div className="topbar-meta">
           <StatusBadge
@@ -83,6 +87,13 @@ export function TopToolbar(props: {
             onClick={props.onToggleSettings}
           >
             {props.isSettingsOpen ? "收起设置" : "设置"}
+          </button>
+          <button
+            className={`button toolbar-button toolbar-button-compact ${props.isAboutOpen ? "button-active" : ""}`}
+            type="button"
+            onClick={props.onToggleAbout}
+          >
+            {props.isAboutOpen ? "收起关于" : "关于"}
           </button>
         </div>
       </div>

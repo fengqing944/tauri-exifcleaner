@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import type { MetadataWritePreferences, RuntimeInfo } from "../app-shared";
+import type { MetadataWritePreferences, RuntimeInfo, VideoCleanupMode } from "../app-shared";
 import { StatusBadge } from "./AppPrimitives";
 
-type SettingsTabId = "execution" | "metadata" | "behavior" | "environment";
+type SettingsTabId = "execution" | "cleanup" | "metadata" | "behavior" | "environment";
 
 const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string; caption: string }> = [
   { id: "execution", label: "执行", caption: "速度" },
+  { id: "cleanup", label: "清理", caption: "视频安全" },
   { id: "metadata", label: "标记", caption: "公开字段" },
   { id: "behavior", label: "界面", caption: "详情" },
   { id: "environment", label: "环境", caption: "只读" },
@@ -19,12 +20,14 @@ export function SettingsDrawer(props: {
   parallelism: number;
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
+  videoCleanupMode: VideoCleanupMode;
   metadataWrite: MetadataWritePreferences;
   onClose: () => void;
   onParallelismChange: (value: number) => void;
   onResetParallelism: () => void;
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
+  onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("execution");
@@ -177,6 +180,7 @@ export function SettingsDrawer(props: {
               <strong>{activeTabMeta.label}</strong>
               <span>
                 {activeTab === "execution" && "调度和性能偏好会自动保存在本机。"}
+                {activeTab === "cleanup" && "安全模式优先保证视频兼容性；严格模式会额外清理视频内部日期。"}
                 {activeTab === "metadata" && "清理完成后，可选择写入你自己的公开 XMP 标记。"}
                 {activeTab === "behavior" && "控制任务详情和失败提示的显示方式。"}
                 {activeTab === "environment" && "当前运行环境信息，仅用于确认状态。"}
@@ -211,6 +215,61 @@ export function SettingsDrawer(props: {
                   <span className="setting-footnote">
                     默认值 {props.runtimeInfo?.parallelismDefault ?? "—"}，最大值{" "}
                     {props.runtimeInfo?.parallelismMax ?? "—"}。
+                  </span>
+                </div>
+              </div>
+            ) : null}
+
+            {activeTab === "cleanup" ? (
+              <div className="setting-stack">
+                <div className="setting-card">
+                  <div className="setting-head">
+                    <div>
+                      <strong>视频清理模式</strong>
+                      <span>默认使用安全模式。严格模式会额外清理 MP4/MOV 容器、轨道和媒体层的创建/修改日期。</span>
+                    </div>
+                  </div>
+
+                  <div className="setting-segmented" role="radiogroup" aria-label="视频清理模式">
+                    <label
+                      className={`setting-segment ${
+                        props.videoCleanupMode === "safe" ? "is-selected" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="video-cleanup-mode"
+                        value="safe"
+                        checked={props.videoCleanupMode === "safe"}
+                        onChange={() => props.onVideoCleanupModeChange("safe")}
+                      />
+                      <span>
+                        <strong>安全</strong>
+                        <small>优先兼容</small>
+                      </span>
+                    </label>
+
+                    <label
+                      className={`setting-segment ${
+                        props.videoCleanupMode === "strict" ? "is-selected" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="video-cleanup-mode"
+                        value="strict"
+                        checked={props.videoCleanupMode === "strict"}
+                        onChange={() => props.onVideoCleanupModeChange("strict")}
+                      />
+                      <span>
+                        <strong>严格</strong>
+                        <small>更彻底</small>
+                      </span>
+                    </label>
+                  </div>
+
+                  <span className="setting-footnote">
+                    安全模式只执行通用元数据清理。严格模式通常不会影响播放，但可能改变部分软件按视频内部时间排序的结果。
                   </span>
                 </div>
               </div>

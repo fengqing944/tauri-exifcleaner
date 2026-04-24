@@ -217,7 +217,7 @@ button {
 
 .settings-tablist {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 6px;
 }
 
@@ -394,6 +394,65 @@ button {
 .setting-slider-row input[type="range"] {
   width: 100%;
   accent-color: #2563eb;
+}
+
+.setting-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.setting-segment {
+  min-width: 0;
+  min-height: 46px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.setting-segment:hover,
+.setting-segment:focus-within {
+  border-color: #94a3b8;
+}
+
+.setting-segment.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.setting-segment input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+
+.setting-segment span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.setting-segment strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.setting-segment small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: #64748b;
 }
 
 .setting-text-grid {
@@ -1629,6 +1688,7 @@ kbd {
   .preview-card-grid,
   .preview-card-grid.compare-grid,
   .preview-summary-grid,
+  .setting-segmented,
   .setting-text-grid {
     grid-template-columns: 1fr;
   }

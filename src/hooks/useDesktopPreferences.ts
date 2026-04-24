@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 
-import type { MetadataWritePreferences } from "../app-shared";
+import type { MetadataWritePreferences, VideoCleanupMode } from "../app-shared";
 
 export type DesktopPreferences = {
   preferredParallelism: number | null;
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
+  videoCleanupMode: VideoCleanupMode;
   metadataWrite: MetadataWritePreferences;
 };
 
@@ -17,6 +18,7 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   autoOpenDetailsOnFailure: true,
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
+  videoCleanupMode: "safe",
   metadataWrite: {
     enabled: false,
     title: "",
@@ -36,6 +38,10 @@ function sanitizeTextPreference(value: unknown): string {
   }
 
   return value.replace(/[\r\n]+/g, " ").trim().slice(0, 240);
+}
+
+function sanitizeVideoCleanupMode(value: unknown): VideoCleanupMode {
+  return value === "strict" ? "strict" : "safe";
 }
 
 function sanitizePreferences(input: unknown): DesktopPreferences {
@@ -65,6 +71,7 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       typeof record.lastDetailsOpen === "boolean"
         ? record.lastDetailsOpen
         : DEFAULT_PREFERENCES.lastDetailsOpen,
+    videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
     metadataWrite: {
       enabled:
         typeof (record.metadataWrite as Record<string, unknown> | undefined)?.enabled === "boolean"

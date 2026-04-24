@@ -44,8 +44,8 @@ const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
 const METADATA_KEYWORD_MAX_CHARS: usize = 60;
 const METADATA_KEYWORD_MAX_COUNT: usize = 20;
-const CLEAN_REMOVAL_ARGS: &[&str] = &[
-    "-all=",
+const SAFE_CLEAN_REMOVAL_ARGS: &[&str] = &["-all="];
+const STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS: &[&str] = &[
     "-QuickTime:CreateDate=",
     "-QuickTime:ModifyDate=",
     "-QuickTime:TrackCreateDate=",
@@ -107,6 +107,13 @@ enum OutputMode {
     Overwrite,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum VideoCleanupMode {
+    Safe,
+    Strict,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct QueuedFile {
@@ -146,6 +153,7 @@ struct CleanupOptions {
     output_dir: Option<String>,
     parallelism: usize,
     preserve_structure: bool,
+    video_cleanup_mode: Option<VideoCleanupMode>,
     metadata_write: Option<MetadataWriteOptions>,
 }
 
@@ -1782,6 +1790,14 @@ fn execute_cleanup_file(
     })
 }
 
+fn cleanup_removal_args(options: &CleanupOptions) -> Vec<&'static str> {
+    let mut args = SAFE_CLEAN_REMOVAL_ARGS.to_vec();
+    if matches!(options.video_cleanup_mode, Some(VideoCleanupMode::Strict)) {
+        args.extend_from_slice(STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS);
+    }
+    args
+}
+
 fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
     let Some(metadata_write) = options.metadata_write.as_ref() else {
         return Vec::new();
@@ -1961,7 +1977,7 @@ impl ExifToolSession {
         self.write_arg("-m")?;
         self.write_arg("-ignoreMinorErrors")?;
         self.write_arg("-P")?;
-        for arg in CLEAN_REMOVAL_ARGS {
+        for arg in cleanup_removal_args(options) {
             self.write_arg(arg)?;
         }
         for arg in metadata_write_args(options) {
@@ -3000,6 +3016,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            video_cleanup_mode: None,
             metadata_write: None,
         };
         assert!(metadata_write_args(&disabled_options).is_empty());
@@ -3009,6 +3026,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            video_cleanup_mode: None,
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
                 title: Some("  moeuu\n-title=bad  ".to_string()),
@@ -3040,11 +3058,35 @@ mod tests {
     }
 
     #[test]
-    fn clean_removal_args_include_quicktime_timestamps() {
-        assert!(CLEAN_REMOVAL_ARGS.contains(&"-all="));
-        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:CreateDate="));
-        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:TrackCreateDate="));
-        assert!(CLEAN_REMOVAL_ARGS.contains(&"-QuickTime:MediaCreateDate="));
+    fn cleanup_removal_args_use_safe_video_mode_by_default() {
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            metadata_write: None,
+        };
+
+        assert_eq!(cleanup_removal_args(&options), vec!["-all="]);
+    }
+
+    #[test]
+    fn cleanup_removal_args_include_quicktime_timestamps_in_strict_mode() {
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: Some(VideoCleanupMode::Strict),
+            metadata_write: None,
+        };
+        let args = cleanup_removal_args(&options);
+
+        assert!(args.contains(&"-all="));
+        assert!(args.contains(&"-QuickTime:CreateDate="));
+        assert!(args.contains(&"-QuickTime:TrackCreateDate="));
+        assert!(args.contains(&"-QuickTime:MediaCreateDate="));
     }
 
     #[test]
@@ -3102,6 +3144,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            video_cleanup_mode: None,
             metadata_write: None,
         };
 
@@ -3133,6 +3176,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            video_cleanup_mode: None,
             metadata_write: None,
         };
 
@@ -3184,6 +3228,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            video_cleanup_mode: None,
             metadata_write: None,
         };
 

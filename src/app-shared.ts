@@ -100,6 +100,8 @@ export type MetadataWritePreferences = {
   rightsUrl: string;
 };
 
+export type VideoCleanupMode = "safe" | "strict";
+
 export type ProgressState = {
   total: number;
   completed: number;

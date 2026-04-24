@@ -15,6 +15,7 @@ import {
   type ScanProgressEvent,
   type ScanSummary,
   type ShellOpenRequest,
+  type VideoCleanupMode,
   EMPTY_PROGRESS,
   QUEUE_PAGE_SIZE,
   buildFileStateMap,
@@ -28,6 +29,7 @@ import {
 
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
+  videoCleanupMode?: VideoCleanupMode;
   metadataWrite?: MetadataWritePreferences;
 }) {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -266,6 +268,7 @@ export function useWorkbenchController(options?: {
           outputDir: null,
           parallelism,
           preserveStructure: true,
+          videoCleanupMode: options?.videoCleanupMode ?? "safe",
           metadataWrite: {
             enabled: Boolean(options?.metadataWrite?.enabled),
             title: options?.metadataWrite?.title.trim() || null,

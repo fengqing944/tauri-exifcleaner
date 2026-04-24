@@ -210,6 +210,85 @@ button {
   gap: 10px;
 }
 
+.settings-tablist {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.settings-tab {
+  min-width: 0;
+  min-height: 44px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  color: #334155;
+  display: grid;
+  place-items: center;
+  gap: 1px;
+  cursor: pointer;
+}
+
+.settings-tab:hover,
+.settings-tab:focus-visible {
+  border-color: #94a3b8;
+}
+
+.settings-tab[aria-selected="true"] {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.settings-tab strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.settings-tab span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: #64748b;
+}
+
+.settings-tab[aria-selected="true"] span {
+  color: #2563eb;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-panel-head {
+  display: grid;
+  gap: 3px;
+  padding: 0 2px;
+}
+
+.settings-panel-head strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.settings-panel-head span {
+  font-size: 10px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.setting-stack {
+  display: grid;
+  gap: 10px;
+}
+
 .utility-section {
   padding: 10px;
   border: 1px solid #dbe2ea;
@@ -314,6 +393,7 @@ button {
 
 .setting-text-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1464,7 +1544,8 @@ kbd {
   .task-stats-strip,
   .preview-card-grid,
   .preview-card-grid.compare-grid,
-  .preview-summary-grid {
+  .preview-summary-grid,
+  .setting-text-grid {
     grid-template-columns: 1fr;
   }
 

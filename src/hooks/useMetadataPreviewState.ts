@@ -20,6 +20,9 @@ import {
   type MetadataSnapshotResponse,
   type QueuedFile,
   EMPTY_METADATA_DEBUG,
+  VISIBLE_METADATA_AFTER_BATCH_LIMIT,
+  VISIBLE_METADATA_BEFORE_BATCH_LIMIT,
+  VISIBLE_METADATA_PREFETCH_DELAY_MS,
   buildAfterSnapshotMap,
   normalizePath,
   toMessage,
@@ -296,21 +299,37 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       return;
     }
 
+    const hasVisibleBeforeLoading = input.visibleFiles.some((file) => {
+      const pathKey = normalizePath(file.sourcePath);
+      return loadingSnapshots[`before:${pathKey}`];
+    });
+    if (hasVisibleBeforeLoading) {
+      return;
+    }
+
     const requests = input.visibleFiles
       .filter((file) => {
         const pathKey = normalizePath(file.sourcePath);
         return !beforeSnapshots[pathKey] && !loadingSnapshots[`before:${pathKey}`];
       })
+      .slice(0, VISIBLE_METADATA_BEFORE_BATCH_LIMIT)
       .map((file) => ({
         requestKey: normalizePath(file.sourcePath),
         filePath: file.sourcePath,
       }));
+    if (!requests.length) {
+      return;
+    }
 
-    void requestSnapshots({
-      origin: "可见预读",
-      phase: "before",
-      requests,
-    });
+    const timeoutId = window.setTimeout(() => {
+      void requestSnapshots({
+        origin: "可见预读",
+        phase: "before",
+        requests,
+      });
+    }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
   }, [beforeSnapshots, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
 
   useEffect(() => {
@@ -363,6 +382,14 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       return;
     }
 
+    const hasVisibleAfterLoading = input.visibleFiles.some((file) => {
+      const pathKey = normalizePath(file.sourcePath);
+      return loadingSnapshots[`after:${pathKey}`];
+    });
+    if (hasVisibleAfterLoading) {
+      return;
+    }
+
     const requests = input.visibleFiles
       .map((file) => {
         const pathKey = normalizePath(file.sourcePath);
@@ -381,12 +408,20 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         };
       })
       .filter((request): request is MetadataSnapshotRequest => Boolean(request));
+    const limitedRequests = requests.slice(0, VISIBLE_METADATA_AFTER_BATCH_LIMIT);
+    if (!limitedRequests.length) {
+      return;
+    }
 
-    void requestSnapshots({
-      origin: "可见后览",
-      phase: "after",
-      requests,
-    });
+    const timeoutId = window.setTimeout(() => {
+      void requestSnapshots({
+        origin: "可见后览",
+        phase: "after",
+        requests: limitedRequests,
+      });
+    }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
+
+    return () => window.clearTimeout(timeoutId);
   }, [afterSnapshots, input.fileStates, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
 
   useEffect(() => {

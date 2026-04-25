@@ -316,9 +316,9 @@ function App() {
     const viewportHeight = window.innerHeight;
     const viewportMargin = 16;
     const availableWidth = Math.max(280, viewportWidth - viewportMargin * 2);
-    const availableHeight = Math.max(300, viewportHeight - viewportMargin * 2);
-    const estimatedWidth = Math.min(560, availableWidth);
-    const estimatedHeight = Math.min(460, availableHeight);
+    const availableHeight = Math.max(280, viewportHeight - viewportMargin * 2);
+    const estimatedWidth = Math.min(500, availableWidth);
+    const estimatedHeight = Math.min(380, availableHeight);
     const gap = 10;
     const anchorX = pointerPosition?.x ?? rowRect.right;
     const anchorY = pointerPosition?.y ?? rowRect.top + rowRect.height;
@@ -333,11 +333,8 @@ function App() {
       Math.max(viewportMargin, viewportWidth - estimatedWidth - viewportMargin),
     );
     const preferredTop = anchorY + gap;
-    const fallbackTop = anchorY - estimatedHeight - gap;
-    const hasRoomBelow =
-      preferredTop + estimatedHeight <= viewportHeight - viewportMargin;
     const nextTop = clampNumber(
-      hasRoomBelow ? preferredTop : fallbackTop,
+      preferredTop,
       viewportMargin,
       Math.max(
         viewportMargin,

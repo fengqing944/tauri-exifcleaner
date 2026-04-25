@@ -311,27 +311,36 @@ function App() {
     rowElement: HTMLDivElement,
     pointerClientX?: number,
   ) => {
-    const shell = tableShellRef.current;
-    if (!shell) {
-      return;
-    }
-
-    const shellRect = shell.getBoundingClientRect();
     const rowRect = rowElement.getBoundingClientRect();
-    const estimatedWidth = Math.min(480, Math.max(340, shell.clientWidth - 24));
-    const estimatedHeight = 360;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = 12;
+    const availableWidth = Math.max(280, viewportWidth - viewportMargin * 2);
+    const availableHeight = Math.max(320, viewportHeight - viewportMargin * 2);
+    const estimatedWidth = Math.min(680, availableWidth);
+    const estimatedHeight = Math.min(560, availableHeight);
     const anchorX = pointerClientX ?? rowRect.left + rowRect.width * 0.72;
-    const preferredLeft = anchorX - shellRect.left - estimatedWidth - 14;
-    const fallbackLeft = anchorX - shellRect.left + 16;
+    const rightSideLeft = anchorX + 16;
+    const leftSideLeft = anchorX - estimatedWidth - 16;
+    const hasRoomOnRight =
+      rightSideLeft + estimatedWidth <= viewportWidth - viewportMargin;
+    const preferredLeft = hasRoomOnRight ? rightSideLeft : leftSideLeft;
     const nextLeft = clampNumber(
-      preferredLeft >= 12 ? preferredLeft : fallbackLeft,
-      12,
-      Math.max(12, shell.clientWidth - estimatedWidth - 12),
+      preferredLeft,
+      viewportMargin,
+      Math.max(viewportMargin, viewportWidth - estimatedWidth - viewportMargin),
     );
+    const preferredTop = rowRect.top + rowRect.height + 8;
+    const fallbackTop = rowRect.top - estimatedHeight - 8;
+    const hasRoomBelow =
+      preferredTop + estimatedHeight <= viewportHeight - viewportMargin;
     const nextTop = clampNumber(
-      rowRect.top - shellRect.top + rowRect.height + 6,
-      48,
-      Math.max(48, shell.clientHeight - estimatedHeight - 12),
+      hasRoomBelow ? preferredTop : fallbackTop,
+      viewportMargin,
+      Math.max(
+        viewportMargin,
+        viewportHeight - estimatedHeight - viewportMargin,
+      ),
     );
 
     setFlyoutPosition({ left: nextLeft, top: nextTop });

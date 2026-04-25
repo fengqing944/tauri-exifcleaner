@@ -1190,11 +1190,10 @@ kbd {
 }
 
 .preview-flyout-shell {
-  position: absolute;
-  top: 52px;
-  left: 16px;
-  z-index: 10;
-  width: min(480px, calc(100% - 24px));
+  position: fixed;
+  z-index: 20;
+  width: min(680px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
   transition:
     opacity 110ms ease,
     transform 110ms ease;
@@ -1206,6 +1205,10 @@ kbd {
   border: 1px solid #d5dbe3;
   border-radius: 10px;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.09);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  max-height: inherit;
+  overflow: hidden;
   will-change: transform, opacity;
 }
 
@@ -1264,6 +1267,7 @@ kbd {
 .preview-card-grid {
   display: grid;
   gap: 6px;
+  min-height: 0;
 }
 
 .preview-card-grid.compare-grid {
@@ -1272,10 +1276,13 @@ kbd {
 
 .preview-column {
   min-width: 0;
+  min-height: 0;
   padding: 6px;
   background: #fbfcfe;
   border: 1px solid #e2e8f0;
   border-radius: 7px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .preview-column header {
@@ -1294,7 +1301,8 @@ kbd {
 .preview-fields {
   display: grid;
   gap: 4px;
-  max-height: 240px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding-right: 2px;
 }
@@ -1787,9 +1795,8 @@ kbd {
   }
 
   .preview-flyout-shell {
-    position: static;
-    width: 100%;
-    margin: 10px 0 0;
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
   }
 
   .details-drawer {

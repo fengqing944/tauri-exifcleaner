@@ -309,7 +309,7 @@ function App() {
 
   const positionFlyout = (
     rowElement: HTMLDivElement,
-    pointerClientX?: number,
+    pointerPosition?: { x: number; y: number },
   ) => {
     const rowRect = rowElement.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
@@ -319,9 +319,11 @@ function App() {
     const availableHeight = Math.max(300, viewportHeight - viewportMargin * 2);
     const estimatedWidth = Math.min(560, availableWidth);
     const estimatedHeight = Math.min(460, availableHeight);
-    const anchorX = pointerClientX ?? rowRect.left + rowRect.width * 0.72;
-    const rightSideLeft = anchorX + 16;
-    const leftSideLeft = anchorX - estimatedWidth - 16;
+    const gap = 10;
+    const anchorX = pointerPosition?.x ?? rowRect.right;
+    const anchorY = pointerPosition?.y ?? rowRect.top + rowRect.height;
+    const rightSideLeft = anchorX + gap;
+    const leftSideLeft = anchorX - estimatedWidth - gap;
     const hasRoomOnRight =
       rightSideLeft + estimatedWidth <= viewportWidth - viewportMargin;
     const preferredLeft = hasRoomOnRight ? rightSideLeft : leftSideLeft;
@@ -330,8 +332,8 @@ function App() {
       viewportMargin,
       Math.max(viewportMargin, viewportWidth - estimatedWidth - viewportMargin),
     );
-    const preferredTop = rowRect.top + rowRect.height + 8;
-    const fallbackTop = rowRect.top - estimatedHeight - 8;
+    const preferredTop = anchorY + gap;
+    const fallbackTop = anchorY - estimatedHeight - gap;
     const hasRoomBelow =
       preferredTop + estimatedHeight <= viewportHeight - viewportMargin;
     const nextTop = clampNumber(
@@ -364,7 +366,7 @@ function App() {
       return;
     }
     cancelHoverTimer();
-    positionFlyout(event.currentTarget, event.clientX);
+    positionFlyout(event.currentTarget, { x: event.clientX, y: event.clientY });
     startTransition(() => {
       setHoveredPathKey(pathKey);
     });
@@ -455,7 +457,7 @@ function App() {
         return;
       }
       setHoveredPathKey(null);
-    }, 90);
+    }, 160);
   };
 
   const handleFlyoutEnter = () => {

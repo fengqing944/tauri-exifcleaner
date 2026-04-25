@@ -32,6 +32,45 @@ const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
 const SCAN_PROGRESS_INTERVAL_MS: u64 = 350;
 const METADATA_GROUPS_TO_SKIP: &[&str] = &["Composite", "ExifTool", "File", "System"];
+const QUICKTIME_PREVIEW_FIELDS: &[&str] = &[
+    "MajorBrand",
+    "MinorVersion",
+    "CompatibleBrands",
+    "CreateDate",
+    "ModifyDate",
+    "DateTimeOriginal",
+    "Duration",
+    "HandlerType",
+    "HandlerVendorID",
+    "Encoder",
+];
+const QUICKTIME_TRACK_PREVIEW_FIELDS: &[&str] = &[
+    "TrackCreateDate",
+    "TrackModifyDate",
+    "TrackDuration",
+    "TrackVolume",
+    "MediaCreateDate",
+    "MediaModifyDate",
+    "MediaDuration",
+    "MediaLanguageCode",
+    "HandlerType",
+    "HandlerDescription",
+    "CompressorID",
+    "ImageWidth",
+    "ImageHeight",
+    "SourceImageWidth",
+    "SourceImageHeight",
+    "XResolution",
+    "YResolution",
+    "BitDepth",
+    "PixelAspectRatio",
+    "VideoFrameRate",
+    "AudioFormat",
+    "AudioChannels",
+    "AudioBitsPerSample",
+    "AudioSampleRate",
+    "Balance",
+];
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
@@ -1198,7 +1237,7 @@ fn should_skip_metadata_field(group: &str, name: &str, value: &Value) -> bool {
     }
 
     if is_quicktime_structural_group(group) {
-        return !is_quicktime_user_metadata_field(group, name, value);
+        return !is_quicktime_preview_field(group, name, value);
     }
 
     false
@@ -1214,21 +1253,24 @@ fn is_quicktime_track_group(group: &str) -> bool {
         .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
 }
 
-fn is_quicktime_user_metadata_field(group: &str, name: &str, value: &Value) -> bool {
+fn is_quicktime_preview_field(group: &str, name: &str, value: &Value) -> bool {
     if is_zero_quicktime_timestamp(value) {
         return false;
     }
 
     if group.eq_ignore_ascii_case("QuickTime") {
-        matches!(name, "CreateDate" | "ModifyDate" | "DateTimeOriginal")
+        is_metadata_name_in_list(name, QUICKTIME_PREVIEW_FIELDS)
     } else if is_quicktime_track_group(group) {
-        matches!(
-            name,
-            "TrackCreateDate" | "TrackModifyDate" | "MediaCreateDate" | "MediaModifyDate"
-        )
+        is_metadata_name_in_list(name, QUICKTIME_TRACK_PREVIEW_FIELDS)
     } else {
         false
     }
+}
+
+fn is_metadata_name_in_list(name: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
 }
 
 fn is_zero_quicktime_timestamp(value: &Value) -> bool {
@@ -3090,15 +3132,64 @@ mod tests {
     }
 
     #[test]
-    fn metadata_preview_skips_quicktime_structural_fields() {
-        assert!(map_metadata_field(
+    fn metadata_preview_includes_important_quicktime_video_fields() {
+        let duration = map_metadata_field(
             "QuickTime:Duration",
             &serde_json::json!("1.00 s"),
         )
-        .is_none());
-        assert!(map_metadata_field(
+        .expect("QuickTime duration should be shown");
+        assert_eq!(duration.group, "QuickTime");
+        assert_eq!(duration.name, "Duration");
+
+        let major_brand = map_metadata_field(
+            "QuickTime:MajorBrand",
+            &serde_json::json!("MP4 Base Media v1"),
+        )
+        .expect("QuickTime major brand should be shown");
+        assert_eq!(major_brand.group, "QuickTime");
+        assert_eq!(major_brand.name, "MajorBrand");
+
+        let image_width = map_metadata_field(
             "Track1:ImageWidth",
             &serde_json::json!(1920),
+        )
+        .expect("Track image width should be shown");
+        assert_eq!(image_width.group, "Track1");
+        assert_eq!(image_width.name, "ImageWidth");
+
+        let frame_rate = map_metadata_field(
+            "Track1:VideoFrameRate",
+            &serde_json::json!(29.97),
+        )
+        .expect("Track frame rate should be shown");
+        assert_eq!(frame_rate.group, "Track1");
+        assert_eq!(frame_rate.name, "VideoFrameRate");
+
+        let audio_format = map_metadata_field(
+            "Track2:AudioFormat",
+            &serde_json::json!("mp4a"),
+        )
+        .expect("Track audio format should be shown");
+        assert_eq!(audio_format.group, "Track2");
+        assert_eq!(audio_format.name, "AudioFormat");
+    }
+
+    #[test]
+    fn metadata_preview_skips_quicktime_internal_noise() {
+        assert!(map_metadata_field(
+            "QuickTime:MediaDataOffset",
+            &serde_json::json!(48),
+        )
+        .is_none());
+        assert!(map_metadata_field(
+            "QuickTime:MovieHeaderVersion",
+            &serde_json::json!(0),
+        )
+        .is_none());
+        assert!(map_metadata_field("Track1:TrackID", &serde_json::json!(1)).is_none());
+        assert!(map_metadata_field(
+            "Track1:MatrixStructure",
+            &serde_json::json!("1 0 0 0 1 0 0 0 1"),
         )
         .is_none());
         assert!(map_metadata_field(

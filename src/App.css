@@ -1192,8 +1192,8 @@ kbd {
 .preview-flyout-shell {
   position: fixed;
   z-index: 20;
-  width: min(680px, calc(100vw - 24px));
-  max-height: calc(100vh - 24px);
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(460px, calc(100vh - 32px));
   transition:
     opacity 110ms ease,
     transform 110ms ease;
@@ -1795,8 +1795,8 @@ kbd {
   }
 
   .preview-flyout-shell {
-    width: calc(100vw - 20px);
-    max-height: calc(100vh - 20px);
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px);
   }
 
   .details-drawer {

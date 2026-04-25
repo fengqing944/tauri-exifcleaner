@@ -314,11 +314,11 @@ function App() {
     const rowRect = rowElement.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const viewportMargin = 12;
+    const viewportMargin = 16;
     const availableWidth = Math.max(280, viewportWidth - viewportMargin * 2);
-    const availableHeight = Math.max(320, viewportHeight - viewportMargin * 2);
-    const estimatedWidth = Math.min(680, availableWidth);
-    const estimatedHeight = Math.min(560, availableHeight);
+    const availableHeight = Math.max(300, viewportHeight - viewportMargin * 2);
+    const estimatedWidth = Math.min(560, availableWidth);
+    const estimatedHeight = Math.min(460, availableHeight);
     const anchorX = pointerClientX ?? rowRect.left + rowRect.width * 0.72;
     const rightSideLeft = anchorX + 16;
     const leftSideLeft = anchorX - estimatedWidth - 16;

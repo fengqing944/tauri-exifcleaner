@@ -1879,6 +1879,9 @@ fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
     if let Some(rights_url) = sanitize_metadata_write_url(metadata_write.rights_url.as_deref()) {
         args.push(format!("-XMP-xmpRights:WebStatement={rights_url}"));
     }
+    if !args.is_empty() {
+        args.push("-XMP-x:XMPToolkit=".to_string());
+    }
 
     args
 }
@@ -3063,6 +3066,26 @@ mod tests {
         };
         assert!(metadata_write_args(&disabled_options).is_empty());
 
+        let empty_options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            metadata_write: Some(MetadataWriteOptions {
+                enabled: true,
+                title: None,
+                author: None,
+                description: None,
+                keywords: None,
+                rights: None,
+                rating: None,
+                label: None,
+                rights_url: None,
+            }),
+        };
+        assert!(metadata_write_args(&empty_options).is_empty());
+
         let enabled_options = CleanupOptions {
             output_mode: OutputMode::Overwrite,
             output_dir: None,
@@ -3095,6 +3118,7 @@ mod tests {
                 "-XMP-xmp:Rating=5".to_string(),
                 "-XMP-xmp:Label=public".to_string(),
                 "-XMP-xmpRights:WebStatement=https://example.com/rights".to_string(),
+                "-XMP-x:XMPToolkit=".to_string(),
             ]
         );
     }

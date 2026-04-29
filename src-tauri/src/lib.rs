@@ -1951,6 +1951,66 @@ fn execute_cleanup_file(
     })
 }
 
+fn build_clean_command_args(
+    planned_file: &PlannedCleanupFile,
+    options: &CleanupOptions,
+    removal_args: Vec<String>,
+    write_args: Vec<String>,
+    stderr_marker: Option<&str>,
+    end_options_before_source: bool,
+) -> Result<Vec<String>, String> {
+    let mut args = vec![
+        "-charset".to_string(),
+        "filename=UTF8".to_string(),
+        "-q".to_string(),
+        "-q".to_string(),
+        "-m".to_string(),
+        "-ignoreMinorErrors".to_string(),
+        "-P".to_string(),
+    ];
+    args.extend(removal_args);
+    args.extend(write_args);
+
+    match options.output_mode {
+        OutputMode::Overwrite => {
+            args.push("-overwrite_original".to_string());
+        }
+        OutputMode::Mirror => {
+            let output_path = planned_file
+                .output_path
+                .as_ref()
+                .ok_or_else(|| "镜像输出模式缺少目标路径。".to_string())?;
+            args.push("-o".to_string());
+            args.push(output_path.to_string_lossy().to_string());
+        }
+    }
+
+    if let Some(marker) = stderr_marker {
+        args.push("-echo4".to_string());
+        args.push(format!("{marker}${{status}}"));
+    }
+
+    if end_options_before_source {
+        args.push("--".to_string());
+    }
+    args.push(planned_file.source_path.to_string_lossy().to_string());
+    Ok(args)
+}
+
+fn clean_command_needs_spawned_process(
+    planned_file: &PlannedCleanupFile,
+    removal_args: &[String],
+    write_args: &[String],
+) -> bool {
+    !planned_file.source_path.to_string_lossy().is_ascii()
+        || planned_file
+            .output_path
+            .as_ref()
+            .is_some_and(|path| !path.to_string_lossy().is_ascii())
+        || removal_args.iter().any(|arg| !arg.is_ascii())
+        || write_args.iter().any(|arg| !arg.is_ascii())
+}
+
 fn cleanup_removal_args(options: &CleanupOptions) -> Vec<String> {
     let mut args = SAFE_CLEAN_REMOVAL_ARGS
         .iter()
@@ -2283,6 +2343,13 @@ impl ExifToolSession {
         planned_file: &PlannedCleanupFile,
         options: &CleanupOptions,
     ) -> Result<(), String> {
+        if !planned_file.source_path.is_file() {
+            return Err(format!(
+                "源文件不存在或已移动: {}",
+                planned_file.source_path.display()
+            ));
+        }
+
         let removal_args =
             cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
         let write_args = metadata_write_args(options);
@@ -2298,42 +2365,30 @@ impl ExifToolSession {
             return Ok(());
         }
 
+        if clean_command_needs_spawned_process(planned_file, &removal_args, &write_args) {
+            return self.clean_file_with_spawned_process(
+                planned_file,
+                options,
+                removal_args,
+                write_args,
+            );
+        }
+
         let execute_id = self.next_execute_id;
         self.next_execute_id += 1;
 
         let stderr_marker = format!("__META_SWEEP_DONE__:{execute_id}:");
-
-        self.write_arg("-charset")?;
-        self.write_arg("filename=UTF8")?;
-        self.write_arg("-q")?;
-        self.write_arg("-q")?;
-        self.write_arg("-m")?;
-        self.write_arg("-ignoreMinorErrors")?;
-        self.write_arg("-P")?;
-        for arg in removal_args {
+        let command_args = build_clean_command_args(
+            planned_file,
+            options,
+            removal_args,
+            write_args,
+            Some(&stderr_marker),
+            false,
+        )?;
+        for arg in command_args {
             self.write_arg(&arg)?;
         }
-        for arg in write_args {
-            self.write_arg(&arg)?;
-        }
-
-        match options.output_mode {
-            OutputMode::Overwrite => {
-                self.write_arg("-overwrite_original")?;
-            }
-            OutputMode::Mirror => {
-                let output_path = planned_file
-                    .output_path
-                    .as_ref()
-                    .ok_or_else(|| "镜像输出模式缺少目标路径。".to_string())?;
-                self.write_arg("-o")?;
-                self.write_arg(&output_path.to_string_lossy())?;
-            }
-        }
-
-        self.write_arg("-echo4")?;
-        self.write_arg(&format!("{stderr_marker}${{status}}"))?;
-        self.write_arg(&planned_file.source_path.to_string_lossy())?;
         self.write_arg(&format!("-execute{execute_id}"))?;
         self.stdin
             .flush()
@@ -2376,6 +2431,53 @@ impl ExifToolSession {
         }
         if result.status != 0 {
             return Err(format!("ExifTool 返回了非零状态码 {}", result.status));
+        }
+
+        Ok(())
+    }
+
+    fn clean_file_with_spawned_process(
+        &self,
+        planned_file: &PlannedCleanupFile,
+        options: &CleanupOptions,
+        removal_args: Vec<String>,
+        write_args: Vec<String>,
+    ) -> Result<(), String> {
+        let command_args =
+            build_clean_command_args(planned_file, options, removal_args, write_args, None, true)?;
+        let argfile_path = write_utf8_argfile("clean", command_args)?;
+        let mut command = Command::new(&self.exiftool_path);
+        command
+            .arg("-charset")
+            .arg("filename=UTF8")
+            .arg("-@")
+            .arg(&argfile_path);
+        configure_hidden_process(&mut command);
+
+        if let Some(parent) = self.exiftool_path.parent() {
+            command.current_dir(parent);
+        }
+
+        let output = command_output_with_timeout(
+            &mut command,
+            Duration::from_secs(EXIFTOOL_CLEAN_TIMEOUT_SECS),
+            "ExifTool 清理",
+        );
+        let _ = fs::remove_file(&argfile_path);
+        let output = output?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(if stderr.is_empty() {
+                format!("ExifTool 返回了非零状态码 {}", output.status)
+            } else {
+                stderr
+            });
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            return Err(stderr);
         }
 
         Ok(())
@@ -3703,6 +3805,80 @@ mod tests {
         assert!(
             working_copy.exists(),
             "cleaned unicode file should still exist"
+        );
+    }
+
+    #[test]
+    fn persistent_session_supports_nested_unicode_file_paths() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir()
+            .join("metasweep-tests")
+            .join("纯免费")
+            .join("AAAA")
+            .join("会员")
+            .join("纸悦Etsu_ko - 杏山和纱");
+        fs::create_dir_all(&temp_dir).expect("create nested unicode temp dir");
+
+        let working_copy = temp_dir.join("DSC05244-已增强-降噪 拷贝.png");
+        fs::copy(&source, &working_copy).expect("copy nested unicode sample");
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+
+        assert!(
+            result.is_ok(),
+            "expected nested unicode path clean to succeed, got {result:?}"
+        );
+        assert!(
+            working_copy.exists(),
+            "cleaned nested unicode file should still exist"
+        );
+    }
+
+    #[test]
+    fn persistent_session_reports_missing_source_before_exiftool() {
+        let planned = PlannedCleanupFile {
+            source_path: std::env::temp_dir()
+                .join("metasweep-tests")
+                .join("missing-source.png"),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+
+        assert!(
+            result
+                .expect_err("missing source should fail before ExifTool")
+                .contains("源文件不存在或已移动"),
+            "expected missing source error"
         );
     }
 

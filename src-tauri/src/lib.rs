@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self as std_mpsc, Receiver},
         Arc, Mutex,
     },
@@ -20,7 +20,7 @@ use tokio::sync::mpsc;
 use walkdir::WalkDir;
 
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+use std::os::windows::{ffi::OsStrExt, process::CommandExt};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "3fr", "ai", "arq", "arw", "avif", "avi", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "eps",
@@ -137,6 +137,18 @@ const STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS: &[&str] = &[
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+#[cfg(target_os = "windows")]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(target_os = "windows")]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+static CLEAN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
+}
 
 #[derive(Default)]
 struct CleanupState {
@@ -1958,6 +1970,7 @@ fn build_clean_command_args(
     write_args: Vec<String>,
     stderr_marker: Option<&str>,
     end_options_before_source: bool,
+    overwrite_output_path: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     let mut args = vec![
         "-charset".to_string(),
@@ -1973,7 +1986,12 @@ fn build_clean_command_args(
 
     match options.output_mode {
         OutputMode::Overwrite => {
-            args.push("-overwrite_original".to_string());
+            if let Some(output_path) = overwrite_output_path {
+                args.push("-o".to_string());
+                args.push(output_path.to_string_lossy().to_string());
+            } else {
+                args.push("-overwrite_original".to_string());
+            }
         }
         OutputMode::Mirror => {
             let output_path = planned_file
@@ -2009,6 +2027,95 @@ fn clean_command_needs_spawned_process(
             .is_some_and(|path| !path.to_string_lossy().is_ascii())
         || removal_args.iter().any(|arg| !arg.is_ascii())
         || write_args.iter().any(|arg| !arg.is_ascii())
+}
+
+fn unique_clean_temp_path(source_path: &Path) -> Result<PathBuf, String> {
+    let parent = source_path
+        .parent()
+        .ok_or_else(|| format!("无法为 {} 创建临时清理路径。", source_path.display()))?;
+    let extension = source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+
+    for _ in 0..128 {
+        let counter = CLEAN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".tagsweep-{}-{timestamp}-{counter}.tmp{extension}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "无法为 {} 生成唯一临时清理文件。",
+        source_path.display()
+    ))
+}
+
+fn replace_source_with_cleaned_temp(source_path: &Path, temp_path: &Path) -> Result<(), String> {
+    let temp_metadata = fs::metadata(temp_path).map_err(|error| {
+        format!(
+            "ExifTool 未生成清理后的临时文件，原文件未改变: {} ({error})",
+            temp_path.display()
+        )
+    })?;
+    if !temp_metadata.is_file() {
+        let _ = fs::remove_file(temp_path);
+        return Err(format!(
+            "清理后的临时路径不是文件，原文件未改变: {}",
+            temp_path.display()
+        ));
+    }
+    if temp_metadata.len() == 0 {
+        let _ = fs::remove_file(temp_path);
+        return Err(format!(
+            "清理后的临时文件为空，原文件未改变: {}",
+            temp_path.display()
+        ));
+    }
+
+    replace_existing_file(temp_path, source_path).map_err(|error| {
+        format!(
+            "无法用清理后的临时文件替换原文件，原文件未改变。临时文件保留在 {}: {error}",
+            temp_path.display()
+        )
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn replace_existing_file(from: &Path, to: &Path) -> Result<(), String> {
+    let from_wide = path_to_wide(from);
+    let to_wide = path_to_wide(to);
+    let result = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn path_to_wide(path: &Path) -> Vec<u16> {
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_existing_file(from: &Path, to: &Path) -> Result<(), String> {
+    fs::rename(from, to).map_err(|error| error.to_string())
 }
 
 fn cleanup_removal_args(options: &CleanupOptions) -> Vec<String> {
@@ -2349,6 +2456,20 @@ impl ExifToolSession {
                 planned_file.source_path.display()
             ));
         }
+        let source_metadata = fs::metadata(&planned_file.source_path).map_err(|error| {
+            format!(
+                "无法读取源文件属性: {} ({error})",
+                planned_file.source_path.display()
+            )
+        })?;
+        if matches!(options.output_mode, OutputMode::Overwrite)
+            && source_metadata.permissions().readonly()
+        {
+            return Err(format!(
+                "源文件是只读文件，无法原地替换: {}",
+                planned_file.source_path.display()
+            ));
+        }
 
         let removal_args =
             cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
@@ -2365,15 +2486,52 @@ impl ExifToolSession {
             return Ok(());
         }
 
-        if clean_command_needs_spawned_process(planned_file, &removal_args, &write_args) {
-            return self.clean_file_with_spawned_process(
-                planned_file,
-                options,
-                removal_args,
-                write_args,
-            );
+        let overwrite_temp_path = match options.output_mode {
+            OutputMode::Overwrite => Some(unique_clean_temp_path(&planned_file.source_path)?),
+            OutputMode::Mirror => None,
+        };
+
+        let clean_result =
+            if clean_command_needs_spawned_process(planned_file, &removal_args, &write_args) {
+                self.clean_file_with_spawned_process(
+                    planned_file,
+                    options,
+                    removal_args,
+                    write_args,
+                    overwrite_temp_path.as_deref(),
+                )
+            } else {
+                self.clean_file_with_stay_open(
+                    planned_file,
+                    options,
+                    removal_args,
+                    write_args,
+                    overwrite_temp_path.as_deref(),
+                )
+            };
+
+        if let Err(error) = clean_result {
+            if let Some(temp_path) = overwrite_temp_path.as_ref() {
+                let _ = fs::remove_file(temp_path);
+            }
+            return Err(error);
         }
 
+        if let Some(temp_path) = overwrite_temp_path.as_ref() {
+            replace_source_with_cleaned_temp(&planned_file.source_path, temp_path)?;
+        }
+
+        Ok(())
+    }
+
+    fn clean_file_with_stay_open(
+        &mut self,
+        planned_file: &PlannedCleanupFile,
+        options: &CleanupOptions,
+        removal_args: Vec<String>,
+        write_args: Vec<String>,
+        overwrite_output_path: Option<&Path>,
+    ) -> Result<(), String> {
         let execute_id = self.next_execute_id;
         self.next_execute_id += 1;
 
@@ -2385,6 +2543,7 @@ impl ExifToolSession {
             write_args,
             Some(&stderr_marker),
             false,
+            overwrite_output_path,
         )?;
         for arg in command_args {
             self.write_arg(&arg)?;
@@ -2442,9 +2601,17 @@ impl ExifToolSession {
         options: &CleanupOptions,
         removal_args: Vec<String>,
         write_args: Vec<String>,
+        overwrite_output_path: Option<&Path>,
     ) -> Result<(), String> {
-        let command_args =
-            build_clean_command_args(planned_file, options, removal_args, write_args, None, true)?;
+        let command_args = build_clean_command_args(
+            planned_file,
+            options,
+            removal_args,
+            write_args,
+            None,
+            true,
+            overwrite_output_path,
+        )?;
         let argfile_path = write_utf8_argfile("clean", command_args)?;
         let mut command = Command::new(&self.exiftool_path);
         command
@@ -3850,6 +4017,65 @@ mod tests {
             working_copy.exists(),
             "cleaned nested unicode file should still exist"
         );
+    }
+
+    #[test]
+    fn persistent_session_ignores_stale_exiftool_temp_files() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir()
+            .join("metasweep-tests")
+            .join("stale-exiftool-temp");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let working_copy = temp_dir.join("stale-temp-sample.png");
+        fs::copy(&source, &working_copy).expect("copy sample png");
+        let stale_exiftool_tmp = working_copy.with_file_name("stale-temp-sample.png_exiftool_tmp");
+        fs::write(&stale_exiftool_tmp, b"leftover").expect("write stale exiftool temp");
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+
+        assert!(
+            result.is_ok(),
+            "expected stale ExifTool temp file not to block cleanup, got {result:?}"
+        );
+        assert!(working_copy.exists(), "cleaned file should still exist");
+        assert!(
+            stale_exiftool_tmp.exists(),
+            "TagSweep should not delete unrelated ExifTool temp leftovers"
+        );
+        let leftovers = fs::read_dir(&temp_dir)
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tagsweep-")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            leftovers.is_empty(),
+            "TagSweep cleanup temp files should be moved away after success"
+        );
+        let _ = fs::remove_file(stale_exiftool_tmp);
     }
 
     #[test]

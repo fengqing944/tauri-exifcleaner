@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
-import type { MetadataWritePreferences, VideoCleanupMode } from "../app-shared";
+import type {
+  MetadataWritePreferences,
+  TargetedImageCleanupPreferences,
+  VideoCleanupMode,
+} from "../app-shared";
 
 export type DesktopPreferences = {
   preferredParallelism: number | null;
@@ -8,6 +12,7 @@ export type DesktopPreferences = {
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
   videoCleanupMode: VideoCleanupMode;
+  targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
 };
 
@@ -19,6 +24,15 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
   videoCleanupMode: "safe",
+  targetedImageCleanup: {
+    enabled: false,
+    title: true,
+    subject: true,
+    author: true,
+    rights: true,
+    imageId: true,
+    search: "",
+  },
   metadataWrite: {
     enabled: false,
     title: "",
@@ -42,6 +56,38 @@ function sanitizeTextPreference(value: unknown): string {
 
 function sanitizeVideoCleanupMode(value: unknown): VideoCleanupMode {
   return value === "strict" ? "strict" : "safe";
+}
+
+function sanitizeTargetedImageCleanup(value: unknown): TargetedImageCleanupPreferences {
+  const record =
+    value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    enabled:
+      typeof record.enabled === "boolean"
+        ? record.enabled
+        : DEFAULT_PREFERENCES.targetedImageCleanup.enabled,
+    title:
+      typeof record.title === "boolean"
+        ? record.title
+        : DEFAULT_PREFERENCES.targetedImageCleanup.title,
+    subject:
+      typeof record.subject === "boolean"
+        ? record.subject
+        : DEFAULT_PREFERENCES.targetedImageCleanup.subject,
+    author:
+      typeof record.author === "boolean"
+        ? record.author
+        : DEFAULT_PREFERENCES.targetedImageCleanup.author,
+    rights:
+      typeof record.rights === "boolean"
+        ? record.rights
+        : DEFAULT_PREFERENCES.targetedImageCleanup.rights,
+    imageId:
+      typeof record.imageId === "boolean"
+        ? record.imageId
+        : DEFAULT_PREFERENCES.targetedImageCleanup.imageId,
+    search: sanitizeTextPreference(record.search),
+  };
 }
 
 function sanitizePreferences(input: unknown): DesktopPreferences {
@@ -72,6 +118,7 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
         ? record.lastDetailsOpen
         : DEFAULT_PREFERENCES.lastDetailsOpen,
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
+    targetedImageCleanup: sanitizeTargetedImageCleanup(record.targetedImageCleanup),
     metadataWrite: {
       enabled:
         typeof (record.metadataWrite as Record<string, unknown> | undefined)?.enabled === "boolean"

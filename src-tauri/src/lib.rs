@@ -24,9 +24,51 @@ use std::os::windows::process::CommandExt;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "3fr", "ai", "arq", "arw", "avif", "avi", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "eps",
-    "erf", "gif", "gpr", "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "m4a", "m4v",
-    "mef", "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "png", "ps", "psd",
-    "raf", "raw", "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
+    "erf", "gif", "gpr", "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "m4a", "m4v", "mef",
+    "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "png", "ps", "psd", "raf",
+    "raw", "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
+];
+const IMAGE_EXTENSIONS: &[&str] = &[
+    "3fr", "arq", "arw", "avif", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "erf", "gif", "gpr",
+    "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "mef", "mrw", "nef", "nrw", "orf", "png",
+    "raf", "raw", "rw2", "sr2", "srw", "tif", "tiff", "webp", "x3f",
+];
+const TARGET_IMAGE_TITLE_ARGS: &[&str] = &[
+    "-XMP-dc:Title=",
+    "-IPTC:ObjectName=",
+    "-EXIF:ImageDescription=",
+    "-EXIF:XPTitle=",
+    "-PNG:Title=",
+];
+const TARGET_IMAGE_SUBJECT_ARGS: &[&str] = &[
+    "-XMP-dc:Subject=",
+    "-IPTC:Keywords=",
+    "-EXIF:XPKeywords=",
+    "-EXIF:XPSubject=",
+    "-PNG:Subject=",
+];
+const TARGET_IMAGE_AUTHOR_ARGS: &[&str] = &[
+    "-XMP-dc:Creator=",
+    "-EXIF:Artist=",
+    "-EXIF:XPAuthor=",
+    "-IPTC:By-line=",
+    "-PNG:Author=",
+];
+const TARGET_IMAGE_RIGHTS_ARGS: &[&str] = &[
+    "-XMP-dc:Rights=",
+    "-XMP-xmpRights:WebStatement=",
+    "-EXIF:Copyright=",
+    "-IPTC:CopyrightNotice=",
+    "-PNG:Copyright=",
+];
+const TARGET_IMAGE_ID_ARGS: &[&str] = &[
+    "-EXIF:ImageUniqueID=",
+    "-XMP-exif:ImageUniqueID=",
+    "-XMP-iptcExt:DigitalImageGUID=",
+    "-XMP-xmpMM:DocumentID=",
+    "-XMP-xmpMM:InstanceID=",
+    "-XMP-xmpMM:OriginalDocumentID=",
+    "-XMP-photoshop:DocumentAncestors=",
 ];
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
@@ -193,7 +235,20 @@ struct CleanupOptions {
     parallelism: usize,
     preserve_structure: bool,
     video_cleanup_mode: Option<VideoCleanupMode>,
+    targeted_image_cleanup: Option<TargetedImageCleanupOptions>,
     metadata_write: Option<MetadataWriteOptions>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TargetedImageCleanupOptions {
+    enabled: bool,
+    title: bool,
+    subject: bool,
+    author: bool,
+    rights: bool,
+    image_id: bool,
+    search: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,9 +454,7 @@ async fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
 }
 
 fn build_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
-    let default_output_dir = default_output_dir(&app)?
-        .to_string_lossy()
-        .to_string();
+    let default_output_dir = default_output_dir(&app)?.to_string_lossy().to_string();
     let exiftool_path = resolve_exiftool(&app).ok();
     let exiftool_version = exiftool_path
         .as_ref()
@@ -444,8 +497,9 @@ async fn scan_inputs(
     }
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<ScanWorkerEvent>();
-    let scan_handle =
-        tauri::async_runtime::spawn_blocking(move || perform_scan_inputs(input_paths, cancel_flag, sender));
+    let scan_handle = tauri::async_runtime::spawn_blocking(move || {
+        perform_scan_inputs(input_paths, cancel_flag, sender)
+    });
 
     let scan_result = async {
         while let Some(event) = receiver.recv().await {
@@ -1133,9 +1187,12 @@ fn read_metadata_snapshot_map(
         return Ok(HashMap::new());
     }
 
-    let argfile_path = write_utf8_argfile("metadata-preview", input_paths.iter().map(|path| {
-        path.to_string_lossy().to_string()
-    }))?;
+    let argfile_path = write_utf8_argfile(
+        "metadata-preview",
+        input_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string()),
+    )?;
     let mut command = Command::new(exiftool_path);
     command
         .arg("-charset")
@@ -1202,6 +1259,56 @@ fn read_metadata_snapshot_map(
     }
 
     Ok(snapshots)
+}
+
+fn read_raw_metadata_record(
+    exiftool_path: &Path,
+    input_path: &Path,
+) -> Result<HashMap<String, Value>, String> {
+    let argfile_path = write_utf8_argfile(
+        "metadata-search",
+        std::iter::once(input_path.to_string_lossy().to_string()),
+    )?;
+    let mut command = Command::new(exiftool_path);
+    command
+        .arg("-charset")
+        .arg("filename=UTF8")
+        .arg("-j")
+        .arg("-G1")
+        .arg("-s")
+        .arg("-a")
+        .arg("-u")
+        .arg("-m")
+        .arg("-ignoreMinorErrors")
+        .arg("-@")
+        .arg(&argfile_path);
+    configure_hidden_process(&mut command);
+
+    if let Some(parent) = exiftool_path.parent() {
+        command.current_dir(parent);
+    }
+
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
+        "ExifTool 指定清理搜索",
+    );
+    let _ = fs::remove_file(&argfile_path);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "ExifTool 指定清理搜索失败。".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let mut records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
+        .map_err(|error| format!("无法解析指定清理搜索结果: {error}"))?;
+
+    Ok(records.pop().unwrap_or_default())
 }
 
 fn map_metadata_field(key: &str, value: &Value) -> Option<MetadataFieldPreview> {
@@ -1339,7 +1446,7 @@ where
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
     let path = std::env::temp_dir().join(format!(
-            "tagsweep-{prefix}-{}-{timestamp}.args",
+        "tagsweep-{prefix}-{}-{timestamp}.args",
         std::process::id()
     ));
     let mut content = String::new();
@@ -1601,11 +1708,19 @@ async fn run_cleanup(
         }
 
         let cancelled = cancel_flag.load(Ordering::Relaxed);
-        let preview_snapshots =
-            build_cleanup_preview_snapshot_map(&exiftool_path, &tracked_preview_files, &tracked_preview_states);
+        let preview_snapshots = build_cleanup_preview_snapshot_map(
+            &exiftool_path,
+            &tracked_preview_files,
+            &tracked_preview_states,
+        );
         let failure_map = failures
             .iter()
-            .map(|failure| (dedupe_key(Path::new(&failure.source_path)), failure.error.clone()))
+            .map(|failure| {
+                (
+                    dedupe_key(Path::new(&failure.source_path)),
+                    failure.error.clone(),
+                )
+            })
             .collect::<HashMap<_, _>>();
 
         Ok(CleanupSummary {
@@ -1740,8 +1855,12 @@ fn produce_planned_cleanup_files(
             Some(file) => file,
             None => break,
         };
-        let mut planned_file =
-            build_planned_cleanup_file(&queued_file, &options, output_root.as_deref(), &mut reserved_paths)?;
+        let mut planned_file = build_planned_cleanup_file(
+            &queued_file,
+            &options,
+            output_root.as_deref(),
+            &mut reserved_paths,
+        )?;
 
         loop {
             match sender.try_send(planned_file) {
@@ -1832,12 +1951,167 @@ fn execute_cleanup_file(
     })
 }
 
-fn cleanup_removal_args(options: &CleanupOptions) -> Vec<&'static str> {
-    let mut args = SAFE_CLEAN_REMOVAL_ARGS.to_vec();
+fn cleanup_removal_args(options: &CleanupOptions) -> Vec<String> {
+    let mut args = SAFE_CLEAN_REMOVAL_ARGS
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
     if matches!(options.video_cleanup_mode, Some(VideoCleanupMode::Strict)) {
-        args.extend_from_slice(STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS);
+        args.extend(
+            STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string()),
+        );
     }
     args
+}
+
+fn cleanup_removal_args_for_file(
+    options: &CleanupOptions,
+    source_path: &Path,
+    exiftool_path: &Path,
+) -> Result<Vec<String>, String> {
+    let Some(targeted) = options.targeted_image_cleanup.as_ref() else {
+        return Ok(cleanup_removal_args(options));
+    };
+    if !targeted.enabled || !is_image_path(source_path) {
+        return Ok(cleanup_removal_args(options));
+    }
+
+    targeted_image_cleanup_args(targeted, source_path, exiftool_path)
+}
+
+fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            IMAGE_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
+}
+
+fn targeted_image_cleanup_args(
+    targeted: &TargetedImageCleanupOptions,
+    source_path: &Path,
+    exiftool_path: &Path,
+) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    if targeted.title {
+        args.extend(TARGET_IMAGE_TITLE_ARGS.iter().map(|arg| (*arg).to_string()));
+    }
+    if targeted.subject {
+        args.extend(
+            TARGET_IMAGE_SUBJECT_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string()),
+        );
+    }
+    if targeted.author {
+        args.extend(
+            TARGET_IMAGE_AUTHOR_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string()),
+        );
+    }
+    if targeted.rights {
+        args.extend(
+            TARGET_IMAGE_RIGHTS_ARGS
+                .iter()
+                .map(|arg| (*arg).to_string()),
+        );
+    }
+    if targeted.image_id {
+        args.extend(TARGET_IMAGE_ID_ARGS.iter().map(|arg| (*arg).to_string()));
+    }
+
+    let search_terms = sanitize_targeted_search_terms(targeted.search.as_deref());
+    if !search_terms.is_empty() {
+        let record = read_raw_metadata_record(exiftool_path, source_path)?;
+        args.extend(metadata_search_delete_args(&record, &search_terms));
+    }
+
+    Ok(dedupe_args(args))
+}
+
+fn sanitize_targeted_search_terms(value: Option<&str>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let normalized = value.replace(['\r', '\n', ';', '；', '，', '、'], ",");
+    let mut seen = HashSet::new();
+    normalized
+        .split(',')
+        .filter_map(|term| {
+            let term = term.split_whitespace().collect::<Vec<_>>().join(" ");
+            let term = term.trim();
+            if term.is_empty() {
+                return None;
+            }
+            let term = term
+                .chars()
+                .take(METADATA_KEYWORD_MAX_CHARS)
+                .collect::<String>();
+            if seen.insert(term.to_lowercase()) {
+                Some(term)
+            } else {
+                None
+            }
+        })
+        .take(METADATA_KEYWORD_MAX_COUNT)
+        .collect()
+}
+
+fn metadata_search_delete_args(
+    record: &HashMap<String, Value>,
+    search_terms: &[String],
+) -> Vec<String> {
+    let args = record
+        .iter()
+        .filter_map(|(key, value)| {
+            if key == "SourceFile" {
+                return None;
+            }
+            let (group, name) = split_metadata_key(key);
+            if should_skip_metadata_group(group)
+                || !metadata_value_matches_search_terms(value, search_terms)
+            {
+                return None;
+            }
+            Some(format!("-{group}:{name}="))
+        })
+        .collect::<Vec<_>>();
+
+    dedupe_args(args)
+}
+
+fn metadata_value_matches_search_terms(value: &Value, search_terms: &[String]) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(_) | Value::Number(_) => false,
+        Value::String(text) => text_matches_search_terms(text, search_terms),
+        Value::Array(items) => items
+            .iter()
+            .any(|item| metadata_value_matches_search_terms(item, search_terms)),
+        Value::Object(map) => map
+            .values()
+            .any(|item| metadata_value_matches_search_terms(item, search_terms)),
+    }
+}
+
+fn text_matches_search_terms(text: &str, search_terms: &[String]) -> bool {
+    let lower_text = text.to_lowercase();
+    search_terms
+        .iter()
+        .any(|term| lower_text.contains(&term.to_lowercase()))
+}
+
+fn dedupe_args(args: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    args.into_iter()
+        .filter(|arg| seen.insert(arg.to_ascii_lowercase()))
+        .collect()
 }
 
 fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
@@ -1855,8 +2129,7 @@ fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
     if let Some(author) = sanitize_metadata_write_value(metadata_write.author.as_deref()) {
         args.push(format!("-XMP-dc:Creator={author}"));
     }
-    if let Some(description) =
-        sanitize_metadata_write_value(metadata_write.description.as_deref())
+    if let Some(description) = sanitize_metadata_write_value(metadata_write.description.as_deref())
     {
         args.push(format!("-XMP-dc:Description={description}"));
     }
@@ -2010,6 +2283,21 @@ impl ExifToolSession {
         planned_file: &PlannedCleanupFile,
         options: &CleanupOptions,
     ) -> Result<(), String> {
+        let removal_args =
+            cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
+        let write_args = metadata_write_args(options);
+
+        if removal_args.is_empty() && write_args.is_empty() {
+            if let (OutputMode::Mirror, Some(output_path)) =
+                (&options.output_mode, planned_file.output_path.as_ref())
+            {
+                fs::copy(&planned_file.source_path, output_path).map_err(|error| {
+                    format!("无法复制未修改文件到 {}: {error}", output_path.display())
+                })?;
+            }
+            return Ok(());
+        }
+
         let execute_id = self.next_execute_id;
         self.next_execute_id += 1;
 
@@ -2022,10 +2310,10 @@ impl ExifToolSession {
         self.write_arg("-m")?;
         self.write_arg("-ignoreMinorErrors")?;
         self.write_arg("-P")?;
-        for arg in cleanup_removal_args(options) {
-            self.write_arg(arg)?;
+        for arg in removal_args {
+            self.write_arg(&arg)?;
         }
-        for arg in metadata_write_args(options) {
+        for arg in write_args {
             self.write_arg(&arg)?;
         }
 
@@ -2144,8 +2432,7 @@ impl ExifToolSession {
     }
 
     fn write_arg(&mut self, value: &str) -> Result<(), String> {
-        writeln!(self.stdin, "{value}")
-            .map_err(|error| format!("写入 ExifTool 参数失败: {error}"))
+        writeln!(self.stdin, "{value}").map_err(|error| format!("写入 ExifTool 参数失败: {error}"))
     }
 
     fn consume_stdout_until_ready(&mut self, execute_id: u64) -> Result<(), String> {
@@ -2209,12 +2496,7 @@ fn command_output_with_timeout(
     let process_id = child.id();
     let finished = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
-    let watchdog = spawn_process_watchdog(
-        process_id,
-        timeout,
-        finished.clone(),
-        timed_out.clone(),
-    );
+    let watchdog = spawn_process_watchdog(process_id, timeout, finished.clone(), timed_out.clone());
     let output = child
         .wait_with_output()
         .map_err(|error| format!("{description} 执行失败: {error}"));
@@ -2354,7 +2636,11 @@ fn resolve_exiftool(app: &AppHandle) -> Result<PathBuf, String> {
             .join("exiftool")
             .join(executable_name),
     );
-    candidates.push(PathBuf::from("resources").join("exiftool").join(executable_name));
+    candidates.push(
+        PathBuf::from("resources")
+            .join("exiftool")
+            .join(executable_name),
+    );
     candidates.push(PathBuf::from(executable_name));
 
     for candidate in candidates {
@@ -2368,7 +2654,10 @@ fn resolve_exiftool(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn read_exiftool_version(exiftool_path: &Path) -> Result<String, String> {
     let mut command = Command::new(exiftool_path);
-    command.arg("-ver").stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .arg("-ver")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     configure_hidden_process(&mut command);
     if let Some(parent) = exiftool_path.parent() {
         command.current_dir(parent);
@@ -2717,7 +3006,12 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn queued_file(source_path: &str, relative_path: &str, root_label: &str, root_source_path: &str) -> QueuedFile {
+    fn queued_file(
+        source_path: &str,
+        relative_path: &str,
+        root_label: &str,
+        root_source_path: &str,
+    ) -> QueuedFile {
         QueuedFile {
             source_path: source_path.to_string(),
             relative_path: relative_path.to_string(),
@@ -2771,7 +3065,10 @@ mod tests {
                     queued_file("C:/input/10.jpg", "10.jpg", "input", "C:/input"),
                 ],
                 ignored_count: 1,
-                ignored_samples: vec!["C:/ignored/a.txt".to_string(), "C:/ignored/b.txt".to_string()],
+                ignored_samples: vec![
+                    "C:/ignored/a.txt".to_string(),
+                    "C:/ignored/b.txt".to_string(),
+                ],
             },
         )
         .expect("merge second scan batch");
@@ -2786,7 +3083,10 @@ mod tests {
         );
         assert_eq!(view.root_count, 1);
         assert_eq!(view.ignored_count, 2);
-        assert_eq!(view.ignored_samples, vec!["C:/ignored/a.txt", "C:/ignored/b.txt"]);
+        assert_eq!(
+            view.ignored_samples,
+            vec!["C:/ignored/a.txt", "C:/ignored/b.txt"]
+        );
         assert_eq!(page.len(), 3);
         assert_eq!(page[0].relative_path, "8.jpg");
         assert_eq!(page[2].relative_path, "10.jpg");
@@ -2815,7 +3115,10 @@ mod tests {
         while let Ok(event) = receiver.try_recv() {
             batches.push(event);
         }
-        assert!(!outcome.cancelled, "scan should finish without cancellation");
+        assert!(
+            !outcome.cancelled,
+            "scan should finish without cancellation"
+        );
         assert!(
             batches.len() >= 2,
             "expected more than one batch when file count exceeds SCAN_BATCH_SIZE"
@@ -2853,7 +3156,10 @@ mod tests {
             })
             .sum::<usize>();
 
-        assert!(!outcome.cancelled, "scan should finish without cancellation");
+        assert!(
+            !outcome.cancelled,
+            "scan should finish without cancellation"
+        );
         assert!(
             batches.len() >= 2,
             "expected ignored-only scans to emit intermediate batches"
@@ -2882,7 +3188,10 @@ mod tests {
         .expect("scan cancellation");
 
         assert!(outcome.cancelled, "scan should report cancellation");
-        assert!(receiver.try_recv().is_err(), "cancelled scan should not emit queued files");
+        assert!(
+            receiver.try_recv().is_err(),
+            "cancelled scan should not emit queued files"
+        );
     }
 
     #[test]
@@ -2909,7 +3218,11 @@ mod tests {
             !request.auto_start_cleanup,
             "shell import should wait for an explicit cleanup confirmation"
         );
-        assert_eq!(request.paths.len(), 2, "only unique existing paths should remain");
+        assert_eq!(
+            request.paths.len(),
+            2,
+            "only unique existing paths should remain"
+        );
     }
 
     #[test]
@@ -2959,7 +3272,11 @@ mod tests {
             },
         );
 
-        assert_eq!(merged.paths.len(), 2, "duplicate shell paths should collapse");
+        assert_eq!(
+            merged.paths.len(),
+            2,
+            "duplicate shell paths should collapse"
+        );
         assert!(merged.auto_start_cleanup, "cleanup intent should be sticky");
         assert_eq!(
             slot.as_ref().map(|request| request.paths.len()),
@@ -3062,6 +3379,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
         assert!(metadata_write_args(&disabled_options).is_empty());
@@ -3072,6 +3390,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
                 title: None,
@@ -3092,6 +3411,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
                 title: Some("  moeuu\n-title=bad  ".to_string()),
@@ -3131,10 +3451,11 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
 
-        assert_eq!(cleanup_removal_args(&options), vec!["-all="]);
+        assert_eq!(cleanup_removal_args(&options), vec!["-all=".to_string()]);
     }
 
     #[test]
@@ -3145,23 +3466,110 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
         let args = cleanup_removal_args(&options);
 
-        assert!(args.contains(&"-all="));
-        assert!(args.contains(&"-QuickTime:CreateDate="));
-        assert!(args.contains(&"-QuickTime:TrackCreateDate="));
-        assert!(args.contains(&"-QuickTime:MediaCreateDate="));
+        assert!(args.contains(&"-all=".to_string()));
+        assert!(args.contains(&"-QuickTime:CreateDate=".to_string()));
+        assert!(args.contains(&"-QuickTime:TrackCreateDate=".to_string()));
+        assert!(args.contains(&"-QuickTime:MediaCreateDate=".to_string()));
+    }
+
+    #[test]
+    fn targeted_image_cleanup_removes_only_selected_image_tags() {
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: Some(TargetedImageCleanupOptions {
+                enabled: true,
+                title: true,
+                subject: false,
+                author: true,
+                rights: true,
+                image_id: true,
+                search: None,
+            }),
+            metadata_write: None,
+        };
+
+        let args =
+            cleanup_removal_args_for_file(&options, Path::new("sample.jpg"), Path::new("unused"))
+                .expect("build targeted args");
+
+        assert!(!args.contains(&"-all=".to_string()));
+        assert!(args.contains(&"-XMP-dc:Title=".to_string()));
+        assert!(!args.contains(&"-XMP-dc:Subject=".to_string()));
+        assert!(args.contains(&"-XMP-dc:Creator=".to_string()));
+        assert!(args.contains(&"-EXIF:Copyright=".to_string()));
+        assert!(args.contains(&"-EXIF:ImageUniqueID=".to_string()));
+    }
+
+    #[test]
+    fn targeted_image_cleanup_keeps_full_cleanup_for_videos() {
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            video_cleanup_mode: Some(VideoCleanupMode::Strict),
+            targeted_image_cleanup: Some(TargetedImageCleanupOptions {
+                enabled: true,
+                title: true,
+                subject: true,
+                author: true,
+                rights: true,
+                image_id: true,
+                search: None,
+            }),
+            metadata_write: None,
+        };
+
+        let args =
+            cleanup_removal_args_for_file(&options, Path::new("sample.mp4"), Path::new("unused"))
+                .expect("build video args");
+
+        assert!(args.contains(&"-all=".to_string()));
+        assert!(args.contains(&"-QuickTime:CreateDate=".to_string()));
+        assert!(!args.contains(&"-XMP-dc:Title=".to_string()));
+    }
+
+    #[test]
+    fn targeted_image_cleanup_search_deletes_matching_metadata_values() {
+        let record = HashMap::from([
+            ("XMP-dc:Title".to_string(), serde_json::json!("abc 23333")),
+            ("XMP-dc:Creator".to_string(), serde_json::json!("moeuu")),
+            (
+                "IPTC:Keywords".to_string(),
+                serde_json::json!(["clean", "23333"]),
+            ),
+            (
+                "System:FileName".to_string(),
+                serde_json::json!("23333.jpg"),
+            ),
+            (
+                "SourceFile".to_string(),
+                serde_json::json!("C:/demo/23333.jpg"),
+            ),
+        ]);
+        let search_terms = vec!["23333".to_string()];
+
+        let args = metadata_search_delete_args(&record, &search_terms);
+
+        assert!(args.contains(&"-XMP-dc:Title=".to_string()));
+        assert!(args.contains(&"-IPTC:Keywords=".to_string()));
+        assert!(!args.contains(&"-XMP-dc:Creator=".to_string()));
+        assert!(!args.contains(&"-System:FileName=".to_string()));
     }
 
     #[test]
     fn metadata_preview_includes_important_quicktime_video_fields() {
-        let duration = map_metadata_field(
-            "QuickTime:Duration",
-            &serde_json::json!("1.00 s"),
-        )
-        .expect("QuickTime duration should be shown");
+        let duration = map_metadata_field("QuickTime:Duration", &serde_json::json!("1.00 s"))
+            .expect("QuickTime duration should be shown");
         assert_eq!(duration.group, "QuickTime");
         assert_eq!(duration.name, "Duration");
 
@@ -3173,43 +3581,28 @@ mod tests {
         assert_eq!(major_brand.group, "QuickTime");
         assert_eq!(major_brand.name, "MajorBrand");
 
-        let image_width = map_metadata_field(
-            "Track1:ImageWidth",
-            &serde_json::json!(1920),
-        )
-        .expect("Track image width should be shown");
+        let image_width = map_metadata_field("Track1:ImageWidth", &serde_json::json!(1920))
+            .expect("Track image width should be shown");
         assert_eq!(image_width.group, "Track1");
         assert_eq!(image_width.name, "ImageWidth");
 
-        let frame_rate = map_metadata_field(
-            "Track1:VideoFrameRate",
-            &serde_json::json!(29.97),
-        )
-        .expect("Track frame rate should be shown");
+        let frame_rate = map_metadata_field("Track1:VideoFrameRate", &serde_json::json!(29.97))
+            .expect("Track frame rate should be shown");
         assert_eq!(frame_rate.group, "Track1");
         assert_eq!(frame_rate.name, "VideoFrameRate");
 
-        let audio_format = map_metadata_field(
-            "Track2:AudioFormat",
-            &serde_json::json!("mp4a"),
-        )
-        .expect("Track audio format should be shown");
+        let audio_format = map_metadata_field("Track2:AudioFormat", &serde_json::json!("mp4a"))
+            .expect("Track audio format should be shown");
         assert_eq!(audio_format.group, "Track2");
         assert_eq!(audio_format.name, "AudioFormat");
     }
 
     #[test]
     fn metadata_preview_skips_quicktime_internal_noise() {
-        assert!(map_metadata_field(
-            "QuickTime:MediaDataOffset",
-            &serde_json::json!(48),
-        )
-        .is_none());
-        assert!(map_metadata_field(
-            "QuickTime:MovieHeaderVersion",
-            &serde_json::json!(0),
-        )
-        .is_none());
+        assert!(map_metadata_field("QuickTime:MediaDataOffset", &serde_json::json!(48),).is_none());
+        assert!(
+            map_metadata_field("QuickTime:MovieHeaderVersion", &serde_json::json!(0),).is_none()
+        );
         assert!(map_metadata_field("Track1:TrackID", &serde_json::json!(1)).is_none());
         assert!(map_metadata_field(
             "Track1:MatrixStructure",
@@ -3230,11 +3623,8 @@ mod tests {
         assert_eq!(quicktime_date.group, "QuickTime");
         assert_eq!(quicktime_date.name, "CreateDate");
 
-        let item_list_title = map_metadata_field(
-            "ItemList:Title",
-            &serde_json::json!("moeuu"),
-        )
-        .expect("ItemList user metadata should be shown");
+        let item_list_title = map_metadata_field("ItemList:Title", &serde_json::json!("moeuu"))
+            .expect("ItemList user metadata should be shown");
         assert_eq!(item_list_title.group, "ItemList");
         assert_eq!(item_list_title.name, "Title");
     }
@@ -3260,6 +3650,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
 
@@ -3267,7 +3658,10 @@ mod tests {
         let result = execute_cleanup_file(&planned, &options, &mut session);
         let _ = session.close();
 
-        assert!(result.is_ok(), "expected png clean to succeed, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected png clean to succeed, got {result:?}"
+        );
         assert!(working_copy.exists(), "cleaned file should still exist");
     }
 
@@ -3276,7 +3670,9 @@ mod tests {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("icons")
             .join("32x32.png");
-        let temp_dir = std::env::temp_dir().join("metasweep-tests").join("中文 路径");
+        let temp_dir = std::env::temp_dir()
+            .join("metasweep-tests")
+            .join("中文 路径");
         fs::create_dir_all(&temp_dir).expect("create unicode temp dir");
 
         let working_copy = temp_dir.join("示例 图像.png");
@@ -3292,6 +3688,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
 
@@ -3303,7 +3700,10 @@ mod tests {
             result.is_ok(),
             "expected unicode path clean to succeed, got {result:?}"
         );
-        assert!(working_copy.exists(), "cleaned unicode file should still exist");
+        assert!(
+            working_copy.exists(),
+            "cleaned unicode file should still exist"
+        );
     }
 
     #[test]
@@ -3311,14 +3711,16 @@ mod tests {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("icons")
             .join("32x32.png");
-        let temp_dir = std::env::temp_dir().join("metasweep-tests").join("元数据 预览");
+        let temp_dir = std::env::temp_dir()
+            .join("metasweep-tests")
+            .join("元数据 预览");
         fs::create_dir_all(&temp_dir).expect("create unicode preview dir");
 
         let working_copy = temp_dir.join("预览 文件.png");
         fs::copy(&source, &working_copy).expect("copy preview png");
 
-        let snapshot_map =
-            read_metadata_snapshot_map(&bundled_exiftool(), &[working_copy.clone()]).expect("read metadata");
+        let snapshot_map = read_metadata_snapshot_map(&bundled_exiftool(), &[working_copy.clone()])
+            .expect("read metadata");
 
         assert!(
             snapshot_map.contains_key(&dedupe_key(&working_copy)),
@@ -3344,6 +3746,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             video_cleanup_mode: None,
+            targeted_image_cleanup: None,
             metadata_write: None,
         };
 

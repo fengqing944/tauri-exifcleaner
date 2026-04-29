@@ -102,6 +102,16 @@ export type MetadataWritePreferences = {
 
 export type VideoCleanupMode = "safe" | "strict";
 
+export type TargetedImageCleanupPreferences = {
+  enabled: boolean;
+  title: boolean;
+  subject: boolean;
+  author: boolean;
+  rights: boolean;
+  imageId: boolean;
+  search: string;
+};
+
 export type ProgressState = {
   total: number;
   completed: number;

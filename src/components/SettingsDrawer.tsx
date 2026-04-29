@@ -4,6 +4,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type {
   MetadataWritePreferences,
   RuntimeInfo,
+  TargetedImageCleanupPreferences,
   VideoCleanupMode,
 } from "../app-shared";
 import { StatusBadge } from "./AppPrimitives";
@@ -35,6 +36,7 @@ export function SettingsDrawer(props: {
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   videoCleanupMode: VideoCleanupMode;
+  targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
   onClose: () => void;
   onParallelismChange: (value: number) => void;
@@ -42,6 +44,7 @@ export function SettingsDrawer(props: {
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
   onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
+  onTargetedImageCleanupChange: (value: TargetedImageCleanupPreferences) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("execution");
@@ -52,6 +55,14 @@ export function SettingsDrawer(props: {
   const updateMetadataWrite = (patch: Partial<MetadataWritePreferences>) => {
     props.onMetadataWriteChange({
       ...props.metadataWrite,
+      ...patch,
+    });
+  };
+  const updateTargetedImageCleanup = (
+    patch: Partial<TargetedImageCleanupPreferences>,
+  ) => {
+    props.onTargetedImageCleanupChange({
+      ...props.targetedImageCleanup,
       ...patch,
     });
   };
@@ -172,6 +183,140 @@ export function SettingsDrawer(props: {
 
         {activeTab === "cleanup" ? (
           <div className="setting-stack">
+            <div className="setting-card">
+              <div className="setting-head">
+                <div>
+                  <strong>图片指定清理</strong>
+                  <span>
+                    开启后，图片只清理下面指定字段或匹配搜索词的字段；视频和其它格式继续照常完整清理。
+                  </span>
+                </div>
+              </div>
+
+              <label className="setting-check">
+                <input
+                  type="checkbox"
+                  checked={props.targetedImageCleanup.enabled}
+                  onChange={(event) =>
+                    updateTargetedImageCleanup({
+                      enabled: event.currentTarget.checked,
+                    })
+                  }
+                />
+                <div>
+                  <strong>对图片使用指定清理</strong>
+                  <span>适合只清掉标题、作者、版权或某个搜索值，不动图片其它元数据。</span>
+                </div>
+              </label>
+
+              <div className="setting-check-grid">
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={props.targetedImageCleanup.title}
+                    disabled={!props.targetedImageCleanup.enabled}
+                    onChange={(event) =>
+                      updateTargetedImageCleanup({
+                        title: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                  <div>
+                    <strong>标题</strong>
+                    <span>Title / ObjectName / XPTitle</span>
+                  </div>
+                </label>
+
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={props.targetedImageCleanup.subject}
+                    disabled={!props.targetedImageCleanup.enabled}
+                    onChange={(event) =>
+                      updateTargetedImageCleanup({
+                        subject: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                  <div>
+                    <strong>主题</strong>
+                    <span>Subject / Keywords</span>
+                  </div>
+                </label>
+
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={props.targetedImageCleanup.author}
+                    disabled={!props.targetedImageCleanup.enabled}
+                    onChange={(event) =>
+                      updateTargetedImageCleanup({
+                        author: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                  <div>
+                    <strong>作者</strong>
+                    <span>Creator / Artist / By-line</span>
+                  </div>
+                </label>
+
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={props.targetedImageCleanup.rights}
+                    disabled={!props.targetedImageCleanup.enabled}
+                    onChange={(event) =>
+                      updateTargetedImageCleanup({
+                        rights: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                  <div>
+                    <strong>版权</strong>
+                    <span>Rights / Copyright</span>
+                  </div>
+                </label>
+
+                <label className="setting-check">
+                  <input
+                    type="checkbox"
+                    checked={props.targetedImageCleanup.imageId}
+                    disabled={!props.targetedImageCleanup.enabled}
+                    onChange={(event) =>
+                      updateTargetedImageCleanup({
+                        imageId: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                  <div>
+                    <strong>图像 ID</strong>
+                    <span>ImageUniqueID / DocumentID</span>
+                  </div>
+                </label>
+              </div>
+
+              <label className="setting-field">
+                <span>按内容搜索清理</span>
+                <input
+                  type="text"
+                  maxLength={240}
+                  value={props.targetedImageCleanup.search}
+                  placeholder="例如 23333；多个词用逗号分隔"
+                  disabled={!props.targetedImageCleanup.enabled}
+                  onChange={(event) =>
+                    updateTargetedImageCleanup({
+                      search: event.currentTarget.value,
+                    })
+                  }
+                />
+              </label>
+
+              <span className="setting-footnote">
+                搜索会匹配图片元数据的字段值，命中后删除对应字段；不会按文件名或系统文件属性删除。
+              </span>
+            </div>
+
             <div className="setting-card">
               <div className="setting-head">
                 <div>

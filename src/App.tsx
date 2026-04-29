@@ -128,6 +128,7 @@ function App() {
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
     videoCleanupMode: preferences.videoCleanupMode,
+    targetedImageCleanup: preferences.targetedImageCleanup,
     metadataWrite: preferences.metadataWrite,
   });
 
@@ -663,6 +664,7 @@ function App() {
         autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
         videoCleanupMode={preferences.videoCleanupMode}
+        targetedImageCleanup={preferences.targetedImageCleanup}
         metadataWrite={preferences.metadataWrite}
         onClose={() => setIsSettingsOpen(false)}
         onParallelismChange={setParallelism}
@@ -679,6 +681,9 @@ function App() {
         }
         onVideoCleanupModeChange={(videoCleanupMode) =>
           setPreference("videoCleanupMode", videoCleanupMode)
+        }
+        onTargetedImageCleanupChange={(targetedImageCleanup) =>
+          setPreference("targetedImageCleanup", targetedImageCleanup)
         }
         onMetadataWriteChange={(metadataWrite) =>
           setPreference("metadataWrite", metadataWrite)

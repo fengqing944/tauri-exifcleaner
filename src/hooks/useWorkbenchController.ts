@@ -15,6 +15,7 @@ import {
   type ScanProgressEvent,
   type ScanSummary,
   type ShellOpenRequest,
+  type TargetedImageCleanupPreferences,
   type VideoCleanupMode,
   EMPTY_PROGRESS,
   QUEUE_PAGE_SIZE,
@@ -30,6 +31,7 @@ import {
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
   videoCleanupMode?: VideoCleanupMode;
+  targetedImageCleanup?: TargetedImageCleanupPreferences;
   metadataWrite?: MetadataWritePreferences;
 }) {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
@@ -269,6 +271,15 @@ export function useWorkbenchController(options?: {
           parallelism,
           preserveStructure: true,
           videoCleanupMode: options?.videoCleanupMode ?? "safe",
+          targetedImageCleanup: {
+            enabled: Boolean(options?.targetedImageCleanup?.enabled),
+            title: Boolean(options?.targetedImageCleanup?.title),
+            subject: Boolean(options?.targetedImageCleanup?.subject),
+            author: Boolean(options?.targetedImageCleanup?.author),
+            rights: Boolean(options?.targetedImageCleanup?.rights),
+            imageId: Boolean(options?.targetedImageCleanup?.imageId),
+            search: options?.targetedImageCleanup?.search.trim() || null,
+          },
           metadataWrite: {
             enabled: Boolean(options?.metadataWrite?.enabled),
             title: options?.metadataWrite?.title.trim() || null,

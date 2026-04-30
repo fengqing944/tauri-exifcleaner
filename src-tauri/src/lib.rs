@@ -142,7 +142,7 @@ const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 #[cfg(target_os = "windows")]
 const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
-static CLEAN_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
@@ -1453,14 +1453,6 @@ fn write_utf8_argfile<I>(prefix: &str, lines: I) -> Result<PathBuf, String>
 where
     I: IntoIterator<Item = String>,
 {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let path = std::env::temp_dir().join(format!(
-        "tagsweep-{prefix}-{}-{timestamp}.args",
-        std::process::id()
-    ));
     let mut content = String::new();
 
     for line in lines {
@@ -1468,8 +1460,38 @@ where
         content.push('\n');
     }
 
-    fs::write(&path, content).map_err(|error| format!("无法创建 ExifTool 参数文件: {error}"))?;
-    Ok(path)
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let temp_dir = std::env::temp_dir();
+
+    for _ in 0..128 {
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp_dir.join(format!(
+            "tagsweep-{prefix}-{}-{timestamp}-{counter}.args",
+            std::process::id()
+        ));
+
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("无法创建 ExifTool 参数文件: {error}")),
+        };
+
+        if let Err(error) = file.write_all(content.as_bytes()) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("无法写入 ExifTool 参数文件: {error}"));
+        }
+
+        return Ok(path);
+    }
+
+    Err("无法创建唯一的 ExifTool 参数文件。".to_string())
 }
 
 #[tauri::command]
@@ -2029,7 +2051,25 @@ fn clean_command_needs_spawned_process(
         || write_args.iter().any(|arg| !arg.is_ascii())
 }
 
-fn unique_clean_temp_path(source_path: &Path) -> Result<PathBuf, String> {
+#[derive(Debug)]
+struct CleanTempWorkspace {
+    dir_path: PathBuf,
+    output_path: PathBuf,
+}
+
+impl CleanTempWorkspace {
+    fn cleanup(&self) {
+        let _ = fs::remove_dir_all(&self.dir_path);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CleanTempOutcome {
+    Replaced,
+    Unchanged,
+}
+
+fn create_clean_temp_workspace(source_path: &Path) -> Result<CleanTempWorkspace, String> {
     let parent = source_path
         .parent()
         .ok_or_else(|| format!("无法为 {} 创建临时清理路径。", source_path.display()))?;
@@ -2044,38 +2084,59 @@ fn unique_clean_temp_path(source_path: &Path) -> Result<PathBuf, String> {
         .unwrap_or_default();
 
     for _ in 0..128 {
-        let counter = CLEAN_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            ".tagsweep-{}-{timestamp}-{counter}.tmp{extension}",
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir_path = parent.join(format!(
+            ".tagsweep-work-{}-{timestamp}-{counter}",
             std::process::id()
         ));
-        if !candidate.exists() {
-            return Ok(candidate);
+        match fs::create_dir(&dir_path) {
+            Ok(()) => {
+                return Ok(CleanTempWorkspace {
+                    output_path: dir_path.join(format!("cleaned{extension}")),
+                    dir_path,
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "无法为 {} 创建临时清理目录: {error}",
+                    source_path.display()
+                ));
+            }
         }
     }
 
     Err(format!(
-        "无法为 {} 生成唯一临时清理文件。",
+        "无法为 {} 生成唯一临时清理目录。",
         source_path.display()
     ))
 }
 
-fn replace_source_with_cleaned_temp(source_path: &Path, temp_path: &Path) -> Result<(), String> {
-    let temp_metadata = fs::metadata(temp_path).map_err(|error| {
-        format!(
-            "ExifTool 未生成清理后的临时文件，原文件未改变: {} ({error})",
-            temp_path.display()
-        )
-    })?;
+fn complete_clean_temp_workspace(
+    source_path: &Path,
+    workspace: &CleanTempWorkspace,
+) -> Result<CleanTempOutcome, String> {
+    let temp_path = &workspace.output_path;
+    let temp_metadata = match fs::metadata(temp_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(CleanTempOutcome::Unchanged);
+        }
+        Err(error) => {
+            return Err(format!(
+                "无法读取清理后的临时文件，原文件未改变: {} ({error})",
+                temp_path.display()
+            ));
+        }
+    };
+
     if !temp_metadata.is_file() {
-        let _ = fs::remove_file(temp_path);
         return Err(format!(
             "清理后的临时路径不是文件，原文件未改变: {}",
             temp_path.display()
         ));
     }
     if temp_metadata.len() == 0 {
-        let _ = fs::remove_file(temp_path);
         return Err(format!(
             "清理后的临时文件为空，原文件未改变: {}",
             temp_path.display()
@@ -2084,10 +2145,12 @@ fn replace_source_with_cleaned_temp(source_path: &Path, temp_path: &Path) -> Res
 
     replace_existing_file(temp_path, source_path).map_err(|error| {
         format!(
-            "无法用清理后的临时文件替换原文件，原文件未改变。临时文件保留在 {}: {error}",
+            "无法用清理后的临时文件替换原文件，原文件未改变。临时输出路径 {}: {error}",
             temp_path.display()
         )
-    })
+    })?;
+
+    Ok(CleanTempOutcome::Replaced)
 }
 
 #[cfg(target_os = "windows")]
@@ -2486,10 +2549,13 @@ impl ExifToolSession {
             return Ok(());
         }
 
-        let overwrite_temp_path = match options.output_mode {
-            OutputMode::Overwrite => Some(unique_clean_temp_path(&planned_file.source_path)?),
+        let overwrite_workspace = match options.output_mode {
+            OutputMode::Overwrite => Some(create_clean_temp_workspace(&planned_file.source_path)?),
             OutputMode::Mirror => None,
         };
+        let overwrite_temp_path = overwrite_workspace
+            .as_ref()
+            .map(|workspace| workspace.output_path.as_path());
 
         let clean_result =
             if clean_command_needs_spawned_process(planned_file, &removal_args, &write_args) {
@@ -2498,7 +2564,7 @@ impl ExifToolSession {
                     options,
                     removal_args,
                     write_args,
-                    overwrite_temp_path.as_deref(),
+                    overwrite_temp_path,
                 )
             } else {
                 self.clean_file_with_stay_open(
@@ -2506,19 +2572,25 @@ impl ExifToolSession {
                     options,
                     removal_args,
                     write_args,
-                    overwrite_temp_path.as_deref(),
+                    overwrite_temp_path,
                 )
             };
 
         if let Err(error) = clean_result {
-            if let Some(temp_path) = overwrite_temp_path.as_ref() {
-                let _ = fs::remove_file(temp_path);
+            if let Some(workspace) = overwrite_workspace.as_ref() {
+                workspace.cleanup();
             }
-            return Err(error);
+            return Err(format!(
+                "ExifTool 清理失败（源文件: {}）: {error}",
+                planned_file.source_path.display()
+            ));
         }
 
-        if let Some(temp_path) = overwrite_temp_path.as_ref() {
-            replace_source_with_cleaned_temp(&planned_file.source_path, temp_path)?;
+        if let Some(workspace) = overwrite_workspace.as_ref() {
+            let complete_result =
+                complete_clean_temp_workspace(&planned_file.source_path, workspace);
+            workspace.cleanup();
+            complete_result?;
         }
 
         Ok(())
@@ -3638,6 +3710,78 @@ mod tests {
         );
         assert_eq!(cancelled_states[0].status, "cancelled");
         assert_eq!(cancelled_states[1].status, "cancelled");
+    }
+
+    #[test]
+    fn utf8_argfiles_are_created_with_unique_paths() {
+        let first =
+            write_utf8_argfile("unit", vec!["one".to_string()]).expect("create first argfile");
+        let second =
+            write_utf8_argfile("unit", vec!["two".to_string()]).expect("create second argfile");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read_to_string(&first).expect("read first argfile"),
+            "one\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&second).expect("read second argfile"),
+            "two\n"
+        );
+
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
+
+    #[test]
+    fn clean_temp_workspace_treats_missing_output_as_unchanged() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-clean-temp-missing-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create test temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        fs::write(&source_path, b"original").expect("write source file");
+
+        let workspace =
+            create_clean_temp_workspace(&source_path).expect("create clean temp workspace");
+        let outcome = complete_clean_temp_workspace(&source_path, &workspace)
+            .expect("complete missing output");
+
+        assert_eq!(outcome, CleanTempOutcome::Unchanged);
+        assert_eq!(
+            fs::read(&source_path).expect("read unchanged source"),
+            b"original"
+        );
+
+        workspace.cleanup();
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn clean_temp_workspace_replaces_source_from_output_file() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-clean-temp-replace-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create test temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        fs::write(&source_path, b"original").expect("write source file");
+
+        let workspace =
+            create_clean_temp_workspace(&source_path).expect("create clean temp workspace");
+        fs::write(&workspace.output_path, b"cleaned").expect("write cleaned output");
+        let outcome =
+            complete_clean_temp_workspace(&source_path, &workspace).expect("replace source file");
+
+        assert_eq!(outcome, CleanTempOutcome::Replaced);
+        assert_eq!(
+            fs::read(&source_path).expect("read replaced source"),
+            b"cleaned"
+        );
+
+        workspace.cleanup();
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

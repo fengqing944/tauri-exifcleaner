@@ -83,7 +83,8 @@ export function RunDetailsDrawer(props: {
           <strong>{props.metadataDebug.lastMessage || "暂无调试信息"}</strong>
           <span>
             最近返回 {props.metadataDebug.lastResolved} 项，缺失{" "}
-            {props.metadataDebug.lastMissing} 项
+            {props.metadataDebug.lastMissing} 项，失败{" "}
+            {props.metadataDebug.lastErrors} 项
           </span>
           <span title={props.debugLogPath || "未启用"}>
             日志:{" "}

@@ -313,7 +313,7 @@ export function SettingsDrawer(props: {
               </label>
 
               <span className="setting-footnote">
-                搜索会匹配图片元数据的字段值，命中后删除对应字段；不会按文件名或系统文件属性删除。
+                搜索只匹配标题、主题、作者、版权、图像 ID、说明等公开描述字段；不会按文件名、系统属性或技术参数删除。
               </span>
             </div>
 

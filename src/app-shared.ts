@@ -72,6 +72,7 @@ export type CleanupPreviewState = {
   outputPath: string | null;
   status: CleanupStatus;
   error: string | null;
+  snapshotError: string | null;
   snapshot: MetadataPreviewSnapshot | null;
 };
 
@@ -145,6 +146,7 @@ export type MetadataDebugState = {
   lastDurationMs: number;
   lastResolved: number;
   lastMissing: number;
+  lastErrors: number;
   lastMessage: string;
 };
 
@@ -198,6 +200,7 @@ export const EMPTY_METADATA_DEBUG: MetadataDebugState = {
   lastDurationMs: 0,
   lastResolved: 0,
   lastMissing: 0,
+  lastErrors: 0,
   lastMessage: "字段读取尚未开始。",
 };
 
@@ -305,6 +308,17 @@ export function buildAfterSnapshotMap(
   return previewStates.reduce<Record<string, MetadataPreviewSnapshot>>((result, item) => {
     if (item.snapshot) {
       result[normalizePath(item.sourcePath)] = item.snapshot;
+    }
+    return result;
+  }, {});
+}
+
+export function buildAfterSnapshotErrorMap(
+  previewStates: CleanupPreviewState[],
+): Record<string, string> {
+  return previewStates.reduce<Record<string, string>>((result, item) => {
+    if (item.snapshotError) {
+      result[normalizePath(item.sourcePath)] = item.snapshotError;
     }
     return result;
   }, {});

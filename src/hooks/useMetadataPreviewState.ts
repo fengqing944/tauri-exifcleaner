@@ -23,6 +23,7 @@ import {
   VISIBLE_METADATA_AFTER_BATCH_LIMIT,
   VISIBLE_METADATA_BEFORE_BATCH_LIMIT,
   VISIBLE_METADATA_PREFETCH_DELAY_MS,
+  buildAfterSnapshotErrorMap,
   buildAfterSnapshotMap,
   normalizePath,
   toMessage,
@@ -127,29 +128,35 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     durationMs: number;
     responseCount: number;
     missingCount: number;
+    errorCount?: number;
     error?: string;
   }) => {
+    const errorCount = result.errorCount ?? 0;
+    const successCount = Math.max(0, result.responseCount - result.missingCount - errorCount);
     startTransition(() => {
       setMetadataDebug((current) => ({
-        status: result.error ? "error" : "success",
+        status: result.error || errorCount ? "error" : "success",
         lastOrigin: result.origin,
         pendingBatches: Math.max(0, current.pendingBatches - 1),
         pendingFiles: Math.max(0, current.pendingFiles - result.requestCount),
         lastDurationMs: result.durationMs,
-        lastResolved: Math.max(0, result.responseCount - result.missingCount),
+        lastResolved: successCount,
         lastMissing: result.missingCount,
+        lastErrors: errorCount,
         lastMessage: result.error
           ? `${result.origin} 失败: ${result.error}`
-          : `${result.origin} 完成，返回 ${result.responseCount} 项`,
+          : errorCount
+            ? `${result.origin} 完成，${errorCount} 项读取失败`
+            : `${result.origin} 完成，返回 ${result.responseCount} 项`,
       }));
     });
 
     pushMetadataDebugEntry(
-      result.error ? "danger" : result.missingCount ? "warning" : "success",
+      result.error || errorCount ? "danger" : result.missingCount ? "warning" : "success",
       result.origin,
       result.error
         ? result.error
-        : `耗时 ${result.durationMs} ms，返回 ${result.responseCount} 项，缺失 ${result.missingCount} 项`,
+        : `耗时 ${result.durationMs} ms，成功 ${successCount} 项，缺失 ${result.missingCount} 项，失败 ${errorCount} 项`,
     );
   });
 
@@ -240,6 +247,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           durationMs: Math.round(performance.now() - startedAt),
           responseCount: responses.length,
           missingCount: responses.filter((response) => response.missing).length,
+          errorCount: responses.filter((response) => Boolean(response.error)).length,
         });
       } catch (error) {
         const message = toMessage(error);
@@ -299,6 +307,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         current.lastDurationMs === EMPTY_METADATA_DEBUG.lastDurationMs &&
         current.lastResolved === EMPTY_METADATA_DEBUG.lastResolved &&
         current.lastMissing === EMPTY_METADATA_DEBUG.lastMissing &&
+        current.lastErrors === EMPTY_METADATA_DEBUG.lastErrors &&
         current.lastMessage === EMPTY_METADATA_DEBUG.lastMessage
       ) {
         return current;
@@ -324,7 +333,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
   const applyCleanupPreviewStates = useEffectEvent((previewStates: CleanupPreviewState[]) => {
     const next = buildAfterSnapshotMap(previewStates);
+    const nextErrors = buildAfterSnapshotErrorMap(previewStates);
     for (const pathKey of Object.keys(next)) {
+      completedSnapshotRequestKeysRef.current.add(snapshotRequestKey("after", pathKey));
+    }
+    for (const pathKey of Object.keys(nextErrors)) {
       completedSnapshotRequestKeysRef.current.add(snapshotRequestKey("after", pathKey));
     }
 
@@ -344,10 +357,37 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       for (const pathKey of Object.keys(next)) {
         delete updated[snapshotRequestKey("after", pathKey)];
       }
-      return Object.keys(updated).length === Object.keys(current).length
+      for (const [pathKey, error] of Object.entries(nextErrors)) {
+        updated[snapshotRequestKey("after", pathKey)] = error;
+      }
+      const updatedKeys = Object.keys(updated);
+      const currentKeys = Object.keys(current);
+      return updatedKeys.length === currentKeys.length &&
+        updatedKeys.every((key) => current[key] === updated[key])
         ? current
         : updated;
     });
+
+    const errorCount = Object.keys(nextErrors).length;
+    if (errorCount) {
+      startTransition(() => {
+        setMetadataDebug((current) => ({
+          ...current,
+          status: "error",
+          lastOrigin: "任务回填",
+          lastDurationMs: 0,
+          lastResolved: Object.keys(next).length,
+          lastMissing: 0,
+          lastErrors: errorCount,
+          lastMessage: `任务回填完成，${errorCount} 项处理后字段读取失败`,
+        }));
+      });
+      pushMetadataDebugEntry(
+        "danger",
+        "任务回填",
+        `${errorCount} 个处理后字段读取失败；清理结果已保留，可在行内或悬浮预览查看原因。`,
+      );
+    }
   });
 
   useEffect(() => {

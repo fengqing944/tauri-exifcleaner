@@ -70,6 +70,42 @@ const TARGET_IMAGE_ID_ARGS: &[&str] = &[
     "-XMP-xmpMM:OriginalDocumentID=",
     "-XMP-photoshop:DocumentAncestors=",
 ];
+const TARGET_IMAGE_SEARCH_ALLOWED_TAGS: &[&str] = &[
+    "XMP-dc:Title",
+    "IPTC:ObjectName",
+    "EXIF:ImageDescription",
+    "EXIF:XPTitle",
+    "PNG:Title",
+    "XMP-dc:Subject",
+    "IPTC:Keywords",
+    "EXIF:XPKeywords",
+    "EXIF:XPSubject",
+    "PNG:Subject",
+    "XMP-dc:Creator",
+    "EXIF:Artist",
+    "EXIF:XPAuthor",
+    "IPTC:By-line",
+    "PNG:Author",
+    "XMP-dc:Rights",
+    "XMP-xmpRights:WebStatement",
+    "EXIF:Copyright",
+    "IPTC:CopyrightNotice",
+    "PNG:Copyright",
+    "EXIF:ImageUniqueID",
+    "XMP-exif:ImageUniqueID",
+    "XMP-iptcExt:DigitalImageGUID",
+    "XMP-xmpMM:DocumentID",
+    "XMP-xmpMM:InstanceID",
+    "XMP-xmpMM:OriginalDocumentID",
+    "XMP-photoshop:DocumentAncestors",
+    "XMP-dc:Description",
+    "IPTC:Caption-Abstract",
+    "IPTC:Headline",
+    "EXIF:UserComment",
+    "EXIF:XPComment",
+    "PNG:Description",
+    "PNG:Comment",
+];
 const MAX_QUEUE_PREVIEW_FILES: usize = 12;
 const SCAN_BATCH_SIZE: usize = 256;
 const SCAN_PROGRESS_INTERVAL_MS: u64 = 350;
@@ -315,6 +351,7 @@ struct CleanupPreviewState {
     output_path: Option<String>,
     status: String,
     error: Option<String>,
+    snapshot_error: Option<String>,
     snapshot: Option<MetadataPreviewSnapshot>,
 }
 
@@ -429,6 +466,11 @@ struct FileCleanupOutcome {
 struct FileCleanupStart {
     source_path: String,
     output_path: Option<String>,
+}
+
+struct CleanupPreviewSnapshots {
+    snapshots: HashMap<String, MetadataPreviewSnapshot>,
+    errors: HashMap<String, String>,
 }
 
 enum WorkerEvent {
@@ -992,6 +1034,7 @@ fn build_cleanup_preview_states(
     tracked_preview_files: &[QueuedFile],
     tracked_preview_states: &HashMap<String, CleanupPreviewState>,
     preview_snapshots: &HashMap<String, MetadataPreviewSnapshot>,
+    preview_snapshot_errors: &HashMap<String, String>,
     failure_map: &HashMap<String, String>,
     cancelled: bool,
 ) -> Vec<CleanupPreviewState> {
@@ -1005,6 +1048,7 @@ fn build_cleanup_preview_states(
                 .map(|mut state| {
                     if state.status == "success" {
                         state.snapshot = preview_snapshots.get(&key).cloned();
+                        state.snapshot_error = preview_snapshot_errors.get(&key).cloned();
                     }
                     state
                 })
@@ -1019,6 +1063,7 @@ fn build_cleanup_preview_states(
                         "success".to_string()
                     },
                     error: failure_map.get(&key).cloned(),
+                    snapshot_error: preview_snapshot_errors.get(&key).cloned(),
                     snapshot: preview_snapshots.get(&key).cloned(),
                 })
         })
@@ -1029,7 +1074,7 @@ fn build_cleanup_preview_snapshot_map(
     exiftool_path: &Path,
     tracked_preview_files: &[QueuedFile],
     tracked_preview_states: &HashMap<String, CleanupPreviewState>,
-) -> HashMap<String, MetadataPreviewSnapshot> {
+) -> CleanupPreviewSnapshots {
     let mut snapshot_path_keys = HashSet::new();
     let mut snapshot_paths = Vec::new();
     let mut source_to_snapshot_key = HashMap::new();
@@ -1058,23 +1103,56 @@ fn build_cleanup_preview_snapshot_map(
         }
     }
 
-    let snapshot_map = match read_metadata_snapshot_map(exiftool_path, &snapshot_paths) {
-        Ok(snapshot_map) => snapshot_map,
-        Err(error) => {
-            eprintln!("metadata preview snapshot read failed after cleanup: {error}");
-            return HashMap::new();
-        }
-    };
+    let (snapshot_map, snapshot_errors) =
+        match read_metadata_snapshot_map(exiftool_path, &snapshot_paths) {
+            Ok(snapshot_map) => (snapshot_map, HashMap::<String, String>::new()),
+            Err(error) => {
+                append_debug_log(format!(
+                    "cleanup.preview_snapshot_batch_error files={} error={}",
+                    snapshot_paths.len(),
+                    sanitize_debug_message(&error)
+                ));
 
-    source_to_snapshot_key
-        .into_iter()
-        .filter_map(|(source_key, snapshot_key)| {
-            snapshot_map
-                .get(&snapshot_key)
-                .cloned()
-                .map(|snapshot| (source_key, snapshot))
-        })
-        .collect()
+                let mut snapshot_map = HashMap::new();
+                let mut snapshot_errors = HashMap::new();
+                for path in &snapshot_paths {
+                    let snapshot_key = dedupe_key(path);
+                    match read_metadata_snapshot_map(exiftool_path, std::slice::from_ref(path)) {
+                        Ok(single_map) => {
+                            let snapshot = single_map
+                                .get(&snapshot_key)
+                                .cloned()
+                                .unwrap_or_else(empty_metadata_snapshot);
+                            snapshot_map.insert(snapshot_key, snapshot);
+                        }
+                        Err(error) => {
+                            append_debug_log(format!(
+                                "cleanup.preview_snapshot_error path={} error={}",
+                                sanitize_debug_message(&path.display().to_string()),
+                                sanitize_debug_message(&error)
+                            ));
+                            snapshot_errors.insert(snapshot_key, error);
+                        }
+                    }
+                }
+
+                (snapshot_map, snapshot_errors)
+            }
+        };
+
+    let mut snapshots = HashMap::new();
+    let mut errors = HashMap::new();
+    for (source_key, snapshot_key) in source_to_snapshot_key {
+        if let Some(error) = snapshot_errors.get(&snapshot_key) {
+            errors.insert(source_key, error.clone());
+            continue;
+        }
+        if let Some(snapshot) = snapshot_map.get(&snapshot_key) {
+            snapshots.insert(source_key, snapshot.clone());
+        }
+    }
+
+    CleanupPreviewSnapshots { snapshots, errors }
 }
 
 fn build_metadata_snapshots(
@@ -1709,6 +1787,7 @@ async fn run_cleanup(
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
                                 error: outcome.error.clone(),
+                                snapshot_error: None,
                                 snapshot: None,
                             },
                         );
@@ -1823,7 +1902,8 @@ async fn run_cleanup(
             preview_states: build_cleanup_preview_states(
                 &tracked_preview_files,
                 &tracked_preview_states,
-                &preview_snapshots,
+                &preview_snapshots.snapshots,
+                &preview_snapshots.errors,
                 &failure_map,
                 cancelled,
             ),
@@ -2361,6 +2441,7 @@ fn metadata_search_delete_args(
             }
             let (group, name) = split_metadata_key(key);
             if should_skip_metadata_group(group)
+                || !is_targeted_search_cleanup_tag(group, name)
                 || !metadata_value_matches_search_terms(value, search_terms)
             {
                 return None;
@@ -2370,6 +2451,13 @@ fn metadata_search_delete_args(
         .collect::<Vec<_>>();
 
     dedupe_args(args)
+}
+
+fn is_targeted_search_cleanup_tag(group: &str, name: &str) -> bool {
+    TARGET_IMAGE_SEARCH_ALLOWED_TAGS.iter().any(|candidate| {
+        let (candidate_group, candidate_name) = split_metadata_key(candidate);
+        candidate_group.eq_ignore_ascii_case(group) && candidate_name.eq_ignore_ascii_case(name)
+    })
 }
 
 fn metadata_value_matches_search_terms(value: &Value, search_terms: &[String]) -> bool {
@@ -3727,6 +3815,7 @@ mod tests {
                 output_path: None,
                 status: "success".to_string(),
                 error: None,
+                snapshot_error: None,
                 snapshot: None,
             },
         );
@@ -3738,11 +3827,16 @@ mod tests {
                 truncated: false,
             },
         )]);
+        let preview_snapshot_errors = HashMap::from([(
+            dedupe_key(Path::new("C:/input/2.jpg")),
+            "字段读取失败".to_string(),
+        )]);
 
         let completed_states = build_cleanup_preview_states(
             &tracked_preview_files,
             &tracked_preview_states,
             &preview_snapshots,
+            &preview_snapshot_errors,
             &HashMap::new(),
             false,
         );
@@ -3756,9 +3850,14 @@ mod tests {
                 .map(|snapshot| snapshot.count),
             Some(2)
         );
+        assert_eq!(
+            completed_states[1].snapshot_error.as_deref(),
+            Some("字段读取失败")
+        );
 
         let cancelled_states = build_cleanup_preview_states(
             &tracked_preview_files,
+            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
@@ -4032,6 +4131,14 @@ mod tests {
                 serde_json::json!(["clean", "23333"]),
             ),
             (
+                "XMP-dc:Description".to_string(),
+                serde_json::json!("public note 23333"),
+            ),
+            (
+                "EXIF:LensModel".to_string(),
+                serde_json::json!("technical 23333 lens"),
+            ),
+            (
                 "System:FileName".to_string(),
                 serde_json::json!("23333.jpg"),
             ),
@@ -4046,7 +4153,9 @@ mod tests {
 
         assert!(args.contains(&"-XMP-dc:Title=".to_string()));
         assert!(args.contains(&"-IPTC:Keywords=".to_string()));
+        assert!(args.contains(&"-XMP-dc:Description=".to_string()));
         assert!(!args.contains(&"-XMP-dc:Creator=".to_string()));
+        assert!(!args.contains(&"-EXIF:LensModel=".to_string()));
         assert!(!args.contains(&"-System:FileName=".to_string()));
     }
 

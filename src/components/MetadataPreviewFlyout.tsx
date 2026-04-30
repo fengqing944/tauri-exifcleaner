@@ -15,6 +15,8 @@ export function MetadataPreviewFlyout(props: {
   rowState?: FileRunState;
   beforeLoading: boolean;
   afterLoading: boolean;
+  beforeError?: string;
+  afterError?: string;
 }) {
   const fileTitle = getLeafName(props.file.relativePath || props.file.sourcePath);
   const fileContext = getParentPath(props.file.relativePath || props.file.sourcePath);
@@ -33,11 +35,23 @@ export function MetadataPreviewFlyout(props: {
       <div className="preview-summary-grid">
         <div className="preview-summary-card">
           <span>处理前</span>
-          <strong>{props.beforeSnapshot ? props.beforeSnapshot.count : props.beforeLoading ? "读取中" : "—"}</strong>
+          <strong>
+            {props.beforeSnapshot
+              ? props.beforeSnapshot.count
+              : props.beforeLoading
+                ? "读取中"
+                : props.beforeError
+                  ? "读取失败"
+                  : "—"}
+          </strong>
         </div>
         <div className="preview-summary-card">
           <span>处理后</span>
-          <strong>{resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}</strong>
+          <strong>
+            {props.afterError
+              ? "读取失败"
+              : resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}
+          </strong>
         </div>
       </div>
 
@@ -46,6 +60,7 @@ export function MetadataPreviewFlyout(props: {
           title="处理前"
           snapshot={props.beforeSnapshot}
           loading={props.beforeLoading}
+          error={props.beforeError}
           emptyText="正在读取字段摘要..."
         />
 
@@ -53,6 +68,7 @@ export function MetadataPreviewFlyout(props: {
           title="处理后"
           snapshot={props.afterSnapshot}
           loading={props.afterLoading}
+          error={props.afterError}
           emptyText={resolveAfterEmptyText(props.rowState)}
         />
       </div>
@@ -64,6 +80,7 @@ function MetadataColumn(props: {
   title: string;
   snapshot?: MetadataPreviewSnapshot;
   loading: boolean;
+  error?: string;
   emptyText: string;
 }) {
   const visibleFields = props.snapshot ? props.snapshot.fields : [];
@@ -72,10 +89,22 @@ function MetadataColumn(props: {
     <section className="preview-column">
       <header>
         <strong>{props.title}</strong>
-        <span>{props.snapshot ? `${props.snapshot.count} 条` : props.loading ? "读取中" : "暂无"}</span>
+        <span>
+          {props.snapshot
+            ? `${props.snapshot.count} 条`
+            : props.loading
+              ? "读取中"
+              : props.error
+                ? "读取失败"
+                : "暂无"}
+        </span>
       </header>
 
-      {props.snapshot ? (
+      {props.error ? (
+        <div className="preview-empty" title={props.error}>
+          读取失败: {props.error}
+        </div>
+      ) : props.snapshot ? (
         visibleFields.length ? (
           <div className="preview-fields">
             {visibleFields.map((field) => (

@@ -48,6 +48,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     {},
   );
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
+  const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
   const [debugLogPath, setDebugLogPath] = useState("");
   const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
@@ -211,7 +212,23 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           applyResponses((current) => {
             const next = { ...current };
             for (const response of responses) {
-              next[response.requestKey] = response.snapshot;
+              if (response.error) {
+                delete next[response.requestKey];
+              } else {
+                next[response.requestKey] = response.snapshot;
+              }
+            }
+            return next;
+          });
+          setSnapshotErrors((current) => {
+            const next = { ...current };
+            for (const response of responses) {
+              const errorKey = snapshotRequestKey(options.phase, response.requestKey);
+              if (response.error) {
+                next[errorKey] = response.error;
+              } else {
+                delete next[errorKey];
+              }
             }
             return next;
           });
@@ -226,7 +243,21 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         });
       } catch (error) {
         const message = toMessage(error);
+        for (const request of requests) {
+          completedSnapshotRequestKeysRef.current.add(
+            snapshotRequestKey(options.phase, request.requestKey),
+          );
+        }
         input.onError(message);
+        startTransition(() => {
+          setSnapshotErrors((current) => {
+            const next = { ...current };
+            for (const request of requests) {
+              next[snapshotRequestKey(options.phase, request.requestKey)] = message;
+            }
+            return next;
+          });
+        });
         finishMetadataDebug({
           origin: options.origin,
           requestCount: requests.length,
@@ -258,6 +289,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
     setLoadingSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setSnapshotErrors((current) => (Object.keys(current).length ? {} : current));
     setMetadataDebug((current) => {
       if (
         current.status === EMPTY_METADATA_DEBUG.status &&
@@ -279,6 +311,15 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const clearAfterSnapshots = useEffectEvent(() => {
     clearCompletedSnapshotKeys("after");
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setSnapshotErrors((current) => {
+      const next = { ...current };
+      for (const key of Object.keys(next)) {
+        if (key.startsWith("after:")) {
+          delete next[key];
+        }
+      }
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
   });
 
   const applyCleanupPreviewStates = useEffectEvent((previewStates: CleanupPreviewState[]) => {
@@ -297,6 +338,15 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         return current;
       }
       return next;
+    });
+    setSnapshotErrors((current) => {
+      const updated = { ...current };
+      for (const pathKey of Object.keys(next)) {
+        delete updated[snapshotRequestKey("after", pathKey)];
+      }
+      return Object.keys(updated).length === Object.keys(current).length
+        ? current
+        : updated;
     });
   });
 
@@ -518,6 +568,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     beforeSnapshots,
     afterSnapshots,
     loadingSnapshots,
+    snapshotErrors,
     debugLogPath,
     metadataDebug,
     metadataDebugEntries,

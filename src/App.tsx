@@ -175,6 +175,7 @@ function App() {
     beforeSnapshots,
     afterSnapshots,
     loadingSnapshots,
+    snapshotErrors,
     debugLogPath,
     metadataDebug,
     metadataDebugEntries,
@@ -614,6 +615,7 @@ function App() {
             beforeSnapshots={beforeSnapshots}
             afterSnapshots={afterSnapshots}
             loadingSnapshots={loadingSnapshots}
+            snapshotErrors={snapshotErrors}
             hoveredPathKey={hoveredPathKey}
             selectedPreviewPathKey={pinnedPathKey}
             highlightedPathKey={highlightedPathKey}

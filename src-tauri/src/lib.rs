@@ -381,6 +381,7 @@ struct MetadataSnapshotResponse {
     request_key: String,
     snapshot: MetadataPreviewSnapshot,
     missing: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -804,25 +805,41 @@ fn flush_remaining_scan_batch(
         .map_err(|_| "扫描进度通道已关闭。".to_string())
 }
 
-fn queue_spool_path() -> PathBuf {
+fn create_queue_spool_path() -> Result<PathBuf, String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "tagsweep-queue-{}-{timestamp}.jsonl",
-        std::process::id()
-    ))
-}
+    let temp_dir = std::env::temp_dir();
 
-fn ensure_queue_spool_path(store: &mut QueueStore) -> PathBuf {
-    if let Some(path) = store.queue_file_path.clone() {
-        return path;
+    for _ in 0..128 {
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp_dir.join(format!(
+            "tagsweep-queue-{}-{timestamp}-{counter}.jsonl",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("无法创建唯一队列暂存文件: {error}")),
+        }
     }
 
-    let path = queue_spool_path();
+    Err("无法创建唯一队列暂存文件。".to_string())
+}
+
+fn ensure_queue_spool_path(store: &mut QueueStore) -> Result<PathBuf, String> {
+    if let Some(path) = store.queue_file_path.clone() {
+        return Ok(path);
+    }
+
+    let path = create_queue_spool_path()?;
     store.queue_file_path = Some(path.clone());
-    path
+    Ok(path)
 }
 
 fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(), String> {
@@ -830,9 +847,8 @@ fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(
         return Ok(());
     }
 
-    let spool_path = ensure_queue_spool_path(store);
+    let spool_path = ensure_queue_spool_path(store)?;
     let mut spool = fs::OpenOptions::new()
-        .create(true)
         .append(true)
         .read(true)
         .open(&spool_path)
@@ -1091,18 +1107,40 @@ fn build_metadata_snapshots(
         }
     }
 
-    let snapshot_map = match read_metadata_snapshot_map(&exiftool_path, &deduped_paths) {
-        Ok(snapshot_map) => snapshot_map,
+    let (snapshot_map, snapshot_errors) = match read_metadata_snapshot_map(
+        &exiftool_path,
+        &deduped_paths,
+    ) {
+        Ok(snapshot_map) => (snapshot_map, HashMap::<String, String>::new()),
         Err(error) => {
             append_debug_log(format!(
-                "metadata.error requests={} valid_files={} missing_files={} elapsed_ms={} error={}",
-                request_count,
-                deduped_paths.len(),
-                missing_count,
-                started_at.elapsed().as_millis(),
-                sanitize_debug_message(&error)
-            ));
-            return Err(error);
+                    "metadata.batch_error requests={} valid_files={} missing_files={} elapsed_ms={} error={}",
+                    request_count,
+                    deduped_paths.len(),
+                    missing_count,
+                    started_at.elapsed().as_millis(),
+                    sanitize_debug_message(&error)
+                ));
+
+            let mut snapshot_map = HashMap::new();
+            let mut snapshot_errors = HashMap::new();
+            for path in &deduped_paths {
+                let key = dedupe_key(path);
+                match read_metadata_snapshot_map(&exiftool_path, std::slice::from_ref(path)) {
+                    Ok(single_map) => {
+                        let snapshot = single_map
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(empty_metadata_snapshot);
+                        snapshot_map.insert(key, snapshot);
+                    }
+                    Err(error) => {
+                        snapshot_errors.insert(key, error);
+                    }
+                }
+            }
+
+            (snapshot_map, snapshot_errors)
         }
     };
     let mut results = Vec::with_capacity(requests.len());
@@ -1110,26 +1148,44 @@ fn build_metadata_snapshots(
     for request in requests {
         let path = PathBuf::from(&request.file_path);
         let key = dedupe_key(&path);
-        let snapshot = snapshot_map
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(empty_metadata_snapshot);
+        let error = snapshot_errors.get(&key).cloned();
+        let snapshot = if error.is_some() {
+            empty_metadata_snapshot()
+        } else {
+            snapshot_map
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(empty_metadata_snapshot)
+        };
 
         results.push(MetadataSnapshotResponse {
             request_key: request.request_key,
             snapshot,
             missing: !path.is_file(),
+            error,
         });
     }
 
-    append_debug_log(format!(
-        "metadata.done requests={} valid_files={} missing_files={} resolved_files={} elapsed_ms={}",
-        request_count,
-        deduped_paths.len(),
-        missing_count,
-        snapshot_map.len(),
-        started_at.elapsed().as_millis()
-    ));
+    if !snapshot_errors.is_empty() {
+        append_debug_log(format!(
+            "metadata.partial_error requests={} valid_files={} missing_files={} resolved_files={} failed_files={} elapsed_ms={}",
+            request_count,
+            deduped_paths.len(),
+            missing_count,
+            snapshot_map.len(),
+            snapshot_errors.len(),
+            started_at.elapsed().as_millis()
+        ));
+    } else {
+        append_debug_log(format!(
+            "metadata.done requests={} valid_files={} missing_files={} resolved_files={} elapsed_ms={}",
+            request_count,
+            deduped_paths.len(),
+            missing_count,
+            snapshot_map.len(),
+            started_at.elapsed().as_millis()
+        ));
+    }
 
     Ok(results)
 }
@@ -3728,6 +3784,21 @@ mod tests {
             fs::read_to_string(&second).expect("read second argfile"),
             "two\n"
         );
+
+        let _ = fs::remove_file(first);
+        let _ = fs::remove_file(second);
+    }
+
+    #[test]
+    fn queue_spool_paths_are_created_atomically_and_uniquely() {
+        let first = create_queue_spool_path().expect("create first queue spool");
+        let second = create_queue_spool_path().expect("create second queue spool");
+
+        assert_ne!(first, second);
+        assert!(first.is_file());
+        assert!(second.is_file());
+        assert_eq!(fs::metadata(&first).expect("first metadata").len(), 0);
+        assert_eq!(fs::metadata(&second).expect("second metadata").len(), 0);
 
         let _ = fs::remove_file(first);
         let _ = fs::remove_file(second);

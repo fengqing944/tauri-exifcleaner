@@ -43,6 +43,7 @@ export function WorkbenchPanel(props: {
   beforeSnapshots: Record<string, MetadataPreviewSnapshot>;
   afterSnapshots: Record<string, MetadataPreviewSnapshot>;
   loadingSnapshots: Record<string, boolean>;
+  snapshotErrors: Record<string, string>;
   hoveredPathKey: string | null;
   selectedPreviewPathKey: string | null;
   highlightedPathKey: string;
@@ -132,6 +133,10 @@ export function WorkbenchPanel(props: {
   useEffect(() => {
     props.onVisibleFilesChange(visibleFiles);
   }, [props.onVisibleFilesChange, visibleFiles]);
+
+  const previewErrorPathKey = props.previewFile
+    ? normalizePath(props.previewFile.sourcePath)
+    : null;
 
   return (
     <Panel title="工作台" aside={aside}>
@@ -231,6 +236,8 @@ export function WorkbenchPanel(props: {
                 const afterSnapshot = props.afterSnapshots[pathKey];
                 const beforeLoading = Boolean(props.loadingSnapshots[`before:${pathKey}`]);
                 const afterLoading = Boolean(props.loadingSnapshots[`after:${pathKey}`]);
+                const beforeError = props.snapshotErrors[`before:${pathKey}`];
+                const afterError = props.snapshotErrors[`after:${pathKey}`];
                 const isPreviewing = props.hoveredPathKey === pathKey;
                 const isSelected = props.selectedPreviewPathKey === pathKey;
                 const isActive = props.highlightedPathKey === pathKey && props.isRunning;
@@ -256,8 +263,20 @@ export function WorkbenchPanel(props: {
                       <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
                       <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
                     </div>
-                    <span className="queue-count">{beforeSnapshot ? beforeSnapshot.count : beforeLoading ? "读取中" : "—"}</span>
-                    <span className="queue-count">{resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}</span>
+                    <span className="queue-count">
+                      {beforeSnapshot
+                        ? beforeSnapshot.count
+                        : beforeLoading
+                          ? "读取中"
+                          : beforeError
+                            ? "读取失败"
+                            : "—"}
+                    </span>
+                    <span className="queue-count">
+                      {afterError
+                        ? "读取失败"
+                        : resolveAfterCountLabel(afterSnapshot, rowState, afterLoading)}
+                    </span>
                     <span className={`row-pill ${rowStatus.tone}`}>{rowStatus.label}</span>
                   </div>
                 );
@@ -292,6 +311,16 @@ export function WorkbenchPanel(props: {
                   rowState={props.previewRowState}
                   beforeLoading={props.previewBeforeLoading}
                   afterLoading={props.previewAfterLoading}
+                  beforeError={
+                    previewErrorPathKey
+                      ? props.snapshotErrors[`before:${previewErrorPathKey}`]
+                      : undefined
+                  }
+                  afterError={
+                    previewErrorPathKey
+                      ? props.snapshotErrors[`after:${previewErrorPathKey}`]
+                      : undefined
+                  }
                 />
               </div>
             ) : null}

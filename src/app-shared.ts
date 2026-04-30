@@ -130,6 +130,7 @@ export type MetadataSnapshotResponse = {
   requestKey: string;
   snapshot: MetadataPreviewSnapshot;
   missing: boolean;
+  error: string | null;
 };
 
 export type DebugLogInfo = {

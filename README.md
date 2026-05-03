@@ -8,8 +8,8 @@
 - 多文件夹拖拽
 - 递归扫描文件夹
 - 队列追加，不会因为二次拖入直接清空旧任务
-- 镜像输出模式
 - 原地覆盖模式
+- 后端保留镜像输出能力，当前界面以原地覆盖为主
 - 并发批处理
 - Rust 后端实时推送进度
 - 失败项汇总
@@ -55,9 +55,11 @@ npm run tauri dev
 npm run tauri build
 ```
 
-本地已成功打包生成：
+构建完成后，Windows 安装包会生成在：
 
-- `G:\Demo\tauri-exifcleaner\src-tauri\target\release\bundle\nsis\TagSweep_0.1.4_x64-setup.exe`
+- `src-tauri/target/release/bundle/nsis/`
+
+安装包文件名会随版本号变化，例如 `TagSweep_0.1.6_x64-setup.exe`。
 
 ## 项目结构
 

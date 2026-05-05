@@ -15,6 +15,7 @@
 - 失败项汇总
 - Windows 打包并内置 `ExifTool`
 - 常驻 `ExifTool` worker 池，避免逐文件反复拉起进程
+- 设置持久化，界面、清理和环境偏好会保存在本机
 
 ## 技术方案
 
@@ -74,6 +75,5 @@ npm run tauri build
 - 缩略图预览与文件类型图标细分
 - 拖入后自动分组和筛选
 - 更多输出策略
-- 设置持久化
 - 国际化
 - macOS / Linux 的 ExifTool 资源与签名分发

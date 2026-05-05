@@ -2,7 +2,7 @@
 name = "tagsweep"
 version = "0.1.6"
 description = "TagSweep desktop metadata cleaner built with Tauri 2"
-authors = ["Codex"]
+authors = ["Yo <kinacni@gmail.com>"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

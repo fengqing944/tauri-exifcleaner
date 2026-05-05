@@ -25,8 +25,8 @@ use std::os::windows::{ffi::OsStrExt, process::CommandExt};
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "3fr", "ai", "arq", "arw", "avif", "avi", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "eps",
     "erf", "gif", "gpr", "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "m4a", "m4v", "mef",
-    "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "png", "ps", "psd", "raf",
-    "raw", "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
+    "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "ps", "psd", "raf", "raw",
+    "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
 ];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "3fr", "arq", "arw", "avif", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "erf", "gif", "gpr",
@@ -282,6 +282,8 @@ struct CleanupOptions {
     output_dir: Option<String>,
     parallelism: usize,
     preserve_structure: bool,
+    #[serde(default)]
+    allow_readonly_overwrite: bool,
     video_cleanup_mode: Option<VideoCleanupMode>,
     targeted_image_cleanup: Option<TargetedImageCleanupOptions>,
     metadata_write: Option<MetadataWriteOptions>,
@@ -2289,6 +2291,19 @@ fn complete_clean_temp_workspace(
     Ok(CleanTempOutcome::Replaced)
 }
 
+fn set_file_readonly(path: &Path, readonly: bool) -> Result<(), String> {
+    let mut permissions = fs::metadata(path)
+        .map_err(|error| format!("无法读取文件属性: {} ({error})", path.display()))?
+        .permissions();
+    if permissions.readonly() == readonly {
+        return Ok(());
+    }
+
+    permissions.set_readonly(readonly);
+    fs::set_permissions(path, permissions)
+        .map_err(|error| format!("无法更新文件只读属性: {} ({error})", path.display()))
+}
+
 #[cfg(target_os = "windows")]
 fn replace_existing_file(from: &Path, to: &Path) -> Result<(), String> {
     let from_wide = path_to_wide(from);
@@ -2669,14 +2684,8 @@ impl ExifToolSession {
                 planned_file.source_path.display()
             )
         })?;
-        if matches!(options.output_mode, OutputMode::Overwrite)
-            && source_metadata.permissions().readonly()
-        {
-            return Err(format!(
-                "源文件是只读文件，无法原地替换: {}",
-                planned_file.source_path.display()
-            ));
-        }
+        let should_restore_readonly = matches!(options.output_mode, OutputMode::Overwrite)
+            && source_metadata.permissions().readonly();
 
         let removal_args =
             cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
@@ -2691,6 +2700,12 @@ impl ExifToolSession {
                 })?;
             }
             return Ok(());
+        }
+        if should_restore_readonly && !options.allow_readonly_overwrite {
+            return Err(format!(
+                "源文件是只读文件，无法原地替换。可在设置中开启临时取消只读: {}",
+                planned_file.source_path.display()
+            ));
         }
 
         let overwrite_workspace = match options.output_mode {
@@ -2731,10 +2746,24 @@ impl ExifToolSession {
         }
 
         if let Some(workspace) = overwrite_workspace.as_ref() {
+            if should_restore_readonly {
+                set_file_readonly(&planned_file.source_path, false)
+                    .map_err(|error| format!("无法临时取消只读属性: {error}"))?;
+            }
+
             let complete_result =
                 complete_clean_temp_workspace(&planned_file.source_path, workspace);
             workspace.cleanup();
-            complete_result?;
+            if let Err(error) = complete_result {
+                if should_restore_readonly {
+                    let _ = set_file_readonly(&planned_file.source_path, true);
+                }
+                return Err(error);
+            }
+            if should_restore_readonly {
+                set_file_readonly(&planned_file.source_path, true)
+                    .map_err(|error| format!("清理已完成，但恢复只读属性失败: {error}"))?;
+            }
         }
 
         Ok(())
@@ -3802,6 +3831,19 @@ mod tests {
     }
 
     #[test]
+    fn png_files_are_ignored_by_default() {
+        assert!(
+            !is_supported_file(Path::new("sample.png")),
+            "png files should be skipped by the default queue scanner"
+        );
+        assert!(
+            !is_supported_file(Path::new("sample.PNG")),
+            "png matching should be case-insensitive"
+        );
+        assert!(is_supported_file(Path::new("sample.jpg")));
+    }
+
+    #[test]
     fn cleanup_preview_states_fill_missing_rows_from_final_summary() {
         let tracked_preview_files = vec![
             queued_file("C:/input/1.jpg", "1.jpg", "input", "C:/input"),
@@ -3961,6 +4003,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -3972,6 +4015,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
@@ -3993,6 +4037,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
@@ -4033,6 +4078,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4048,6 +4094,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4067,6 +4114,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
@@ -4099,6 +4147,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
@@ -4242,6 +4291,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4256,6 +4306,102 @@ mod tests {
             "expected png clean to succeed, got {result:?}"
         );
         assert!(working_copy.exists(), "cleaned file should still exist");
+    }
+
+    #[test]
+    fn persistent_session_rejects_readonly_without_opt_in() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join("metasweep-tests");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let working_copy = temp_dir.join(format!("readonly-reject-{counter}.png"));
+        fs::copy(&source, &working_copy).expect("copy sample png");
+        set_file_readonly(&working_copy, true).expect("set readonly");
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            allow_readonly_overwrite: false,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+        let readonly_after = fs::metadata(&working_copy)
+            .expect("read copied file metadata")
+            .permissions()
+            .readonly();
+        let _ = set_file_readonly(&working_copy, false);
+
+        assert!(
+            result
+                .expect_err("readonly file should require explicit opt-in")
+                .contains("只读文件"),
+            "expected readonly rejection"
+        );
+        assert!(
+            readonly_after,
+            "rejected cleanup should leave the source readonly"
+        );
+    }
+
+    #[test]
+    fn persistent_session_restores_readonly_with_opt_in() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join("metasweep-tests");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let working_copy = temp_dir.join(format!("readonly-restore-{counter}.png"));
+        fs::copy(&source, &working_copy).expect("copy sample png");
+        set_file_readonly(&working_copy, true).expect("set readonly");
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            allow_readonly_overwrite: true,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+        let readonly_after = fs::metadata(&working_copy)
+            .expect("read copied file metadata")
+            .permissions()
+            .readonly();
+        let _ = set_file_readonly(&working_copy, false);
+
+        assert!(
+            result.is_ok(),
+            "expected opt-in readonly cleanup to succeed, got {result:?}"
+        );
+        assert!(
+            readonly_after,
+            "successful cleanup should restore the source readonly attribute"
+        );
     }
 
     #[test]
@@ -4280,6 +4426,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4324,6 +4471,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4367,6 +4515,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4415,6 +4564,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4471,6 +4621,7 @@ mod tests {
             output_dir: None,
             parallelism: 1,
             preserve_structure: true,
+            allow_readonly_overwrite: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,

@@ -35,6 +35,7 @@ export function SettingsDrawer(props: {
   parallelism: number;
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
+  allowReadonlyOverwrite: boolean;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -43,6 +44,7 @@ export function SettingsDrawer(props: {
   onResetParallelism: () => void;
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
+  onAllowReadonlyOverwriteChange: (value: boolean) => void;
   onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
   onTargetedImageCleanupChange: (value: TargetedImageCleanupPreferences) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
@@ -138,7 +140,7 @@ export function SettingsDrawer(props: {
               "清理完成后，可选择写入你自己的公开 XMP 标记。"}
             {activeTab === "behavior" && "控制任务详情和失败提示的显示方式。"}
             {activeTab === "environment" &&
-              "当前运行环境信息，仅用于确认状态。"}
+              "当前运行环境信息和只读文件处理方式。"}
           </span>
         </div>
 
@@ -608,6 +610,35 @@ export function SettingsDrawer(props: {
                   资源管理器右键可直接入队
                 </span>
               </div>
+            </div>
+
+            <div className="setting-card">
+              <div className="setting-head">
+                <div>
+                  <strong>只读文件</strong>
+                  <span>
+                    默认跳过只读文件，避免改动被保护的内容。开启后会临时取消只读并在清理后恢复。
+                  </span>
+                </div>
+              </div>
+
+              <label className="setting-check">
+                <input
+                  type="checkbox"
+                  checked={props.allowReadonlyOverwrite}
+                  onChange={(event) =>
+                    props.onAllowReadonlyOverwriteChange(
+                      event.currentTarget.checked,
+                    )
+                  }
+                />
+                <div>
+                  <strong>允许临时取消只读属性</strong>
+                  <span>
+                    仅处理文件只读属性；如果文件被占用或没有系统写入权限，仍会失败。
+                  </span>
+                </div>
+              </label>
             </div>
           </div>
         ) : null}

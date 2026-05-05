@@ -11,6 +11,7 @@ export type DesktopPreferences = {
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
+  allowReadonlyOverwrite: boolean;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -23,6 +24,7 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   autoOpenDetailsOnFailure: true,
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
+  allowReadonlyOverwrite: false,
   videoCleanupMode: "safe",
   targetedImageCleanup: {
     enabled: false,
@@ -117,6 +119,10 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       typeof record.lastDetailsOpen === "boolean"
         ? record.lastDetailsOpen
         : DEFAULT_PREFERENCES.lastDetailsOpen,
+    allowReadonlyOverwrite:
+      typeof record.allowReadonlyOverwrite === "boolean"
+        ? record.allowReadonlyOverwrite
+        : DEFAULT_PREFERENCES.allowReadonlyOverwrite,
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
     targetedImageCleanup: sanitizeTargetedImageCleanup(record.targetedImageCleanup),
     metadataWrite: {

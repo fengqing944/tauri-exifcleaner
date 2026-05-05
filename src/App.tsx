@@ -127,6 +127,7 @@ function App() {
     clearQueue,
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
+    allowReadonlyOverwrite: preferences.allowReadonlyOverwrite,
     videoCleanupMode: preferences.videoCleanupMode,
     targetedImageCleanup: preferences.targetedImageCleanup,
     metadataWrite: preferences.metadataWrite,
@@ -665,6 +666,7 @@ function App() {
         parallelism={parallelism}
         autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
+        allowReadonlyOverwrite={preferences.allowReadonlyOverwrite}
         videoCleanupMode={preferences.videoCleanupMode}
         targetedImageCleanup={preferences.targetedImageCleanup}
         metadataWrite={preferences.metadataWrite}
@@ -680,6 +682,9 @@ function App() {
         }
         onReopenRunDetailsOnLaunchChange={(value) =>
           setPreference("reopenRunDetailsOnLaunch", value)
+        }
+        onAllowReadonlyOverwriteChange={(value) =>
+          setPreference("allowReadonlyOverwrite", value)
         }
         onVideoCleanupModeChange={(videoCleanupMode) =>
           setPreference("videoCleanupMode", videoCleanupMode)

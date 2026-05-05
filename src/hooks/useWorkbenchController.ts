@@ -30,6 +30,7 @@ import {
 
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
+  allowReadonlyOverwrite?: boolean;
   videoCleanupMode?: VideoCleanupMode;
   targetedImageCleanup?: TargetedImageCleanupPreferences;
   metadataWrite?: MetadataWritePreferences;
@@ -270,6 +271,7 @@ export function useWorkbenchController(options?: {
           outputDir: null,
           parallelism,
           preserveStructure: true,
+          allowReadonlyOverwrite: Boolean(options?.allowReadonlyOverwrite),
           videoCleanupMode: options?.videoCleanupMode ?? "safe",
           targetedImageCleanup: {
             enabled: Boolean(options?.targetedImageCleanup?.enabled),

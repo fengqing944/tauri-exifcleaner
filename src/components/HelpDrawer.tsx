@@ -28,7 +28,7 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
         </div>
         <div className="utility-chip-row">
           <span className="topbar-meta-chip">
-            图片: JPG PNG WEBP HEIC GIF TIFF
+            图片: JPG WEBP HEIC GIF TIFF
           </span>
           <span className="topbar-meta-chip">
             视频/音频: MP4 MOV M4V AVI MP3 WAV
@@ -69,6 +69,12 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
           <strong>原地覆盖</strong>
           <span>
             当前版本固定为原地覆盖清理。程序会保留文件时间信息，并在工作台里反馈成功、失败和字段结果。
+          </span>
+        </div>
+        <div className="utility-note">
+          <strong>PNG 默认跳过</strong>
+          <span>
+            PNG 不进入清理队列，避免影响颜色配置、Gamma 或 ICC Profile 等显示相关数据。
           </span>
         </div>
       </section>

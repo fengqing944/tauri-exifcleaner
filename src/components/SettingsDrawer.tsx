@@ -188,9 +188,9 @@ export function SettingsDrawer(props: {
             <div className="setting-card">
               <div className="setting-head">
                 <div>
-                  <strong>图片指定清理</strong>
+                  <strong>图片按内容搜索清理</strong>
                   <span>
-                    开启后，图片只清理下面指定字段或匹配搜索词的字段；视频和其它格式继续照常完整清理。
+                    开启后，图片只删除公开描述字段里匹配搜索词的内容；视频和其它格式继续照常完整清理。
                   </span>
                 </div>
               </div>
@@ -206,97 +206,10 @@ export function SettingsDrawer(props: {
                   }
                 />
                 <div>
-                  <strong>对图片使用指定清理</strong>
-                  <span>适合只清掉标题、作者、版权或某个搜索值，不动图片其它元数据。</span>
+                  <strong>对图片使用按内容搜索清理</strong>
+                  <span>适合清掉某个作者名、水印词或标记文本，不动技术参数。</span>
                 </div>
               </label>
-
-              <div className="setting-check-grid">
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={props.targetedImageCleanup.title}
-                    disabled={!props.targetedImageCleanup.enabled}
-                    onChange={(event) =>
-                      updateTargetedImageCleanup({
-                        title: event.currentTarget.checked,
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>标题</strong>
-                    <span>Title / ObjectName / XPTitle</span>
-                  </div>
-                </label>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={props.targetedImageCleanup.subject}
-                    disabled={!props.targetedImageCleanup.enabled}
-                    onChange={(event) =>
-                      updateTargetedImageCleanup({
-                        subject: event.currentTarget.checked,
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>主题</strong>
-                    <span>Subject / Keywords</span>
-                  </div>
-                </label>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={props.targetedImageCleanup.author}
-                    disabled={!props.targetedImageCleanup.enabled}
-                    onChange={(event) =>
-                      updateTargetedImageCleanup({
-                        author: event.currentTarget.checked,
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>作者</strong>
-                    <span>Creator / Artist / By-line</span>
-                  </div>
-                </label>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={props.targetedImageCleanup.rights}
-                    disabled={!props.targetedImageCleanup.enabled}
-                    onChange={(event) =>
-                      updateTargetedImageCleanup({
-                        rights: event.currentTarget.checked,
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>版权</strong>
-                    <span>Rights / Copyright</span>
-                  </div>
-                </label>
-
-                <label className="setting-check">
-                  <input
-                    type="checkbox"
-                    checked={props.targetedImageCleanup.imageId}
-                    disabled={!props.targetedImageCleanup.enabled}
-                    onChange={(event) =>
-                      updateTargetedImageCleanup({
-                        imageId: event.currentTarget.checked,
-                      })
-                    }
-                  />
-                  <div>
-                    <strong>图像 ID</strong>
-                    <span>ImageUniqueID / DocumentID</span>
-                  </div>
-                </label>
-              </div>
 
               <label className="setting-field">
                 <span>按内容搜索清理</span>
@@ -315,7 +228,7 @@ export function SettingsDrawer(props: {
               </label>
 
               <span className="setting-footnote">
-                搜索只匹配标题、主题、作者、版权、图像 ID、说明等公开描述字段；不会按文件名、系统属性或技术参数删除。
+                搜索框为空时不会改动图片。搜索只匹配标题、主题、作者、版权、图像 ID、说明等公开描述字段；不会按文件名、系统属性或技术参数删除。
               </span>
             </div>
 

@@ -275,11 +275,6 @@ export function useWorkbenchController(options?: {
           videoCleanupMode: options?.videoCleanupMode ?? "safe",
           targetedImageCleanup: {
             enabled: Boolean(options?.targetedImageCleanup?.enabled),
-            title: Boolean(options?.targetedImageCleanup?.title),
-            subject: Boolean(options?.targetedImageCleanup?.subject),
-            author: Boolean(options?.targetedImageCleanup?.author),
-            rights: Boolean(options?.targetedImageCleanup?.rights),
-            imageId: Boolean(options?.targetedImageCleanup?.imageId),
             search: options?.targetedImageCleanup?.search.trim() || null,
           },
           metadataWrite: {

@@ -28,11 +28,6 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   videoCleanupMode: "safe",
   targetedImageCleanup: {
     enabled: false,
-    title: true,
-    subject: true,
-    author: true,
-    rights: true,
-    imageId: true,
     search: "",
   },
   metadataWrite: {
@@ -68,26 +63,6 @@ function sanitizeTargetedImageCleanup(value: unknown): TargetedImageCleanupPrefe
       typeof record.enabled === "boolean"
         ? record.enabled
         : DEFAULT_PREFERENCES.targetedImageCleanup.enabled,
-    title:
-      typeof record.title === "boolean"
-        ? record.title
-        : DEFAULT_PREFERENCES.targetedImageCleanup.title,
-    subject:
-      typeof record.subject === "boolean"
-        ? record.subject
-        : DEFAULT_PREFERENCES.targetedImageCleanup.subject,
-    author:
-      typeof record.author === "boolean"
-        ? record.author
-        : DEFAULT_PREFERENCES.targetedImageCleanup.author,
-    rights:
-      typeof record.rights === "boolean"
-        ? record.rights
-        : DEFAULT_PREFERENCES.targetedImageCleanup.rights,
-    imageId:
-      typeof record.imageId === "boolean"
-        ? record.imageId
-        : DEFAULT_PREFERENCES.targetedImageCleanup.imageId,
     search: sanitizeTextPreference(record.search),
   };
 }

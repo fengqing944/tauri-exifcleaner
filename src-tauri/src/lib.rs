@@ -33,43 +33,6 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "mef", "mrw", "nef", "nrw", "orf", "png",
     "raf", "raw", "rw2", "sr2", "srw", "tif", "tiff", "webp", "x3f",
 ];
-const TARGET_IMAGE_TITLE_ARGS: &[&str] = &[
-    "-XMP-dc:Title=",
-    "-IPTC:ObjectName=",
-    "-EXIF:ImageDescription=",
-    "-EXIF:XPTitle=",
-    "-PNG:Title=",
-];
-const TARGET_IMAGE_SUBJECT_ARGS: &[&str] = &[
-    "-XMP-dc:Subject=",
-    "-IPTC:Keywords=",
-    "-EXIF:XPKeywords=",
-    "-EXIF:XPSubject=",
-    "-PNG:Subject=",
-];
-const TARGET_IMAGE_AUTHOR_ARGS: &[&str] = &[
-    "-XMP-dc:Creator=",
-    "-EXIF:Artist=",
-    "-EXIF:XPAuthor=",
-    "-IPTC:By-line=",
-    "-PNG:Author=",
-];
-const TARGET_IMAGE_RIGHTS_ARGS: &[&str] = &[
-    "-XMP-dc:Rights=",
-    "-XMP-xmpRights:WebStatement=",
-    "-EXIF:Copyright=",
-    "-IPTC:CopyrightNotice=",
-    "-PNG:Copyright=",
-];
-const TARGET_IMAGE_ID_ARGS: &[&str] = &[
-    "-EXIF:ImageUniqueID=",
-    "-XMP-exif:ImageUniqueID=",
-    "-XMP-iptcExt:DigitalImageGUID=",
-    "-XMP-xmpMM:DocumentID=",
-    "-XMP-xmpMM:InstanceID=",
-    "-XMP-xmpMM:OriginalDocumentID=",
-    "-XMP-photoshop:DocumentAncestors=",
-];
 const TARGET_IMAGE_SEARCH_ALLOWED_TAGS: &[&str] = &[
     "XMP-dc:Title",
     "IPTC:ObjectName",
@@ -320,11 +283,6 @@ struct CleanupOptions {
 #[serde(rename_all = "camelCase")]
 struct TargetedImageCleanupOptions {
     enabled: bool,
-    title: bool,
-    subject: bool,
-    author: bool,
-    rights: bool,
-    image_id: bool,
     search: Option<String>,
 }
 
@@ -2426,34 +2384,6 @@ fn targeted_image_cleanup_args(
     exiftool_path: &Path,
 ) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
-    if targeted.title {
-        args.extend(TARGET_IMAGE_TITLE_ARGS.iter().map(|arg| (*arg).to_string()));
-    }
-    if targeted.subject {
-        args.extend(
-            TARGET_IMAGE_SUBJECT_ARGS
-                .iter()
-                .map(|arg| (*arg).to_string()),
-        );
-    }
-    if targeted.author {
-        args.extend(
-            TARGET_IMAGE_AUTHOR_ARGS
-                .iter()
-                .map(|arg| (*arg).to_string()),
-        );
-    }
-    if targeted.rights {
-        args.extend(
-            TARGET_IMAGE_RIGHTS_ARGS
-                .iter()
-                .map(|arg| (*arg).to_string()),
-        );
-    }
-    if targeted.image_id {
-        args.extend(TARGET_IMAGE_ID_ARGS.iter().map(|arg| (*arg).to_string()));
-    }
-
     let search_terms = sanitize_targeted_search_terms(targeted.search.as_deref());
     if !search_terms.is_empty() {
         let record = read_raw_metadata_record(exiftool_path, source_path)?;
@@ -4190,7 +4120,7 @@ mod tests {
     }
 
     #[test]
-    fn targeted_image_cleanup_removes_only_selected_image_tags() {
+    fn targeted_image_cleanup_without_search_is_noop_for_images() {
         let options = CleanupOptions {
             output_mode: OutputMode::Overwrite,
             output_dir: None,
@@ -4200,11 +4130,6 @@ mod tests {
             video_cleanup_mode: None,
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
-                title: true,
-                subject: false,
-                author: true,
-                rights: true,
-                image_id: true,
                 search: None,
             }),
             metadata_write: None,
@@ -4215,11 +4140,7 @@ mod tests {
                 .expect("build targeted args");
 
         assert!(!args.contains(&"-all=".to_string()));
-        assert!(args.contains(&"-XMP-dc:Title=".to_string()));
-        assert!(!args.contains(&"-XMP-dc:Subject=".to_string()));
-        assert!(args.contains(&"-XMP-dc:Creator=".to_string()));
-        assert!(args.contains(&"-EXIF:Copyright=".to_string()));
-        assert!(args.contains(&"-EXIF:ImageUniqueID=".to_string()));
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -4233,11 +4154,6 @@ mod tests {
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
-                title: true,
-                subject: true,
-                author: true,
-                rights: true,
-                image_id: true,
                 search: None,
             }),
             metadata_write: None,

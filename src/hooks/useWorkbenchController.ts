@@ -6,6 +6,7 @@ import { startTransition, useEffect, useEffectEvent, useRef, useState } from "re
 
 import {
   type CleanupProgressEvent,
+  type CleanupOutputMode,
   type CleanupSummary,
   type FileRunState,
   type MetadataWritePreferences,
@@ -31,6 +32,7 @@ import {
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
   allowReadonlyOverwrite?: boolean;
+  cleanupOutputMode?: CleanupOutputMode;
   videoCleanupMode?: VideoCleanupMode;
   targetedImageCleanup?: TargetedImageCleanupPreferences;
   metadataWrite?: MetadataWritePreferences;
@@ -256,6 +258,14 @@ export function useWorkbenchController(options?: {
       return;
     }
 
+    const outputMode = options?.cleanupOutputMode ?? "overwrite";
+    const outputDir =
+      outputMode === "mirror" ? runtimeInfo?.defaultOutputDir ?? null : null;
+    if (outputMode === "mirror" && !outputDir) {
+      setErrorMessage("镜像输出目录尚未准备好，请稍后再开始清理。");
+      return;
+    }
+
     setIsRunning(true);
     setErrorMessage(null);
     setRunFailures([]);
@@ -267,8 +277,8 @@ export function useWorkbenchController(options?: {
     try {
       const result = await invoke<CleanupSummary>("run_cleanup", {
         options: {
-          outputMode: "overwrite",
-          outputDir: null,
+          outputMode,
+          outputDir,
           parallelism,
           preserveStructure: true,
           allowReadonlyOverwrite: Boolean(options?.allowReadonlyOverwrite),
@@ -293,13 +303,14 @@ export function useWorkbenchController(options?: {
 
       pendingProgressRef.current = null;
       setSummary(result);
-      setRunFailures(result.failures.slice(0, 6));
+      setRunFailures(result.failures);
       setFileStates(buildFileStateMap(result.previewStates));
       setProgress({
         total: result.total,
-        completed: result.succeeded + result.failed,
+        completed: result.succeeded + result.failed + result.unchanged,
         succeeded: result.succeeded,
         failed: result.failed,
+        unchanged: result.unchanged,
         currentPath: "",
         currentStatus: result.cancelled ? "cancelled" : "done",
       });
@@ -468,6 +479,7 @@ export function useWorkbenchController(options?: {
           completed: payload.completed,
           succeeded: payload.succeeded,
           failed: payload.failed,
+          unchanged: payload.unchanged,
           currentPath: payload.currentPath,
           currentStatus: payload.status,
         });
@@ -488,6 +500,7 @@ export function useWorkbenchController(options?: {
           completed: payload.completed,
           succeeded: payload.succeeded,
           failed: payload.failed,
+          unchanged: payload.unchanged,
           currentPath: payload.currentPath,
           currentStatus: payload.status,
         });
@@ -500,7 +513,7 @@ export function useWorkbenchController(options?: {
                 error: payload.error ?? "处理失败",
               },
               ...current,
-            ].slice(0, 6),
+            ],
           );
         }
       });

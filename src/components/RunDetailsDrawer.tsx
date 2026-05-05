@@ -45,8 +45,8 @@ export function RunDetailsDrawer(props: {
   const subtitle = props.isRunning
     ? "任务进行中，可查看字段调试和失败项。"
     : props.runFailures.length
-      ? `${props.runFailures.length} 条错误需要查看`
-      : "字段调试、日志位置和最近错误。";
+      ? `${props.runFailures.length} 条失败项可查看`
+      : "字段调试、日志位置和失败列表。";
   const durationLabel = props.metadataDebug.lastDurationMs
     ? `${props.metadataDebug.lastDurationMs} ms`
     : "等待中";
@@ -116,7 +116,7 @@ export function RunDetailsDrawer(props: {
 
       <section className="utility-section run-details-section">
         <div className="task-block-head">
-          <strong>最近错误</strong>
+          <strong>失败列表</strong>
           <span>
             {props.runFailures.length
               ? `${props.runFailures.length} 条`
@@ -125,9 +125,9 @@ export function RunDetailsDrawer(props: {
         </div>
         {props.runFailures.length ? (
           <div className="failure-list task-failure-list">
-            {props.runFailures.map((failure) => (
+            {props.runFailures.map((failure, index) => (
               <div
-                key={failure.sourcePath}
+                key={`${failure.sourcePath}-${index}`}
                 className="failure-row compact-failure-row"
               >
                 <strong title={failure.sourcePath}>

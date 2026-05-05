@@ -128,6 +128,7 @@ function App() {
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
     allowReadonlyOverwrite: preferences.allowReadonlyOverwrite,
+    cleanupOutputMode: preferences.cleanupOutputMode,
     videoCleanupMode: preferences.videoCleanupMode,
     targetedImageCleanup: preferences.targetedImageCleanup,
     metadataWrite: preferences.metadataWrite,
@@ -555,12 +556,20 @@ function App() {
     metadataDebug.status === "running"
       ? "读取中"
       : runFailures.length
-        ? `${runFailures.length} 条错误`
+        ? `${runFailures.length} 条失败`
         : "调试";
+  const summaryResultText =
+    summary && summary.unchanged
+      ? `最近任务成功 ${summary.succeeded} 项，未改动 ${summary.unchanged} 项，失败 ${summary.failed} 项`
+      : summary
+        ? `最近任务成功 ${summary.succeeded} 项，失败 ${summary.failed} 项`
+        : "";
   const toolbarNote = summary
     ? summary.cancelled
-      ? `最近任务已取消，完成 ${summary.succeeded + summary.failed}/${summary.total} 项`
-      : `最近任务成功 ${summary.succeeded} 项，失败 ${summary.failed} 项`
+      ? `最近任务已取消，完成 ${
+          summary.succeeded + summary.failed + summary.unchanged
+        }/${summary.total} 项`
+      : summaryResultText
     : isRunning
       ? `正在清理 ${progress.completed}/${progress.total || fileCount} 项，完成度 ${progressPercent}%`
       : isScanning
@@ -577,6 +586,7 @@ function App() {
         isRunning={isRunning}
         isScanning={isScanning}
         parallelism={parallelism}
+        cleanupOutputMode={preferences.cleanupOutputMode}
         toolbarNote={toolbarNote}
         detailsLabel={detailsLabel}
         isDetailsOpen={isDetailsOpen}
@@ -667,6 +677,7 @@ function App() {
         autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
         allowReadonlyOverwrite={preferences.allowReadonlyOverwrite}
+        cleanupOutputMode={preferences.cleanupOutputMode}
         videoCleanupMode={preferences.videoCleanupMode}
         targetedImageCleanup={preferences.targetedImageCleanup}
         metadataWrite={preferences.metadataWrite}
@@ -685,6 +696,9 @@ function App() {
         }
         onAllowReadonlyOverwriteChange={(value) =>
           setPreference("allowReadonlyOverwrite", value)
+        }
+        onCleanupOutputModeChange={(cleanupOutputMode) =>
+          setPreference("cleanupOutputMode", cleanupOutputMode)
         }
         onVideoCleanupModeChange={(videoCleanupMode) =>
           setPreference("videoCleanupMode", videoCleanupMode)

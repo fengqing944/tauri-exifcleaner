@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type {
+  CleanupOutputMode,
   MetadataWritePreferences,
   RuntimeInfo,
   TargetedImageCleanupPreferences,
@@ -36,6 +37,7 @@ export function SettingsDrawer(props: {
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   allowReadonlyOverwrite: boolean;
+  cleanupOutputMode: CleanupOutputMode;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -45,6 +47,7 @@ export function SettingsDrawer(props: {
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
   onAllowReadonlyOverwriteChange: (value: boolean) => void;
+  onCleanupOutputModeChange: (value: CleanupOutputMode) => void;
   onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
   onTargetedImageCleanupChange: (value: TargetedImageCleanupPreferences) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
@@ -185,6 +188,67 @@ export function SettingsDrawer(props: {
 
         {activeTab === "cleanup" ? (
           <div className="setting-stack">
+            <div className="setting-card">
+              <div className="setting-head">
+                <div>
+                  <strong>输出方式</strong>
+                  <span>
+                    原地覆盖会直接替换源文件；镜像输出会把清理后的文件写到单独目录。
+                  </span>
+                </div>
+              </div>
+
+              <div
+                className="setting-segmented"
+                role="radiogroup"
+                aria-label="输出方式"
+              >
+                <label
+                  className={`setting-segment ${
+                    props.cleanupOutputMode === "overwrite" ? "is-selected" : ""
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="cleanup-output-mode"
+                    value="overwrite"
+                    checked={props.cleanupOutputMode === "overwrite"}
+                    onChange={() => props.onCleanupOutputModeChange("overwrite")}
+                  />
+                  <span>
+                    <strong>原地覆盖</strong>
+                    <small>替换源文件</small>
+                  </span>
+                </label>
+
+                <label
+                  className={`setting-segment ${
+                    props.cleanupOutputMode === "mirror" ? "is-selected" : ""
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="cleanup-output-mode"
+                    value="mirror"
+                    checked={props.cleanupOutputMode === "mirror"}
+                    onChange={() => props.onCleanupOutputModeChange("mirror")}
+                  />
+                  <span>
+                    <strong>镜像输出</strong>
+                    <small>保留源文件</small>
+                  </span>
+                </label>
+              </div>
+
+              <span
+                className="setting-footnote"
+                title={props.runtimeInfo?.defaultOutputDir ?? ""}
+              >
+                镜像输出目录：
+                {props.runtimeInfo?.defaultOutputDir ?? "等待运行环境信息"}。
+              </span>
+            </div>
+
             <div className="setting-card">
               <div className="setting-head">
                 <div>
@@ -518,7 +582,9 @@ export function SettingsDrawer(props: {
                     ? `ExifTool ${props.runtimeInfo.exiftoolVersion}`
                     : "ExifTool"}
                 </span>
-                <span className="topbar-meta-chip">原地覆盖</span>
+                <span className="topbar-meta-chip">
+                  {props.cleanupOutputMode === "mirror" ? "镜像输出" : "原地覆盖"}
+                </span>
                 <span className="topbar-meta-chip">
                   资源管理器右键可直接入队
                 </span>

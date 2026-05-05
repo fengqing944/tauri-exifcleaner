@@ -1,5 +1,11 @@
-export type CleanupStatus = "running" | "success" | "failed" | "cancelled";
+export type CleanupStatus =
+  | "running"
+  | "success"
+  | "unchanged"
+  | "failed"
+  | "cancelled";
 export type BadgeTone = "success" | "warning" | "info" | "neutral" | "danger";
+export type CleanupOutputMode = "overwrite" | "mirror";
 
 export type RuntimeInfo = {
   defaultOutputDir: string;
@@ -49,6 +55,7 @@ export type CleanupProgressEvent = {
   completed: number;
   succeeded: number;
   failed: number;
+  unchanged: number;
   currentPath: string;
   outputPath: string | null;
   status: CleanupStatus;
@@ -80,6 +87,7 @@ export type CleanupSummary = {
   total: number;
   succeeded: number;
   failed: number;
+  unchanged: number;
   cancelled: boolean;
   outputDir: string | null;
   failures: Array<{
@@ -113,6 +121,7 @@ export type ProgressState = {
   completed: number;
   succeeded: number;
   failed: number;
+  unchanged: number;
   currentPath: string;
   currentStatus: string;
 };
@@ -173,6 +182,7 @@ export const EMPTY_PROGRESS: ProgressState = {
   completed: 0,
   succeeded: 0,
   failed: 0,
+  unchanged: 0,
   currentPath: "",
   currentStatus: "idle",
 };
@@ -235,6 +245,7 @@ export function createProgressState(total: number): ProgressState {
     completed: 0,
     succeeded: 0,
     failed: 0,
+    unchanged: 0,
     currentPath: "",
     currentStatus: "idle",
   };
@@ -327,6 +338,8 @@ export function mergeSummaryFileStates(
   const next = { ...current };
   const previewStateMap = buildFileStateMap(summary.previewStates);
   const failureMap = new Map(summary.failures.map((failure) => [normalizePath(failure.sourcePath), failure.error]));
+  const untrackedSuccessStatus =
+    summary.unchanged > 0 && summary.succeeded === 0 ? "unchanged" : "success";
 
   for (const [pathKey, state] of Object.entries(previewStateMap)) {
     next[pathKey] = state;
@@ -350,7 +363,7 @@ export function mergeSummaryFileStates(
 
     if (!summary.cancelled) {
       next[pathKey] = {
-        status: "success",
+        status: untrackedSuccessStatus,
         outputPath: next[pathKey]?.outputPath ?? null,
         error: null,
       };
@@ -376,6 +389,8 @@ export function getRowStatusDescriptor(rowState?: FileRunState): { label: string
       return { label: "处理中", tone: "info" };
     case "success":
       return { label: "已清理", tone: "success" };
+    case "unchanged":
+      return { label: "未改动", tone: "neutral" };
     case "failed":
       return { label: "失败", tone: "danger" };
     case "cancelled":
@@ -393,6 +408,8 @@ export function formatProgressStatus(status: string): string {
       return "处理中";
     case "success":
       return "已完成";
+    case "unchanged":
+      return "未改动";
     case "failed":
       return "失败";
     case "cancelled":
@@ -418,6 +435,9 @@ export function resolveAfterCountLabel(
   if (rowState?.status === "success") {
     return "待读取";
   }
+  if (rowState?.status === "unchanged") {
+    return "未改动";
+  }
   if (rowState?.status === "running") {
     return "处理中";
   }
@@ -437,6 +457,9 @@ export function resolveAfterEmptyText(rowState?: FileRunState): string {
   if (rowState.status === "success") {
     return "没有可展示的处理后字段。";
   }
+  if (rowState.status === "unchanged") {
+    return "没有匹配到要清理的内容，文件未改动。";
+  }
   if (rowState.status === "cancelled") {
     return "任务已取消，处理后结果不可用。";
   }
@@ -451,11 +474,17 @@ export function buildActivityState(input: {
   progress: ProgressState;
 }): ActivityState {
   if (input.summary) {
+    const completed =
+      input.summary.succeeded + input.summary.failed + input.summary.unchanged;
+    const resultTitle = input.summary.unchanged
+      ? `成功 ${input.summary.succeeded} 项，未改动 ${input.summary.unchanged} 项，失败 ${input.summary.failed} 项`
+      : `成功 ${input.summary.succeeded} 项，失败 ${input.summary.failed} 项`;
+
     return {
       label: input.summary.cancelled ? "任务已取消" : "任务已完成",
       title: input.summary.cancelled
-        ? `已完成 ${input.summary.succeeded + input.summary.failed}/${input.summary.total} 项`
-        : `成功 ${input.summary.succeeded} 项，失败 ${input.summary.failed} 项`,
+        ? `已完成 ${completed}/${input.summary.total} 项`
+        : resultTitle,
     };
   }
 

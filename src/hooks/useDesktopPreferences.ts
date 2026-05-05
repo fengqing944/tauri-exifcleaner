@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type {
+  CleanupOutputMode,
   MetadataWritePreferences,
   TargetedImageCleanupPreferences,
   VideoCleanupMode,
@@ -12,6 +13,7 @@ export type DesktopPreferences = {
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
   allowReadonlyOverwrite: boolean;
+  cleanupOutputMode: CleanupOutputMode;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -25,6 +27,7 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
   allowReadonlyOverwrite: false,
+  cleanupOutputMode: "overwrite",
   videoCleanupMode: "safe",
   targetedImageCleanup: {
     enabled: false,
@@ -53,6 +56,10 @@ function sanitizeTextPreference(value: unknown): string {
 
 function sanitizeVideoCleanupMode(value: unknown): VideoCleanupMode {
   return value === "strict" ? "strict" : "safe";
+}
+
+function sanitizeCleanupOutputMode(value: unknown): CleanupOutputMode {
+  return value === "mirror" ? "mirror" : "overwrite";
 }
 
 function sanitizeTargetedImageCleanup(value: unknown): TargetedImageCleanupPreferences {
@@ -98,6 +105,7 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       typeof record.allowReadonlyOverwrite === "boolean"
         ? record.allowReadonlyOverwrite
         : DEFAULT_PREFERENCES.allowReadonlyOverwrite,
+    cleanupOutputMode: sanitizeCleanupOutputMode(record.cleanupOutputMode),
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
     targetedImageCleanup: sanitizeTargetedImageCleanup(record.targetedImageCleanup),
     metadataWrite: {

@@ -115,6 +115,7 @@ const QUICKTIME_TRACK_PREVIEW_FIELDS: &[&str] = &[
 const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
+const METADATA_PREVIEW_FIELD_LIMIT: usize = 80;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
 const SHELL_IMPORT_ARG: &str = "--shell-import";
 const WINDOW_STATE_FILENAME: &str = ".window-state.json";
@@ -318,6 +319,7 @@ struct CleanupProgressEvent {
     completed: usize,
     succeeded: usize,
     failed: usize,
+    unchanged: usize,
     current_path: String,
     output_path: Option<String>,
     status: String,
@@ -348,6 +350,7 @@ struct CleanupSummary {
     total: usize,
     succeeded: usize,
     failed: usize,
+    unchanged: usize,
     cancelled: bool,
     output_dir: Option<String>,
     failures: Vec<CleanupFailure>,
@@ -1538,11 +1541,62 @@ fn summarize_metadata_value(value: &Value) -> String {
 }
 
 fn build_metadata_snapshot(fields: &[MetadataFieldPreview]) -> MetadataPreviewSnapshot {
+    if fields.len() <= METADATA_PREVIEW_FIELD_LIMIT {
+        return MetadataPreviewSnapshot {
+            count: fields.len(),
+            fields: fields.to_vec(),
+            truncated: false,
+        };
+    }
+
+    let mut indexed_fields = fields.iter().enumerate().collect::<Vec<_>>();
+    indexed_fields.sort_by_key(|entry| (metadata_preview_field_priority(entry.1), entry.0));
+
     MetadataPreviewSnapshot {
         count: fields.len(),
-        fields: fields.to_vec(),
-        truncated: false,
+        fields: indexed_fields
+            .into_iter()
+            .take(METADATA_PREVIEW_FIELD_LIMIT)
+            .map(|(_, field)| field.clone())
+            .collect(),
+        truncated: true,
     }
+}
+
+fn metadata_preview_field_priority(field: &MetadataFieldPreview) -> usize {
+    if TARGET_IMAGE_SEARCH_ALLOWED_TAGS
+        .iter()
+        .any(|tag| metadata_field_matches_tag(field, tag))
+    {
+        return 0;
+    }
+
+    if field.group.eq_ignore_ascii_case("QuickTime")
+        && is_metadata_name_in_list(&field.name, QUICKTIME_PREVIEW_FIELDS)
+    {
+        return 1;
+    }
+
+    if is_quicktime_track_group(&field.group)
+        && is_metadata_name_in_list(&field.name, QUICKTIME_TRACK_PREVIEW_FIELDS)
+    {
+        return 1;
+    }
+
+    if field.group.eq_ignore_ascii_case("EXIF")
+        || field.group.eq_ignore_ascii_case("IPTC")
+        || field.group.eq_ignore_ascii_case("PNG")
+        || field.group.to_ascii_lowercase().starts_with("xmp")
+    {
+        return 2;
+    }
+
+    3
+}
+
+fn metadata_field_matches_tag(field: &MetadataFieldPreview, tag: &str) -> bool {
+    let (group, name) = split_metadata_key(tag);
+    field.group.eq_ignore_ascii_case(group) && field.name.eq_ignore_ascii_case(name)
 }
 
 fn empty_metadata_snapshot() -> MetadataPreviewSnapshot {
@@ -1674,6 +1728,7 @@ async fn run_cleanup(
                 total: 0,
                 succeeded: 0,
                 failed: 0,
+                unchanged: 0,
                 cancelled: false,
                 output_dir: options.output_dir.clone(),
                 failures: Vec::new(),
@@ -1727,6 +1782,7 @@ async fn run_cleanup(
         let mut completed = 0_usize;
         let mut succeeded = 0_usize;
         let mut failed = 0_usize;
+        let mut unchanged = 0_usize;
         let mut failures = Vec::new();
         let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
@@ -1755,6 +1811,7 @@ async fn run_cleanup(
                                 completed,
                                 succeeded,
                                 failed,
+                                unchanged,
                                 current_path: started.source_path,
                                 output_path: started.output_path,
                                 status: "running".to_string(),
@@ -1785,6 +1842,7 @@ async fn run_cleanup(
                                 completed: completed + 1,
                                 succeeded: succeeded + usize::from(outcome.status == "success"),
                                 failed: failed + usize::from(outcome.status == "failed"),
+                                unchanged: unchanged + usize::from(outcome.status == "unchanged"),
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
@@ -1797,6 +1855,7 @@ async fn run_cleanup(
                     completed += 1;
                     match outcome.status {
                         "success" => succeeded += 1,
+                        "unchanged" => unchanged += 1,
                         "failed" => {
                             failed += 1;
                             failures.push(CleanupFailure {
@@ -1824,6 +1883,7 @@ async fn run_cleanup(
                                 completed,
                                 succeeded,
                                 failed,
+                                unchanged,
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
@@ -1883,6 +1943,7 @@ async fn run_cleanup(
             total,
             succeeded,
             failed,
+            unchanged,
             cancelled,
             output_dir: options.output_dir.clone(),
             failures,
@@ -2095,7 +2156,7 @@ fn execute_cleanup_file(
         }
     }
 
-    session.clean_file(planned_file, options)?;
+    let status = session.clean_file(planned_file, options)?;
 
     Ok(FileCleanupOutcome {
         source_path: planned_file.source_path.to_string_lossy().to_string(),
@@ -2103,7 +2164,7 @@ fn execute_cleanup_file(
             .output_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
-        status: "success",
+        status,
         error: None,
     })
 }
@@ -2652,7 +2713,7 @@ impl ExifToolSession {
         &mut self,
         planned_file: &PlannedCleanupFile,
         options: &CleanupOptions,
-    ) -> Result<(), String> {
+    ) -> Result<&'static str, String> {
         if !planned_file.source_path.is_file() {
             return Err(format!(
                 "源文件不存在或已移动: {}",
@@ -2680,7 +2741,7 @@ impl ExifToolSession {
                     format!("无法复制未修改文件到 {}: {error}", output_path.display())
                 })?;
             }
-            return Ok(());
+            return Ok("unchanged");
         }
         if should_restore_readonly && !options.allow_readonly_overwrite {
             return Err(format!(
@@ -2735,11 +2796,21 @@ impl ExifToolSession {
             let complete_result =
                 complete_clean_temp_workspace(&planned_file.source_path, workspace);
             workspace.cleanup();
-            if let Err(error) = complete_result {
-                if should_restore_readonly {
-                    let _ = set_file_readonly(&planned_file.source_path, true);
+            let complete_outcome = match complete_result {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    if should_restore_readonly {
+                        let _ = set_file_readonly(&planned_file.source_path, true);
+                    }
+                    return Err(error);
                 }
-                return Err(error);
+            };
+            if matches!(complete_outcome, CleanTempOutcome::Unchanged) {
+                if should_restore_readonly {
+                    set_file_readonly(&planned_file.source_path, true)
+                        .map_err(|error| format!("清理未改动，但恢复只读属性失败: {error}"))?;
+                }
+                return Ok("unchanged");
             }
             if should_restore_readonly {
                 set_file_readonly(&planned_file.source_path, true)
@@ -2747,7 +2818,7 @@ impl ExifToolSession {
             }
         }
 
-        Ok(())
+        Ok("success")
     }
 
     fn clean_file_with_stay_open(
@@ -4267,6 +4338,30 @@ mod tests {
             .expect("ItemList user metadata should be shown");
         assert_eq!(item_list_title.group, "ItemList");
         assert_eq!(item_list_title.name, "Title");
+    }
+
+    #[test]
+    fn metadata_snapshot_truncates_and_keeps_public_fields_first() {
+        let mut fields = (0..90)
+            .map(|index| MetadataFieldPreview {
+                group: "MakerNotes".to_string(),
+                name: format!("Noise{index}"),
+                value_preview: "value".to_string(),
+            })
+            .collect::<Vec<_>>();
+        fields.push(MetadataFieldPreview {
+            group: "XMP-dc".to_string(),
+            name: "Title".to_string(),
+            value_preview: "moeuu".to_string(),
+        });
+
+        let snapshot = build_metadata_snapshot(&fields);
+
+        assert_eq!(snapshot.count, 91);
+        assert_eq!(snapshot.fields.len(), METADATA_PREVIEW_FIELD_LIMIT);
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.fields[0].group, "XMP-dc");
+        assert_eq!(snapshot.fields[0].name, "Title");
     }
 
     #[test]

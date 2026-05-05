@@ -1,4 +1,4 @@
-import type { RuntimeInfo } from "../app-shared";
+import type { CleanupOutputMode, RuntimeInfo } from "../app-shared";
 import { StatusBadge } from "./AppPrimitives";
 
 export function TopToolbar(props: {
@@ -7,6 +7,7 @@ export function TopToolbar(props: {
   isRunning: boolean;
   isScanning: boolean;
   parallelism: number;
+  cleanupOutputMode: CleanupOutputMode;
   toolbarNote: string;
   detailsLabel: string;
   isDetailsOpen: boolean;
@@ -40,7 +41,9 @@ export function TopToolbar(props: {
               ? `ExifTool ${props.runtimeInfo.exiftoolVersion}`
               : "ExifTool"}
           </span>
-          <span className="topbar-meta-chip">原地覆盖</span>
+          <span className="topbar-meta-chip">
+            {props.cleanupOutputMode === "mirror" ? "镜像输出" : "原地覆盖"}
+          </span>
           <span className="topbar-meta-chip">并发 {props.parallelism}</span>
         </div>
       </div>

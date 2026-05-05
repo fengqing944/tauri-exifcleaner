@@ -166,6 +166,7 @@ export function WorkbenchPanel(props: {
             <StatChip label="候选" value={String(props.fileCount)} />
             <StatChip label="大小" value={formatBytes(props.queueView?.totalBytes ?? 0)} />
             <StatChip label="成功" value={String(props.progress.succeeded)} />
+            <StatChip label="未改" value={String(props.progress.unchanged)} />
             <StatChip label="失败" value={String(props.progress.failed)} />
             <StatChip label="忽略" value={String(props.ignoredCount)} />
           </div>
@@ -333,10 +334,20 @@ export function WorkbenchPanel(props: {
           {props.summary ? (
             props.summary.cancelled ? (
               <span>
-                任务已取消，已完成 {props.summary.succeeded + props.summary.failed}/{props.summary.total} 项。
+                任务已取消，已完成{" "}
+                {props.summary.succeeded +
+                  props.summary.failed +
+                  props.summary.unchanged}
+                /{props.summary.total} 项。
               </span>
             ) : (
-              <span>任务完成，成功 {props.summary.succeeded} 项，失败 {props.summary.failed} 项。</span>
+              <span>
+                任务完成，成功 {props.summary.succeeded} 项，
+                {props.summary.unchanged
+                  ? `未改动 ${props.summary.unchanged} 项，`
+                  : ""}
+                失败 {props.summary.failed} 项。
+              </span>
             )
           ) : (
             <span>清理开始后，这里会持续显示当前任务状态。</span>

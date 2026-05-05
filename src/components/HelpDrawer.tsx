@@ -28,7 +28,7 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
         </div>
         <div className="utility-chip-row">
           <span className="topbar-meta-chip">
-            图片: JPG WEBP HEIC GIF TIFF
+            图片: JPG PNG WEBP HEIC GIF TIFF
           </span>
           <span className="topbar-meta-chip">
             视频/音频: MP4 MOV M4V AVI MP3 WAV
@@ -72,9 +72,9 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
           </span>
         </div>
         <div className="utility-note">
-          <strong>PNG 默认跳过</strong>
+          <strong>PNG 安全清理</strong>
           <span>
-            PNG 不进入清理队列，避免影响颜色配置、Gamma 或 ICC Profile 等显示相关数据。
+            PNG 只删除 EXIF、XMP、IPTC 和文本类隐私字段，不写入新标记，也不删除颜色配置、Gamma 或 ICC Profile。
           </span>
         </div>
       </section>

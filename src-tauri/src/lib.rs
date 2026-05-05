@@ -25,8 +25,8 @@ use std::os::windows::{ffi::OsStrExt, process::CommandExt};
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "3fr", "ai", "arq", "arw", "avif", "avi", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "eps",
     "erf", "gif", "gpr", "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "m4a", "m4v", "mef",
-    "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "ps", "psd", "raf", "raw",
-    "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
+    "mie", "mov", "mp3", "mp4", "mrw", "nef", "nrw", "orf", "pdf", "png", "ps", "psd", "raf",
+    "raw", "rw2", "sr2", "srw", "tif", "tiff", "wav", "webp", "wmv", "x3f",
 ];
 const IMAGE_EXTENSIONS: &[&str] = &[
     "3fr", "arq", "arw", "avif", "bmp", "cr2", "cr3", "crw", "dcp", "dng", "erf", "gif", "gpr",
@@ -162,6 +162,33 @@ const METADATA_WRITE_MAX_CHARS: usize = 240;
 const METADATA_KEYWORD_MAX_CHARS: usize = 60;
 const METADATA_KEYWORD_MAX_COUNT: usize = 20;
 const SAFE_CLEAN_REMOVAL_ARGS: &[&str] = &["-all="];
+const PNG_SAFE_CLEAN_REMOVAL_ARGS: &[&str] = &[
+    "-EXIF:All=",
+    "-XMP:All=",
+    "-IPTC:All=",
+    "-PNG:Title=",
+    "-PNG:Author=",
+    "-PNG:Description=",
+    "-PNG:Copyright=",
+    "-PNG:CreationTime=",
+    "-PNG:ModifyDate=",
+    "-PNG:Software=",
+    "-PNG:Disclaimer=",
+    "-PNG:PNGWarning=",
+    "-PNG:Source=",
+    "-PNG:Comment=",
+    "-PNG:Artist=",
+    "-PNG:Document=",
+    "-PNG:Label=",
+    "-PNG:Make=",
+    "-PNG:Model=",
+    "-PNG:Parameters=",
+    "-PNG:AestheticScore=",
+    "-PNG:CreateDate=",
+    "-PNG:ModDate=",
+    "-PNG:TimeStamp=",
+    "-PNG:URL=",
+];
 const STRICT_VIDEO_TIMESTAMP_REMOVAL_ARGS: &[&str] = &[
     "-QuickTime:CreateDate=",
     "-QuickTime:ModifyDate=",
@@ -2353,13 +2380,27 @@ fn cleanup_removal_args_for_file(
     exiftool_path: &Path,
 ) -> Result<Vec<String>, String> {
     let Some(targeted) = options.targeted_image_cleanup.as_ref() else {
-        return Ok(cleanup_removal_args(options));
+        return Ok(default_cleanup_removal_args_for_file(options, source_path));
     };
     if !targeted.enabled || !is_image_path(source_path) {
-        return Ok(cleanup_removal_args(options));
+        return Ok(default_cleanup_removal_args_for_file(options, source_path));
     }
 
     targeted_image_cleanup_args(targeted, source_path, exiftool_path)
+}
+
+fn default_cleanup_removal_args_for_file(
+    options: &CleanupOptions,
+    source_path: &Path,
+) -> Vec<String> {
+    if is_png_path(source_path) {
+        return PNG_SAFE_CLEAN_REMOVAL_ARGS
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect();
+    }
+
+    cleanup_removal_args(options)
 }
 
 fn is_image_path(path: &Path) -> bool {
@@ -2371,6 +2412,12 @@ fn is_image_path(path: &Path) -> bool {
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         })
         .unwrap_or(false)
+}
+
+fn is_png_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
 }
 
 fn targeted_image_cleanup_args(
@@ -2503,7 +2550,11 @@ fn dedupe_args(args: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn metadata_write_args(options: &CleanupOptions) -> Vec<String> {
+fn metadata_write_args(options: &CleanupOptions, source_path: &Path) -> Vec<String> {
+    if is_png_path(source_path) {
+        return Vec::new();
+    }
+
     let Some(metadata_write) = options.metadata_write.as_ref() else {
         return Vec::new();
     };
@@ -2689,7 +2740,7 @@ impl ExifToolSession {
 
         let removal_args =
             cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
-        let write_args = metadata_write_args(options);
+        let write_args = metadata_write_args(options, &planned_file.source_path);
 
         if removal_args.is_empty() && write_args.is_empty() {
             if let (OutputMode::Mirror, Some(output_path)) =
@@ -3831,13 +3882,13 @@ mod tests {
     }
 
     #[test]
-    fn png_files_are_ignored_by_default() {
+    fn png_files_are_supported_with_safe_cleanup() {
         assert!(
-            !is_supported_file(Path::new("sample.png")),
-            "png files should be skipped by the default queue scanner"
+            is_supported_file(Path::new("sample.png")),
+            "png files should enter the default queue scanner"
         );
         assert!(
-            !is_supported_file(Path::new("sample.PNG")),
+            is_supported_file(Path::new("sample.PNG")),
             "png matching should be case-insensitive"
         );
         assert!(is_supported_file(Path::new("sample.jpg")));
@@ -4008,7 +4059,7 @@ mod tests {
             targeted_image_cleanup: None,
             metadata_write: None,
         };
-        assert!(metadata_write_args(&disabled_options).is_empty());
+        assert!(metadata_write_args(&disabled_options, Path::new("sample.jpg")).is_empty());
 
         let empty_options = CleanupOptions {
             output_mode: OutputMode::Overwrite,
@@ -4030,7 +4081,7 @@ mod tests {
                 rights_url: None,
             }),
         };
-        assert!(metadata_write_args(&empty_options).is_empty());
+        assert!(metadata_write_args(&empty_options, Path::new("sample.jpg")).is_empty());
 
         let enabled_options = CleanupOptions {
             output_mode: OutputMode::Overwrite,
@@ -4054,7 +4105,7 @@ mod tests {
         };
 
         assert_eq!(
-            metadata_write_args(&enabled_options),
+            metadata_write_args(&enabled_options, Path::new("sample.jpg")),
             vec![
                 "-XMP-dc:Title=moeuu -title=bad".to_string(),
                 "-XMP-dc:Creator=zero artist".to_string(),
@@ -4068,6 +4119,10 @@ mod tests {
                 "-XMP-xmpRights:WebStatement=https://example.com/rights".to_string(),
                 "-XMP-x:XMPToolkit=".to_string(),
             ]
+        );
+        assert!(
+            metadata_write_args(&enabled_options, Path::new("sample.png")).is_empty(),
+            "PNG files should not receive new XMP metadata after cleanup"
         );
     }
 
@@ -4085,6 +4140,33 @@ mod tests {
         };
 
         assert_eq!(cleanup_removal_args(&options), vec!["-all=".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_removal_args_use_png_safe_list_for_png_files() {
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            allow_readonly_overwrite: false,
+            video_cleanup_mode: Some(VideoCleanupMode::Strict),
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        };
+
+        let args =
+            cleanup_removal_args_for_file(&options, Path::new("sample.png"), Path::new("unused"))
+                .expect("build png cleanup args");
+
+        assert!(!args.contains(&"-all=".to_string()));
+        assert!(args.contains(&"-EXIF:All=".to_string()));
+        assert!(args.contains(&"-XMP:All=".to_string()));
+        assert!(args.contains(&"-PNG:Comment=".to_string()));
+        assert!(args.contains(&"-PNG:ModifyDate=".to_string()));
+        assert!(!args.contains(&"-PNG:ICC_Profile=".to_string()));
+        assert!(!args.contains(&"-PNG:SRGBRendering=".to_string()));
+        assert!(!args.contains(&"-PNG:Gamma=".to_string()));
     }
 
     #[test]
@@ -4306,6 +4388,94 @@ mod tests {
             "expected png clean to succeed, got {result:?}"
         );
         assert!(working_copy.exists(), "cleaned file should still exist");
+    }
+
+    #[test]
+    fn persistent_session_cleans_png_metadata_without_writing_new_tags() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join("metasweep-tests");
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let working_copy = temp_dir.join(format!("png-safe-clean-{counter}.png"));
+        fs::copy(&source, &working_copy).expect("copy sample png");
+
+        let exiftool_path = bundled_exiftool();
+        let mut seed_command = Command::new(&exiftool_path);
+        seed_command
+            .arg("-overwrite_original")
+            .arg("-P")
+            .arg("-EXIF:Artist=Xingtu")
+            .arg("-EXIF:Software=Xingtu 10.5.0")
+            .arg("-PNG:Comment=secret")
+            .arg("--")
+            .arg(&working_copy);
+        configure_hidden_process(&mut seed_command);
+        let seed_output = seed_command.output().expect("write png sample metadata");
+        assert!(
+            seed_output.status.success(),
+            "expected ExifTool to seed PNG metadata, stderr: {}",
+            String::from_utf8_lossy(&seed_output.stderr)
+        );
+
+        let before = read_raw_metadata_record(&exiftool_path, &working_copy)
+            .expect("read seeded png metadata");
+        assert!(before.contains_key("IFD0:Artist"));
+        assert!(before.contains_key("IFD0:Software"));
+        assert!(before.contains_key("PNG:Comment"));
+
+        let planned = PlannedCleanupFile {
+            source_path: working_copy.clone(),
+            output_path: None,
+        };
+        let options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            allow_readonly_overwrite: false,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: Some(MetadataWriteOptions {
+                enabled: true,
+                title: Some("moeuu".to_string()),
+                author: None,
+                description: None,
+                keywords: None,
+                rights: None,
+                rating: None,
+                label: None,
+                rights_url: None,
+            }),
+        };
+
+        let mut session = ExifToolSession::new(&exiftool_path).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session);
+        let _ = session.close();
+
+        assert!(
+            result.is_ok(),
+            "expected png safe cleanup to succeed, got {result:?}"
+        );
+        let after =
+            read_raw_metadata_record(&exiftool_path, &working_copy).expect("read cleaned png");
+        assert!(!after.contains_key("IFD0:Artist"));
+        assert!(!after.contains_key("IFD0:Software"));
+        assert!(!after.contains_key("PNG:Comment"));
+        assert!(
+            !after.contains_key("XMP-dc:Title"),
+            "PNG cleanup should not write new XMP tags"
+        );
+        assert_eq!(
+            after.get("PNG:ImageWidth").and_then(Value::as_u64),
+            Some(32)
+        );
+        assert_eq!(
+            after.get("PNG:ImageHeight").and_then(Value::as_u64),
+            Some(32)
+        );
     }
 
     #[test]

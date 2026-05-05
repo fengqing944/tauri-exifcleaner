@@ -34,14 +34,14 @@
 
 当前代码内置了常见格式过滤，覆盖了常见图片、视频和文档场景，例如：
 
-- `jpg`, `jpeg`, `webp`, `gif`, `tif`, `tiff`
+- `jpg`, `jpeg`, `png`, `webp`, `gif`, `tif`, `tiff`
 - `heic`, `heif`, `avif`
 - `mp4`, `mov`, `m4a`, `wav`, `mp3`, `wmv`, `avi`
 - `pdf`
 - 部分 RAW 扩展名
 
 实际清理由 `ExifTool` 完成，具体写入能力仍以 `ExifTool` 为准。
-PNG 默认会被跳过，避免改动颜色配置、Gamma、ICC Profile 等显示相关数据。
+PNG 会使用专用安全清理：只移除 EXIF / XMP / IPTC 和 PNG 文本类隐私字段，不写入新标记，也不删除颜色配置、Gamma、ICC Profile 等显示相关数据。
 
 ## 运行开发
 

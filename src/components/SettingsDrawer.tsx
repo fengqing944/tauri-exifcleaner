@@ -41,6 +41,7 @@ export function SettingsDrawer(props: {
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
+  rememberMetadataWriteContent: boolean;
   onClose: () => void;
   onParallelismChange: (value: number) => void;
   onResetParallelism: () => void;
@@ -51,11 +52,22 @@ export function SettingsDrawer(props: {
   onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
   onTargetedImageCleanupChange: (value: TargetedImageCleanupPreferences) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
+  onRememberMetadataWriteContentChange: (value: boolean) => void;
 }) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>("execution");
 
   const activeTabMeta =
     SETTINGS_TABS.find((tab) => tab.id === activeTab) ?? SETTINGS_TABS[0];
+  const hasMetadataWriteContent = Boolean(
+    props.metadataWrite.title ||
+      props.metadataWrite.author ||
+      props.metadataWrite.description ||
+      props.metadataWrite.keywords ||
+      props.metadataWrite.rights ||
+      props.metadataWrite.rating ||
+      props.metadataWrite.label ||
+      props.metadataWrite.rightsUrl,
+  );
 
   const updateMetadataWrite = (patch: Partial<MetadataWritePreferences>) => {
     props.onMetadataWriteChange({
@@ -69,6 +81,19 @@ export function SettingsDrawer(props: {
     props.onTargetedImageCleanupChange({
       ...props.targetedImageCleanup,
       ...patch,
+    });
+  };
+  const clearMetadataWriteContent = () => {
+    props.onMetadataWriteChange({
+      ...props.metadataWrite,
+      title: "",
+      author: "",
+      description: "",
+      keywords: "",
+      rights: "",
+      rating: "",
+      label: "",
+      rightsUrl: "",
     });
   };
 
@@ -375,12 +400,38 @@ export function SettingsDrawer(props: {
               </div>
             </label>
 
+            <label className="setting-check">
+              <input
+                type="checkbox"
+                checked={props.rememberMetadataWriteContent}
+                onChange={(event) =>
+                  props.onRememberMetadataWriteContentChange(
+                    event.currentTarget.checked,
+                  )
+                }
+              />
+              <div>
+                <strong>记住填写的标记内容</strong>
+                <span>
+                  关闭时只记住开关状态，标题、作者、版权等文字不会在下次启动后保留。
+                </span>
+              </div>
+            </label>
+
             <div className="setting-card">
               <div className="setting-head">
                 <div>
                   <strong>基础标记</strong>
                   <span>适合图片和视频共同使用的公开字段。</span>
                 </div>
+                <button
+                  className="button toolbar-button-compact"
+                  type="button"
+                  disabled={!hasMetadataWriteContent}
+                  onClick={clearMetadataWriteContent}
+                >
+                  清空
+                </button>
               </div>
 
               <div className="setting-text-grid">

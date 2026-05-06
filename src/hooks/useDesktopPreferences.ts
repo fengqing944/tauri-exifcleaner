@@ -17,6 +17,7 @@ export type DesktopPreferences = {
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
+  rememberMetadataWriteContent: boolean;
 };
 
 const STORAGE_KEY = "tagsweep.desktop.preferences.v1";
@@ -44,6 +45,11 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
     label: "",
     rightsUrl: "",
   },
+  rememberMetadataWriteContent: false,
+};
+
+const EMPTY_METADATA_WRITE_CONTENT: MetadataWritePreferences = {
+  ...DEFAULT_PREFERENCES.metadataWrite,
 };
 
 function sanitizeTextPreference(value: unknown): string {
@@ -74,6 +80,53 @@ function sanitizeTargetedImageCleanup(value: unknown): TargetedImageCleanupPrefe
   };
 }
 
+function sanitizeMetadataWrite(
+  value: unknown,
+  rememberContent: boolean,
+): MetadataWritePreferences {
+  const record =
+    value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const enabled =
+    typeof record.enabled === "boolean"
+      ? Boolean(record.enabled)
+      : DEFAULT_PREFERENCES.metadataWrite.enabled;
+
+  if (!rememberContent) {
+    return {
+      ...EMPTY_METADATA_WRITE_CONTENT,
+      enabled,
+    };
+  }
+
+  return {
+    enabled,
+    title: sanitizeTextPreference(record.title),
+    author: sanitizeTextPreference(record.author),
+    description: sanitizeTextPreference(record.description),
+    keywords: sanitizeTextPreference(record.keywords),
+    rights: sanitizeTextPreference(record.rights),
+    rating: sanitizeTextPreference(record.rating),
+    label: sanitizeTextPreference(record.label),
+    rightsUrl: sanitizeTextPreference(record.rightsUrl),
+  };
+}
+
+function preparePreferencesForStorage(
+  preferences: DesktopPreferences,
+): DesktopPreferences {
+  if (preferences.rememberMetadataWriteContent) {
+    return preferences;
+  }
+
+  return {
+    ...preferences,
+    metadataWrite: {
+      ...EMPTY_METADATA_WRITE_CONTENT,
+      enabled: preferences.metadataWrite.enabled,
+    },
+  };
+}
+
 function sanitizePreferences(input: unknown): DesktopPreferences {
   if (!input || typeof input !== "object") {
     return DEFAULT_PREFERENCES;
@@ -86,6 +139,10 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
     record.preferredParallelism >= 1
       ? Math.round(record.preferredParallelism)
       : null;
+  const rememberMetadataWriteContent =
+    typeof record.rememberMetadataWriteContent === "boolean"
+      ? Boolean(record.rememberMetadataWriteContent)
+      : DEFAULT_PREFERENCES.rememberMetadataWriteContent;
 
   return {
     preferredParallelism,
@@ -108,36 +165,11 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
     cleanupOutputMode: sanitizeCleanupOutputMode(record.cleanupOutputMode),
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
     targetedImageCleanup: sanitizeTargetedImageCleanup(record.targetedImageCleanup),
-    metadataWrite: {
-      enabled:
-        typeof (record.metadataWrite as Record<string, unknown> | undefined)?.enabled === "boolean"
-          ? Boolean((record.metadataWrite as Record<string, unknown>).enabled)
-          : DEFAULT_PREFERENCES.metadataWrite.enabled,
-      title: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.title,
-      ),
-      author: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.author,
-      ),
-      description: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.description,
-      ),
-      keywords: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.keywords,
-      ),
-      rights: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.rights,
-      ),
-      rating: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.rating,
-      ),
-      label: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.label,
-      ),
-      rightsUrl: sanitizeTextPreference(
-        (record.metadataWrite as Record<string, unknown> | undefined)?.rightsUrl,
-      ),
-    },
+    metadataWrite: sanitizeMetadataWrite(
+      record.metadataWrite,
+      rememberMetadataWriteContent,
+    ),
+    rememberMetadataWriteContent,
   };
 }
 
@@ -162,7 +194,10 @@ export function useDesktopPreferences() {
   const [preferences, setPreferences] = useState<DesktopPreferences>(() => loadPreferences());
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(preparePreferencesForStorage(preferences)),
+    );
   }, [preferences]);
 
   const setPreference = <K extends keyof DesktopPreferences>(

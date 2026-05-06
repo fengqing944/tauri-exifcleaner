@@ -681,6 +681,7 @@ function App() {
         videoCleanupMode={preferences.videoCleanupMode}
         targetedImageCleanup={preferences.targetedImageCleanup}
         metadataWrite={preferences.metadataWrite}
+        rememberMetadataWriteContent={preferences.rememberMetadataWriteContent}
         onClose={() => setIsSettingsOpen(false)}
         onParallelismChange={setParallelism}
         onResetParallelism={() => {
@@ -708,6 +709,9 @@ function App() {
         }
         onMetadataWriteChange={(metadataWrite) =>
           setPreference("metadataWrite", metadataWrite)
+        }
+        onRememberMetadataWriteContentChange={(rememberMetadataWriteContent) =>
+          setPreference("rememberMetadataWriteContent", rememberMetadataWriteContent)
         }
       />
 

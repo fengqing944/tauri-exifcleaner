@@ -392,6 +392,8 @@ button {
   gap: 4px;
   color: inherit;
   text-decoration: none;
+  text-align: left;
+  cursor: pointer;
 }
 
 .utility-link-card:hover,
@@ -436,7 +438,8 @@ button {
 }
 
 .about-identity strong,
-.about-identity a {
+.about-identity a,
+.about-identity-link {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -445,13 +448,20 @@ button {
   color: #0f172a;
 }
 
-.about-identity a {
+.about-identity a,
+.about-identity-link {
+  padding: 0;
+  background: transparent;
   color: #1d4ed8;
   text-decoration: none;
+  text-align: left;
+  cursor: pointer;
 }
 
 .about-identity a:hover,
-.about-identity a:focus-visible {
+.about-identity a:focus-visible,
+.about-identity-link:hover,
+.about-identity-link:focus-visible {
   text-decoration: underline;
 }
 

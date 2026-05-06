@@ -1,6 +1,14 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { UtilityDrawer } from "./UtilityDrawer";
 
 const OPEN_SOURCE_URL = "https://github.com/fengqing944/tauri-exifcleaner";
+const CONTACT_EMAIL_URL = "mailto:kinacni@gmail.com";
+
+function openExternalUrl(url: string) {
+  void openUrl(url).catch((error) => {
+    console.error("打开外部链接失败", error);
+  });
+}
 
 export function AboutDrawer(props: { isOpen: boolean; onClose: () => void }) {
   return (
@@ -15,15 +23,14 @@ export function AboutDrawer(props: { isOpen: boolean; onClose: () => void }) {
           <strong>关于开源</strong>
           <span>GitHub</span>
         </div>
-        <a
+        <button
           className="utility-link-card"
-          href={OPEN_SOURCE_URL}
-          target="_blank"
-          rel="noreferrer"
+          type="button"
+          onClick={() => openExternalUrl(OPEN_SOURCE_URL)}
         >
           <strong>{OPEN_SOURCE_URL}</strong>
           <span>查看源码、提交问题或跟进更新。</span>
-        </a>
+        </button>
       </section>
 
       <section className="utility-section">
@@ -38,7 +45,13 @@ export function AboutDrawer(props: { isOpen: boolean; onClose: () => void }) {
           </div>
           <div>
             <span>邮箱</span>
-            <a href="mailto:kinacni@gmail.com">kinacni@gmail.com</a>
+            <button
+              className="about-identity-link"
+              type="button"
+              onClick={() => openExternalUrl(CONTACT_EMAIL_URL)}
+            >
+              kinacni@gmail.com
+            </button>
           </div>
         </div>
       </section>

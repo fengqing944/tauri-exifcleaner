@@ -3592,6 +3592,24 @@ fn restore_main_window_state_before_show(app: &AppHandle) {
     let _ = window.show();
 }
 
+#[cfg(target_os = "windows")]
+fn disable_default_context_menu(app: &tauri::App) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    let _ = window.with_webview(|webview| unsafe {
+        if let Ok(core_webview) = webview.controller().CoreWebView2() {
+            if let Ok(settings) = core_webview.Settings() {
+                let _ = settings.SetAreDefaultContextMenusEnabled(false);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn disable_default_context_menu(_app: &tauri::App) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let startup_shell_request = collect_shell_open_request_from_os_args(std::env::args_os());
@@ -3615,7 +3633,9 @@ pub fn run() {
                 .skip_initial_state("main")
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            disable_default_context_menu(app);
             restore_main_window_state_before_show(app.handle());
             Ok(())
         })

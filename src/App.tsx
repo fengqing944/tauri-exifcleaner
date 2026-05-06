@@ -58,6 +58,18 @@ function App() {
   const wasRunningRef = useRef(false);
   const hadFilesRef = useRef(false);
   const previousSummaryRef = useRef<CleanupSummary | null>(null);
+
+  useEffect(() => {
+    const preventDefaultContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+
+    window.addEventListener("contextmenu", preventDefaultContextMenu);
+    return () => {
+      window.removeEventListener("contextmenu", preventDefaultContextMenu);
+    };
+  }, []);
+
   const cancelHoverTimer = useEffectEvent(() => {
     if (hoverTimeoutRef.current) {
       window.clearTimeout(hoverTimeoutRef.current);

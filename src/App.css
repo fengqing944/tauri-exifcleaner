@@ -98,7 +98,6 @@ button {
 .preview-column header span,
 .preview-field span,
 .preview-note,
-.failure-row span,
 .activity-stats,
 .stat-chip span {
   color: #475569;
@@ -113,7 +112,6 @@ button {
 .preview-column header span,
 .preview-field span,
 .preview-note,
-.failure-row span,
 .activity-stats,
 .stat-chip span {
   font-size: 12px;
@@ -350,6 +348,38 @@ button {
   font-size: 10px;
   color: #475569;
   line-height: 1.5;
+}
+
+.utility-note-list {
+  display: grid;
+  gap: 8px;
+}
+
+.utility-note-success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.utility-note-warning {
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.utility-note-danger {
+  border-color: #fecdd3;
+  background: #fff1f2;
+}
+
+.utility-note-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.run-failure-note strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .utility-link-card {
@@ -823,7 +853,6 @@ kbd {
 .progress-panel,
 .message,
 .empty-box,
-.failure-row,
 .table-shell,
 .dropzone {
   background: #f8fafc;
@@ -1006,8 +1035,7 @@ kbd {
 .activity-strip,
 .message,
 .empty-box,
-.progress-panel,
-.failure-row {
+.progress-panel {
   padding: 10px;
 }
 
@@ -1192,7 +1220,6 @@ kbd {
 
 .queue-file strong,
 .empty-box strong,
-.failure-row strong,
 .preview-column header strong,
 .preview-field strong,
 .preview-panel-title strong {
@@ -1200,8 +1227,7 @@ kbd {
 }
 
 .queue-file strong,
-.queue-file span,
-.failure-row strong {
+.queue-file span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1453,82 +1479,6 @@ kbd {
   gap: 8px;
 }
 
-.run-details-body,
-.run-details-section {
-  gap: 10px;
-}
-
-.debug-block {
-  padding: 8px 10px;
-  border: 1px solid #dbe2ea;
-  border-radius: 10px;
-  background: #f8fafc;
-  display: grid;
-  gap: 6px;
-}
-
-.debug-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: #475569;
-}
-
-.debug-copy {
-  display: grid;
-  gap: 4px;
-}
-
-.debug-copy span {
-  font-size: 11px;
-  color: #475569;
-}
-
-.debug-message-card strong {
-  line-height: 1.35;
-}
-
-.debug-entry-list {
-  display: grid;
-  gap: 6px;
-}
-
-.debug-entry {
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid #dbe2ea;
-  background: #ffffff;
-  display: grid;
-  gap: 4px;
-}
-
-.debug-entry strong {
-  font-size: 11px;
-  color: #0f172a;
-}
-
-.debug-entry span {
-  font-size: 10px;
-  color: #475569;
-}
-
-.debug-entry.success {
-  border-color: #bbf7d0;
-  background: #f0fdf4;
-}
-
-.debug-entry.warning {
-  border-color: #fde68a;
-  background: #fffbeb;
-}
-
-.debug-entry.danger {
-  border-color: #fecdd3;
-  background: #fff1f2;
-}
-
 .task-block-head {
   display: flex;
   align-items: center;
@@ -1571,7 +1521,6 @@ kbd {
   margin-top: 12px;
 }
 
-.failure-row strong,
 .empty-box strong {
   display: block;
   margin-bottom: 6px;
@@ -1580,16 +1529,6 @@ kbd {
 .task-failure-list {
   max-height: 280px;
   overflow: auto;
-}
-
-.failure-list-note {
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid #dbe2ea;
-  background: #ffffff;
-  color: #475569;
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 .single-workspace {
@@ -1738,15 +1677,6 @@ kbd {
 }
 
 .compact-callout {
-  padding: 8px 10px;
-}
-
-.compact-debug-block,
-.compact-error-block {
-  min-height: 100%;
-}
-
-.compact-failure-row {
   padding: 8px 10px;
 }
 

@@ -104,16 +104,15 @@ export function RunDetailsDrawer(props: {
       isOpen={props.isOpen}
       title="运行详情"
       subtitle={subtitle}
-      bodyClassName="run-details-body"
       onClose={props.onClose}
     >
-      <section className="utility-section run-details-section">
+      <section className="utility-section">
         <div className="task-block-head">
           <strong>字段调试</strong>
           <span>{props.metadataDebug.lastOrigin || "尚未读取"}</span>
         </div>
 
-        <div className="debug-strip">
+        <div className="utility-chip-row">
           <StatusBadge
             tone={metadataDebugTone(props.metadataDebug.status)}
             label={metadataDebugLabel(props.metadataDebug.status)}
@@ -127,7 +126,7 @@ export function RunDetailsDrawer(props: {
           <span className="topbar-meta-chip">{durationLabel}</span>
         </div>
 
-        <div className="utility-note debug-message-card">
+        <div className="utility-note">
           <strong>{props.metadataDebug.lastMessage || "暂无调试信息"}</strong>
           <span>
             最近返回 {props.metadataDebug.lastResolved} 项，缺失{" "}
@@ -146,9 +145,9 @@ export function RunDetailsDrawer(props: {
         </div>
 
         {props.metadataDebugEntries.length ? (
-          <div className="debug-entry-list">
+          <div className="utility-note-list">
             {props.metadataDebugEntries.map((entry) => (
-              <div key={entry.id} className={`debug-entry ${entry.tone}`}>
+              <div key={entry.id} className={`utility-note utility-note-${entry.tone}`}>
                 <strong>{entry.title}</strong>
                 <span>{entry.detail}</span>
               </div>
@@ -162,7 +161,7 @@ export function RunDetailsDrawer(props: {
         )}
       </section>
 
-      <section className="utility-section run-details-section">
+      <section className="utility-section">
         <div className="task-block-head">
           <strong>失败列表</strong>
           <div className="failure-head-actions">
@@ -185,16 +184,18 @@ export function RunDetailsDrawer(props: {
         {props.runFailures.length ? (
           <>
             {hiddenFailureCount ? (
-              <div className="failure-list-note" aria-live="polite">
-                已收集全部 {props.runFailures.length} 条失败项，界面仅显示前{" "}
-                {FAILURE_DISPLAY_LIMIT} 条，复制可获取完整清单。
+              <div className="utility-note" aria-live="polite">
+                <strong>显示前 {FAILURE_DISPLAY_LIMIT} 条</strong>
+                <span>
+                  已收集全部 {props.runFailures.length} 条失败项，复制可获取完整清单。
+                </span>
               </div>
             ) : null}
-            <div className="failure-list task-failure-list">
+            <div className="utility-note-list task-failure-list">
               {visibleFailures.map((failure, index) => (
                 <div
                   key={`${failure.sourcePath}-${index}`}
-                  className="failure-row compact-failure-row"
+                  className="utility-note run-failure-note"
                 >
                   <strong title={failure.sourcePath}>
                     {trimMiddle(failure.sourcePath, 42)}

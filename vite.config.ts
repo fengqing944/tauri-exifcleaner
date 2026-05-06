@@ -24,6 +24,10 @@ export default defineConfig(async () => ({
           port: 1421,
         }
       : undefined,
+    forwardConsole: {
+      unhandledErrors: true,
+      logLevels: ["warn", "error"],
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

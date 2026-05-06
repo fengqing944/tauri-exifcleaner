@@ -2542,15 +2542,15 @@ fn dedupe_args(args: Vec<String>) -> Vec<String> {
 }
 
 fn metadata_write_args(options: &CleanupOptions, source_path: &Path) -> Vec<String> {
-    if is_png_path(source_path) {
-        return Vec::new();
-    }
-
     let Some(metadata_write) = options.metadata_write.as_ref() else {
         return Vec::new();
     };
     if !metadata_write.enabled {
         return Vec::new();
+    }
+
+    if is_png_path(source_path) {
+        return png_metadata_write_args(metadata_write);
     }
 
     let mut args = Vec::new();
@@ -2585,6 +2585,29 @@ fn metadata_write_args(options: &CleanupOptions, source_path: &Path) -> Vec<Stri
     }
     if !args.is_empty() {
         args.push("-XMP-x:XMPToolkit=".to_string());
+    }
+
+    args
+}
+
+fn png_metadata_write_args(metadata_write: &MetadataWriteOptions) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(title) = sanitize_metadata_write_value(metadata_write.title.as_deref()) {
+        args.push(format!("-PNG:Title={title}"));
+    }
+    if let Some(author) = sanitize_metadata_write_value(metadata_write.author.as_deref()) {
+        args.push(format!("-PNG:Author={author}"));
+    }
+    if let Some(description) = sanitize_metadata_write_value(metadata_write.description.as_deref())
+    {
+        args.push(format!("-PNG:Description={description}"));
+    }
+    let keywords = sanitize_metadata_keywords(metadata_write.keywords.as_deref());
+    if !keywords.is_empty() {
+        args.push(format!("-PNG:Comment={}", keywords.join(", ")));
+    }
+    if let Some(rights) = sanitize_metadata_write_value(metadata_write.rights.as_deref()) {
+        args.push(format!("-PNG:Copyright={rights}"));
     }
 
     args
@@ -4121,9 +4144,15 @@ mod tests {
                 "-XMP-x:XMPToolkit=".to_string(),
             ]
         );
-        assert!(
-            metadata_write_args(&enabled_options, Path::new("sample.png")).is_empty(),
-            "PNG files should not receive new XMP metadata after cleanup"
+        assert_eq!(
+            metadata_write_args(&enabled_options, Path::new("sample.png")),
+            vec![
+                "-PNG:Title=moeuu -title=bad".to_string(),
+                "-PNG:Author=zero artist".to_string(),
+                "-PNG:Description=public caption".to_string(),
+                "-PNG:Comment=anime, moeuu, clean".to_string(),
+                "-PNG:Copyright=© moeuu".to_string(),
+            ]
         );
     }
 
@@ -4402,7 +4431,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_session_cleans_png_metadata_without_writing_new_tags() {
+    fn persistent_session_cleans_png_metadata_and_writes_native_text_tags() {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("icons")
             .join("32x32.png");
@@ -4452,13 +4481,13 @@ mod tests {
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
                 title: Some("moeuu".to_string()),
-                author: None,
-                description: None,
-                keywords: None,
-                rights: None,
-                rating: None,
-                label: None,
-                rights_url: None,
+                author: Some("Yo".to_string()),
+                description: Some("public png".to_string()),
+                keywords: Some("alpha, beta".to_string()),
+                rights: Some("© moeuu".to_string()),
+                rating: Some("5".to_string()),
+                label: Some("public".to_string()),
+                rights_url: Some("https://example.com/rights".to_string()),
             }),
         };
 
@@ -4474,11 +4503,27 @@ mod tests {
             read_raw_metadata_record(&exiftool_path, &working_copy).expect("read cleaned png");
         assert!(!after.contains_key("IFD0:Artist"));
         assert!(!after.contains_key("IFD0:Software"));
-        assert!(!after.contains_key("PNG:Comment"));
-        assert!(
-            !after.contains_key("XMP-dc:Title"),
-            "PNG cleanup should not write new XMP tags"
+        assert_eq!(
+            after.get("PNG:Title").and_then(Value::as_str),
+            Some("moeuu")
         );
+        assert_eq!(after.get("PNG:Author").and_then(Value::as_str), Some("Yo"));
+        assert_eq!(
+            after.get("PNG:Description").and_then(Value::as_str),
+            Some("public png")
+        );
+        assert_eq!(
+            after.get("PNG:Comment").and_then(Value::as_str),
+            Some("alpha, beta")
+        );
+        assert_eq!(
+            after.get("PNG:Copyright").and_then(Value::as_str),
+            Some("© moeuu")
+        );
+        assert!(!after.contains_key("XMP-dc:Title"));
+        assert!(!after.contains_key("XMP-x:XMPToolkit"));
+        assert!(!after.contains_key("XMP-xmp:Rating"));
+        assert!(!after.contains_key("XMP-xmp:Label"));
         assert_eq!(
             after.get("PNG:ImageWidth").and_then(Value::as_u64),
             Some(32)

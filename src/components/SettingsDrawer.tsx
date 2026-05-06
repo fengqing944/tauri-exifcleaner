@@ -370,7 +370,7 @@ export function SettingsDrawer(props: {
                 <strong>清理后写入公开标记</strong>
                 <span>
                   开启后会先清空原元数据，再写入你主动填写的 XMP
-                  标题、作者、说明等字段。PNG 只清理，不写入新标记。
+                  标题、作者、说明等字段。PNG 会写入原生文本字段，不写入 XMP。
                 </span>
               </div>
             </label>

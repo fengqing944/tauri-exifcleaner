@@ -14,6 +14,7 @@ export type DesktopPreferences = {
   lastDetailsOpen: boolean;
   allowReadonlyOverwrite: boolean;
   cleanupOutputMode: CleanupOutputMode;
+  mirrorOutputDir: string | null;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -29,6 +30,7 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   lastDetailsOpen: false,
   allowReadonlyOverwrite: false,
   cleanupOutputMode: "overwrite",
+  mirrorOutputDir: null,
   videoCleanupMode: "safe",
   targetedImageCleanup: {
     enabled: false,
@@ -58,6 +60,15 @@ function sanitizeTextPreference(value: unknown): string {
   }
 
   return value.replace(/[\r\n]+/g, " ").trim().slice(0, 240);
+}
+
+function sanitizePathPreference(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const sanitized = value.replace(/[\r\n]+/g, " ").trim().slice(0, 2048);
+  return sanitized || null;
 }
 
 function sanitizeVideoCleanupMode(value: unknown): VideoCleanupMode {
@@ -163,6 +174,7 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
         ? record.allowReadonlyOverwrite
         : DEFAULT_PREFERENCES.allowReadonlyOverwrite,
     cleanupOutputMode: sanitizeCleanupOutputMode(record.cleanupOutputMode),
+    mirrorOutputDir: sanitizePathPreference(record.mirrorOutputDir),
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),
     targetedImageCleanup: sanitizeTargetedImageCleanup(record.targetedImageCleanup),
     metadataWrite: sanitizeMetadataWrite(

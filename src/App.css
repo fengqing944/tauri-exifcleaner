@@ -449,6 +449,35 @@ button {
   line-height: 1.5;
 }
 
+.setting-path-row {
+  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.setting-path-row strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #0f172a;
+}
+
+.setting-action-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
 .setting-value {
   min-width: 28px;
   text-align: right;
@@ -1804,8 +1833,13 @@ kbd {
   .preview-summary-grid,
   .setting-check-grid,
   .setting-segmented,
+  .setting-path-row,
   .setting-text-grid {
     grid-template-columns: 1fr;
+  }
+
+  .setting-action-row {
+    justify-content: flex-start;
   }
 
   .compact-summary-strip {

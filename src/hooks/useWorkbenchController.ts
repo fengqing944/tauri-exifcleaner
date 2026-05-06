@@ -33,6 +33,7 @@ export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
   allowReadonlyOverwrite?: boolean;
   cleanupOutputMode?: CleanupOutputMode;
+  mirrorOutputDir?: string | null;
   videoCleanupMode?: VideoCleanupMode;
   targetedImageCleanup?: TargetedImageCleanupPreferences;
   metadataWrite?: MetadataWritePreferences;
@@ -283,7 +284,9 @@ export function useWorkbenchController(options?: {
 
     const outputMode = options?.cleanupOutputMode ?? "overwrite";
     const outputDir =
-      outputMode === "mirror" ? runtimeInfo?.defaultOutputDir ?? null : null;
+      outputMode === "mirror"
+        ? options?.mirrorOutputDir?.trim() || runtimeInfo?.defaultOutputDir || null
+        : null;
     if (outputMode === "mirror" && !outputDir) {
       setErrorMessage("镜像输出目录尚未准备好，请稍后再开始清理。");
       return;

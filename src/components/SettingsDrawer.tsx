@@ -38,6 +38,7 @@ export function SettingsDrawer(props: {
   reopenRunDetailsOnLaunch: boolean;
   allowReadonlyOverwrite: boolean;
   cleanupOutputMode: CleanupOutputMode;
+  mirrorOutputDir: string | null;
   videoCleanupMode: VideoCleanupMode;
   targetedImageCleanup: TargetedImageCleanupPreferences;
   metadataWrite: MetadataWritePreferences;
@@ -49,6 +50,8 @@ export function SettingsDrawer(props: {
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
   onAllowReadonlyOverwriteChange: (value: boolean) => void;
   onCleanupOutputModeChange: (value: CleanupOutputMode) => void;
+  onSelectMirrorOutputDir: () => void;
+  onClearMirrorOutputDir: () => void;
   onVideoCleanupModeChange: (value: VideoCleanupMode) => void;
   onTargetedImageCleanupChange: (value: TargetedImageCleanupPreferences) => void;
   onMetadataWriteChange: (value: MetadataWritePreferences) => void;
@@ -68,6 +71,8 @@ export function SettingsDrawer(props: {
       props.metadataWrite.label ||
       props.metadataWrite.rightsUrl,
   );
+  const effectiveMirrorOutputDir =
+    props.mirrorOutputDir || props.runtimeInfo?.defaultOutputDir || "";
 
   const updateMetadataWrite = (patch: Partial<MetadataWritePreferences>) => {
     props.onMetadataWriteChange({
@@ -265,13 +270,36 @@ export function SettingsDrawer(props: {
                 </label>
               </div>
 
-              <span
-                className="setting-footnote"
-                title={props.runtimeInfo?.defaultOutputDir ?? ""}
-              >
-                镜像输出目录：
-                {props.runtimeInfo?.defaultOutputDir ?? "等待运行环境信息"}。
-              </span>
+              <div className="setting-path-row">
+                <div>
+                  <span className="setting-footnote">镜像输出目录</span>
+                  <strong title={effectiveMirrorOutputDir}>
+                    {effectiveMirrorOutputDir || "等待运行环境信息"}
+                  </strong>
+                  <span className="setting-footnote">
+                    {props.mirrorOutputDir
+                      ? "已使用自选目录。"
+                      : "未选择时使用默认 TagSweep Output 目录。"}
+                  </span>
+                </div>
+                <div className="setting-action-row">
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={props.onSelectMirrorOutputDir}
+                  >
+                    选择目录
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={props.onClearMirrorOutputDir}
+                    disabled={!props.mirrorOutputDir}
+                  >
+                    使用默认
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div className="setting-card">

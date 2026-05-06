@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   type CleanupSummary,
   type FlyoutPosition,
@@ -129,6 +130,7 @@ function App() {
     preferredParallelism: preferences.preferredParallelism,
     allowReadonlyOverwrite: preferences.allowReadonlyOverwrite,
     cleanupOutputMode: preferences.cleanupOutputMode,
+    mirrorOutputDir: preferences.mirrorOutputDir,
     videoCleanupMode: preferences.videoCleanupMode,
     targetedImageCleanup: preferences.targetedImageCleanup,
     metadataWrite: preferences.metadataWrite,
@@ -158,6 +160,19 @@ function App() {
     visibleMetadataFileKeyRef.current = nextKey;
     setVisibleMetadataFiles(files);
   }, []);
+
+  const selectMirrorOutputDir = useEffectEvent(async () => {
+    const selection = await open({
+      title: "选择镜像输出目录",
+      multiple: false,
+      directory: true,
+    });
+
+    if (typeof selection === "string" && selection.trim()) {
+      setPreference("mirrorOutputDir", selection.trim());
+      setPreference("cleanupOutputMode", "mirror");
+    }
+  });
 
   const runningPreviewPathKey =
     previewFiles
@@ -678,6 +693,7 @@ function App() {
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
         allowReadonlyOverwrite={preferences.allowReadonlyOverwrite}
         cleanupOutputMode={preferences.cleanupOutputMode}
+        mirrorOutputDir={preferences.mirrorOutputDir}
         videoCleanupMode={preferences.videoCleanupMode}
         targetedImageCleanup={preferences.targetedImageCleanup}
         metadataWrite={preferences.metadataWrite}
@@ -701,6 +717,8 @@ function App() {
         onCleanupOutputModeChange={(cleanupOutputMode) =>
           setPreference("cleanupOutputMode", cleanupOutputMode)
         }
+        onSelectMirrorOutputDir={selectMirrorOutputDir}
+        onClearMirrorOutputDir={() => setPreference("mirrorOutputDir", null)}
         onVideoCleanupModeChange={(videoCleanupMode) =>
           setPreference("videoCleanupMode", videoCleanupMode)
         }

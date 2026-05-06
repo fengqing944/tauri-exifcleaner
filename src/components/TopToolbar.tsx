@@ -21,6 +21,19 @@ export function TopToolbar(props: {
   onToggleSettings: () => void;
   onToggleAbout: () => void;
 }) {
+  const exiftoolTone = props.runtimeInfo
+    ? props.runtimeInfo.exiftoolReady
+      ? "success"
+      : "warning"
+    : "info";
+  const exiftoolLabel = props.runtimeInfo
+    ? props.runtimeInfo.exiftoolReady
+      ? props.runtimeInfo.exiftoolVersion
+        ? `ExifTool ${props.runtimeInfo.exiftoolVersion}`
+        : "ExifTool 就绪"
+      : "ExifTool 未就绪"
+    : "ExifTool 检查中";
+
   return (
     <header className="topbar">
       <div className="topbar-main">
@@ -32,15 +45,7 @@ export function TopToolbar(props: {
           ) : null}
         </div>
         <div className="topbar-meta">
-          <StatusBadge
-            tone={props.runtimeInfo?.exiftoolReady ? "success" : "warning"}
-            label={props.runtimeInfo?.exiftoolReady ? "引擎就绪" : "引擎未就绪"}
-          />
-          <span className="topbar-meta-chip">
-            {props.runtimeInfo?.exiftoolVersion
-              ? `ExifTool ${props.runtimeInfo.exiftoolVersion}`
-              : "ExifTool"}
-          </span>
+          <StatusBadge tone={exiftoolTone} label={exiftoolLabel} />
           <span className="topbar-meta-chip">
             {props.cleanupOutputMode === "mirror" ? "镜像输出" : "原地覆盖"}
           </span>
@@ -49,9 +54,9 @@ export function TopToolbar(props: {
       </div>
 
       <div className="topbar-toolbar">
-        <div className="toolbar-group">
+        <div className="toolbar-group toolbar-main-actions">
           <button
-            className="button button-primary toolbar-button"
+            className="button button-primary toolbar-button toolbar-button-main"
             type="button"
             disabled={!props.canStart}
             onClick={props.onStartCleanup}
@@ -76,7 +81,7 @@ export function TopToolbar(props: {
           </button>
         </div>
 
-        <div className="toolbar-group toolbar-meta-group">
+        <div className="toolbar-group toolbar-utility-group">
           <button
             className={`button toolbar-button toolbar-button-compact ${props.isHelpOpen ? "button-active" : ""}`}
             type="button"

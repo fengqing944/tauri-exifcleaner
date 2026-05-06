@@ -144,7 +144,8 @@ button {
 }
 
 .topbar-toolbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -163,6 +164,10 @@ button {
   min-width: 104px;
 }
 
+.toolbar-button-main {
+  min-width: 128px;
+}
+
 .toolbar-button-compact {
   min-width: 78px;
   min-height: 30px;
@@ -170,8 +175,11 @@ button {
   font-size: 11px;
 }
 
-.toolbar-meta-group {
-  min-width: 260px;
+.toolbar-main-actions {
+  min-width: 0;
+}
+
+.toolbar-utility-group {
   justify-content: flex-end;
 }
 
@@ -811,6 +819,7 @@ kbd {
 .import-strip,
 .queue-workspace,
 .summary-strip,
+.metric-groups,
 .activity-strip,
 .progress-panel,
 .message,
@@ -982,6 +991,40 @@ kbd {
   gap: 6px;
 }
 
+.metric-groups {
+  padding: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.9fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.metric-group {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.metric-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.metric-grid {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.metric-grid-input {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric-grid-result {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .stat-chip {
   padding: 6px 8px;
   background: #ffffff;
@@ -1073,8 +1116,8 @@ kbd {
   min-height: 0;
   flex: 1 1 auto;
   display: grid;
-  grid-template-rows: auto auto;
-  align-content: start;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  align-content: stretch;
   background: #ffffff;
   overflow: hidden;
 }
@@ -1125,7 +1168,7 @@ kbd {
 
 .queue-scroll-body {
   min-height: 0;
-  max-height: min(360px, 42vh);
+  max-height: none;
   overflow: auto;
 }
 
@@ -1594,12 +1637,12 @@ kbd {
 
 .workbench-meta-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(240px, 0.9fr);
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr);
   gap: 8px;
 }
 
 .compact-summary-strip {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  min-width: 0;
 }
 
 .compact-activity-strip {
@@ -1618,7 +1661,7 @@ kbd {
 
 .compact-list-shell {
   min-height: 0;
-  flex: 0 1 auto;
+  flex: 1 1 260px;
 }
 
 .compact-table-head,
@@ -1765,6 +1808,10 @@ kbd {
   .workbench-aux-grid {
     grid-template-columns: 1fr;
   }
+
+  .metric-groups {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 920px) {
@@ -1788,8 +1835,8 @@ kbd {
     min-width: 0;
   }
 
-  .compact-summary-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .metric-grid-input {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .table-head,
@@ -1816,9 +1863,13 @@ kbd {
 
   .topbar-toolbar,
   .toolbar-group,
-  .toolbar-meta-group {
+  .toolbar-utility-group {
     align-items: stretch;
     justify-content: flex-start;
+  }
+
+  .topbar-toolbar {
+    grid-template-columns: 1fr;
   }
 
   .toolbar-slider {
@@ -1826,6 +1877,8 @@ kbd {
   }
 
   .summary-strip,
+  .metric-groups,
+  .metric-grid,
   .import-actions,
   .task-stats-strip,
   .preview-card-grid,
@@ -1840,10 +1893,6 @@ kbd {
 
   .setting-action-row {
     justify-content: flex-start;
-  }
-
-  .compact-summary-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .queue-dropstage {

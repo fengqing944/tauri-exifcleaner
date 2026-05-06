@@ -1508,6 +1508,14 @@ kbd {
   color: #64748b;
 }
 
+.failure-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  min-width: 0;
+}
+
 .progress-track {
   height: 8px;
   margin-top: 12px;
@@ -1534,6 +1542,16 @@ kbd {
 .task-failure-list {
   max-height: 280px;
   overflow: auto;
+}
+
+.failure-list-note {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #dbe2ea;
+  background: #ffffff;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .single-workspace {

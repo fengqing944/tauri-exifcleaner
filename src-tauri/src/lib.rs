@@ -122,6 +122,7 @@ const WINDOW_STATE_FILENAME: &str = ".window-state.json";
 const EXIFTOOL_METADATA_TIMEOUT_SECS: u64 = 30;
 const EXIFTOOL_CLEAN_TIMEOUT_SECS: u64 = 90;
 const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
+const EXIFTOOL_VERSION_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
 const METADATA_KEYWORD_MAX_CHARS: usize = 60;
 const METADATA_KEYWORD_MAX_COUNT: usize = 20;
@@ -335,6 +336,15 @@ struct CleanupFailure {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct CleanupOutcome {
+    source_path: String,
+    output_path: Option<String>,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct CleanupPreviewState {
     source_path: String,
     output_path: Option<String>,
@@ -354,6 +364,7 @@ struct CleanupSummary {
     cancelled: bool,
     output_dir: Option<String>,
     failures: Vec<CleanupFailure>,
+    outcomes: Vec<CleanupOutcome>,
     preview_states: Vec<CleanupPreviewState>,
 }
 
@@ -1732,6 +1743,7 @@ async fn run_cleanup(
                 cancelled: false,
                 output_dir: options.output_dir.clone(),
                 failures: Vec::new(),
+                outcomes: Vec::new(),
                 preview_states: Vec::new(),
             });
         }
@@ -1784,6 +1796,7 @@ async fn run_cleanup(
         let mut failed = 0_usize;
         let mut unchanged = 0_usize;
         let mut failures = Vec::new();
+        let mut outcomes = Vec::new();
         let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
         let emit_step = if total > 4_000 {
@@ -1851,6 +1864,13 @@ async fn run_cleanup(
                         )
                         .map_err(|error| format!("无法发送行状态事件: {error}"))?;
                     }
+
+                    outcomes.push(CleanupOutcome {
+                        source_path: outcome.source_path.clone(),
+                        output_path: outcome.output_path.clone(),
+                        status: outcome.status.to_string(),
+                        error: outcome.error.clone(),
+                    });
 
                     completed += 1;
                     match outcome.status {
@@ -1947,6 +1967,7 @@ async fn run_cleanup(
             cancelled,
             output_dir: options.output_dir.clone(),
             failures,
+            outcomes,
             preview_states: build_cleanup_preview_states(
                 &tracked_preview_files,
                 &tracked_preview_states,
@@ -3252,12 +3273,19 @@ fn read_exiftool_version(exiftool_path: &Path) -> Result<String, String> {
         command.current_dir(parent);
     }
 
-    let output = command
-        .output()
-        .map_err(|error| format!("无法读取 ExifTool 版本: {error}"))?;
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(EXIFTOOL_VERSION_TIMEOUT_SECS),
+        "ExifTool 版本检查",
+    )?;
 
     if !output.status.success() {
-        return Err("ExifTool 版本检查失败。".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "ExifTool 版本检查失败。".to_string()
+        } else {
+            stderr
+        });
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())

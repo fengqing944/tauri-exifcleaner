@@ -8,8 +8,7 @@
 - 多文件夹拖拽
 - 递归扫描文件夹
 - 队列追加，不会因为二次拖入直接清空旧任务
-- 原地覆盖模式
-- 后端保留镜像输出能力，当前界面以原地覆盖为主
+- 原地覆盖与镜像输出模式
 - 并发批处理
 - Rust 后端实时推送进度
 - 失败项汇总
@@ -42,7 +41,7 @@
 - 部分 RAW 扩展名
 
 实际清理由 `ExifTool` 完成，具体写入能力仍以 `ExifTool` 为准。
-PNG 会使用专用安全清理：只移除 EXIF / XMP / IPTC 和 PNG 文本类隐私字段，不写入新标记，也不删除颜色配置、Gamma、ICC Profile 等显示相关数据。
+PNG 会使用专用安全清理：只移除 EXIF / XMP / IPTC 和 PNG 文本类隐私字段，不删除颜色配置、Gamma、ICC Profile 等显示相关数据。开启“清理后写入公开标记”时，PNG 会写入原生文本字段，例如 Title、Author、Description、Comment、Copyright。
 
 ## 运行开发
 

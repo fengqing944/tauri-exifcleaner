@@ -94,6 +94,12 @@ export type CleanupSummary = {
     sourcePath: string;
     error: string;
   }>;
+  outcomes?: Array<{
+    sourcePath: string;
+    outputPath: string | null;
+    status: CleanupStatus;
+    error: string | null;
+  }>;
   previewStates: CleanupPreviewState[];
 };
 
@@ -337,8 +343,19 @@ export function mergeSummaryFileStates(
 ): Record<string, FileRunState> {
   const next = { ...current };
   const previewStateMap = buildFileStateMap(summary.previewStates);
-  const failureMap = new Map(summary.failures.map((failure) => [normalizePath(failure.sourcePath), failure.error]));
-  const untrackedSuccessStatus =
+  const outcomeMap = new Map(
+    (summary.outcomes ?? []).map((outcome) => [
+      normalizePath(outcome.sourcePath),
+      outcome,
+    ]),
+  );
+  const failureMap = new Map(
+    summary.failures.map((failure) => [
+      normalizePath(failure.sourcePath),
+      failure.error,
+    ]),
+  );
+  const fallbackSuccessStatus =
     summary.unchanged > 0 && summary.succeeded === 0 ? "unchanged" : "success";
 
   for (const [pathKey, state] of Object.entries(previewStateMap)) {
@@ -348,6 +365,16 @@ export function mergeSummaryFileStates(
   for (const file of queueFiles) {
     const pathKey = normalizePath(file.sourcePath);
     if (previewStateMap[pathKey]) {
+      continue;
+    }
+
+    const outcome = outcomeMap.get(pathKey);
+    if (outcome) {
+      next[pathKey] = {
+        status: outcome.status,
+        outputPath: outcome.outputPath,
+        error: outcome.error,
+      };
       continue;
     }
 
@@ -363,7 +390,7 @@ export function mergeSummaryFileStates(
 
     if (!summary.cancelled) {
       next[pathKey] = {
-        status: untrackedSuccessStatus,
+        status: fallbackSuccessStatus,
         outputPath: next[pathKey]?.outputPath ?? null,
         error: null,
       };

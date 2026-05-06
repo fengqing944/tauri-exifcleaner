@@ -1,6 +1,6 @@
 [package]
 name = "tagsweep"
-version = "0.1.6"
+version = "0.1.7"
 description = "TagSweep desktop metadata cleaner built with Tauri 2"
 authors = ["Yo <kinacni@gmail.com>"]
 edition = "2021"

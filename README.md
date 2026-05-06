@@ -53,7 +53,13 @@ npm run tauri build
 
 - `src-tauri/target/release/bundle/nsis/`
 
-安装包文件名会随版本号变化，例如 `TagSweep_0.1.6_x64-setup.exe`。
+安装包文件名会随版本号变化，例如 `TagSweep_0.1.7_x64-setup.exe`。
+
+## 发布信息
+
+- 更新日志: [`CHANGELOG.md`](./CHANGELOG.md)
+- Release Notes: [`release/0.1.7/RELEASE_NOTES.md`](./release/0.1.7/RELEASE_NOTES.md)
+- Windows 安装包 SHA256: [`release/0.1.7/TagSweep_0.1.7_x64-setup.exe.sha256`](./release/0.1.7/TagSweep_0.1.7_x64-setup.exe.sha256)
 
 ## 项目结构
 

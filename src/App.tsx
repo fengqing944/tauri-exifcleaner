@@ -589,9 +589,7 @@ function App() {
       ? `正在清理 ${progress.completed}/${progress.total || fileCount} 项，完成度 ${progressPercent}%`
       : isScanning
         ? "正在扫描文件并加入队列"
-        : fileCount
-          ? `当前队列 ${fileCount} 项，可以直接开始清理`
-          : "";
+        : "";
 
   return (
     <main className="app-shell">

@@ -270,36 +270,38 @@ export function SettingsDrawer(props: {
                 </label>
               </div>
 
-              <div className="setting-path-row">
-                <div>
-                  <span className="setting-footnote">镜像输出目录</span>
-                  <strong title={effectiveMirrorOutputDir}>
-                    {effectiveMirrorOutputDir || "等待运行环境信息"}
-                  </strong>
-                  <span className="setting-footnote">
-                    {props.mirrorOutputDir
-                      ? "已使用自选目录。"
-                      : "未选择时使用默认 TagSweep Output 目录。"}
-                  </span>
+              {props.cleanupOutputMode === "mirror" ? (
+                <div className="setting-path-row">
+                  <div>
+                    <span className="setting-footnote">镜像输出目录</span>
+                    <strong title={effectiveMirrorOutputDir}>
+                      {effectiveMirrorOutputDir || "等待运行环境信息"}
+                    </strong>
+                    <span className="setting-footnote">
+                      {props.mirrorOutputDir
+                        ? "已使用自选目录。"
+                        : "未选择时使用默认 TagSweep Output 目录。"}
+                    </span>
+                  </div>
+                  <div className="setting-action-row">
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={props.onSelectMirrorOutputDir}
+                    >
+                      选择目录
+                    </button>
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={props.onClearMirrorOutputDir}
+                      disabled={!props.mirrorOutputDir}
+                    >
+                      使用默认
+                    </button>
+                  </div>
                 </div>
-                <div className="setting-action-row">
-                  <button
-                    type="button"
-                    className="button"
-                    onClick={props.onSelectMirrorOutputDir}
-                  >
-                    选择目录
-                  </button>
-                  <button
-                    type="button"
-                    className="button"
-                    onClick={props.onClearMirrorOutputDir}
-                    disabled={!props.mirrorOutputDir}
-                  >
-                    使用默认
-                  </button>
-                </div>
-              </div>
+              ) : null}
             </div>
 
             <div className="setting-card">

@@ -1,0 +1,3 @@
+# ExifTool is bundled as a third-party runtime dependency. Mark it as vendored
+# so GitHub language statistics reflect TagSweep's own Rust/TypeScript source.
+src-tauri/resources/exiftool/** linguist-vendored

@@ -183,25 +183,14 @@ export function WorkbenchPanel(props: {
         </div>
 
         <div className="workbench-meta-row">
-          <div className="metric-groups compact-summary-strip">
-            <section className="metric-group" aria-label="输入统计">
-              <span className="metric-group-label">输入</span>
-              <div className="metric-grid metric-grid-input">
-                <StatChip label="根" value={String(props.rootCount)} />
-                <StatChip label="候选" value={String(props.fileCount)} />
-                <StatChip label="大小" value={formatBytes(props.queueView?.totalBytes ?? 0)} />
-                <StatChip label="忽略" value={String(props.ignoredCount)} />
-              </div>
-            </section>
-
-            <section className="metric-group" aria-label="结果统计">
-              <span className="metric-group-label">结果</span>
-              <div className="metric-grid metric-grid-result">
-                <StatChip label="成功" value={String(props.progress.succeeded)} />
-                <StatChip label="未改" value={String(props.progress.unchanged)} />
-                <StatChip label="失败" value={String(props.progress.failed)} />
-              </div>
-            </section>
+          <div className="summary-strip compact-summary-strip">
+            <StatChip label="输入根" value={String(props.rootCount)} />
+            <StatChip label="候选" value={String(props.fileCount)} />
+            <StatChip label="大小" value={formatBytes(props.queueView?.totalBytes ?? 0)} />
+            <StatChip label="成功" value={String(props.progress.succeeded)} />
+            <StatChip label="未改" value={String(props.progress.unchanged)} />
+            <StatChip label="失败" value={String(props.progress.failed)} />
+            <StatChip label="忽略" value={String(props.ignoredCount)} />
           </div>
 
           <div className="activity-strip compact-activity-strip">

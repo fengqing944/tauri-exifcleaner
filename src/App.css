@@ -819,7 +819,6 @@ kbd {
 .import-strip,
 .queue-workspace,
 .summary-strip,
-.metric-groups,
 .activity-strip,
 .progress-panel,
 .message,
@@ -989,40 +988,6 @@ kbd {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-}
-
-.metric-groups {
-  padding: 8px;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(220px, 0.9fr);
-  gap: 8px;
-  min-width: 0;
-}
-
-.metric-group {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-
-.metric-group-label {
-  font-size: 10px;
-  font-weight: 700;
-  color: #475569;
-}
-
-.metric-grid {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-
-.metric-grid-input {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.metric-grid-result {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .stat-chip {
@@ -1637,12 +1602,12 @@ kbd {
 
 .workbench-meta-row {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.8fr);
   gap: 8px;
 }
 
 .compact-summary-strip {
-  min-width: 0;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .compact-activity-strip {
@@ -1655,13 +1620,13 @@ kbd {
 }
 
 .compact-dropstage {
-  min-height: 132px;
-  flex: 1 1 auto;
+  min-height: 280px;
+  flex: 1 1 320px;
 }
 
 .compact-list-shell {
-  min-height: 0;
-  flex: 1 1 260px;
+  min-height: 280px;
+  flex: 1 1 320px;
 }
 
 .compact-table-head,
@@ -1809,9 +1774,6 @@ kbd {
     grid-template-columns: 1fr;
   }
 
-  .metric-groups {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 920px) {
@@ -1835,8 +1797,8 @@ kbd {
     min-width: 0;
   }
 
-  .metric-grid-input {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .compact-summary-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .table-head,
@@ -1877,8 +1839,6 @@ kbd {
   }
 
   .summary-strip,
-  .metric-groups,
-  .metric-grid,
   .import-actions,
   .task-stats-strip,
   .preview-card-grid,
@@ -1897,6 +1857,10 @@ kbd {
 
   .queue-dropstage {
     min-height: 260px;
+  }
+
+  .compact-summary-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .table-head {

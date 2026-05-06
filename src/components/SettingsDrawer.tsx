@@ -336,7 +336,7 @@ export function SettingsDrawer(props: {
                   type="text"
                   maxLength={240}
                   value={props.targetedImageCleanup.search}
-                  placeholder="例如 23333；多个词用逗号分隔"
+                  placeholder="例如 项目编号、客户名；多个词用逗号分隔"
                   disabled={!props.targetedImageCleanup.enabled}
                   onChange={(event) =>
                     updateTargetedImageCleanup({
@@ -471,7 +471,7 @@ export function SettingsDrawer(props: {
                     type="text"
                     maxLength={120}
                     value={props.metadataWrite.title}
-                    placeholder="例如 moeuu"
+                    placeholder="例如 公开素材"
                     disabled={!props.metadataWrite.enabled}
                     onChange={(event) =>
                       updateMetadataWrite({ title: event.currentTarget.value })
@@ -531,7 +531,7 @@ export function SettingsDrawer(props: {
                     type="text"
                     maxLength={240}
                     value={props.metadataWrite.rights}
-                    placeholder="例如 © moeuu"
+                    placeholder="例如 © 2026 Example Studio"
                     disabled={!props.metadataWrite.enabled}
                     onChange={(event) =>
                       updateMetadataWrite({ rights: event.currentTarget.value })
@@ -596,7 +596,7 @@ export function SettingsDrawer(props: {
                     type="url"
                     maxLength={240}
                     value={props.metadataWrite.rightsUrl}
-                    placeholder="https://example.com/rights"
+                    placeholder="https://example.org/rights"
                     disabled={!props.metadataWrite.enabled}
                     onChange={(event) =>
                       updateMetadataWrite({

@@ -4230,41 +4230,41 @@ mod tests {
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
-                title: Some("  moeuu\n-title=bad  ".to_string()),
-                author: Some("  zero\r\nartist  ".to_string()),
+                title: Some("  Public Asset\n-title=bad  ".to_string()),
+                author: Some("  Example\r\nCreator  ".to_string()),
                 description: Some("  public\ncaption  ".to_string()),
-                keywords: Some("  anime, moeuu；moeuu，clean  ".to_string()),
-                rights: Some("  © moeuu  ".to_string()),
+                keywords: Some("  catalog, archive；archive，published  ".to_string()),
+                rights: Some("  © 2026 Example Studio  ".to_string()),
                 rating: Some("5".to_string()),
                 label: Some("  public  ".to_string()),
-                rights_url: Some("https://example.com/rights".to_string()),
+                rights_url: Some("https://example.org/rights".to_string()),
             }),
         };
 
         assert_eq!(
             metadata_write_args(&enabled_options, Path::new("sample.jpg")),
             vec![
-                "-XMP-dc:Title=moeuu -title=bad".to_string(),
-                "-XMP-dc:Creator=zero artist".to_string(),
+                "-XMP-dc:Title=Public Asset -title=bad".to_string(),
+                "-XMP-dc:Creator=Example Creator".to_string(),
                 "-XMP-dc:Description=public caption".to_string(),
-                "-XMP-dc:Subject=anime".to_string(),
-                "-XMP-dc:Subject+=moeuu".to_string(),
-                "-XMP-dc:Subject+=clean".to_string(),
-                "-XMP-dc:Rights=© moeuu".to_string(),
+                "-XMP-dc:Subject=catalog".to_string(),
+                "-XMP-dc:Subject+=archive".to_string(),
+                "-XMP-dc:Subject+=published".to_string(),
+                "-XMP-dc:Rights=© 2026 Example Studio".to_string(),
                 "-XMP-xmp:Rating=5".to_string(),
                 "-XMP-xmp:Label=public".to_string(),
-                "-XMP-xmpRights:WebStatement=https://example.com/rights".to_string(),
+                "-XMP-xmpRights:WebStatement=https://example.org/rights".to_string(),
                 "-XMP-x:XMPToolkit=".to_string(),
             ]
         );
         assert_eq!(
             metadata_write_args(&enabled_options, Path::new("sample.png")),
             vec![
-                "-PNG:Title=moeuu -title=bad".to_string(),
-                "-PNG:Author=zero artist".to_string(),
+                "-PNG:Title=Public Asset -title=bad".to_string(),
+                "-PNG:Author=Example Creator".to_string(),
                 "-PNG:Description=public caption".to_string(),
-                "-PNG:Comment=anime, moeuu, clean".to_string(),
-                "-PNG:Copyright=© moeuu".to_string(),
+                "-PNG:Comment=catalog, archive, published".to_string(),
+                "-PNG:Copyright=© 2026 Example Studio".to_string(),
             ]
         );
     }
@@ -4384,30 +4384,36 @@ mod tests {
     #[test]
     fn targeted_image_cleanup_search_deletes_matching_metadata_values() {
         let record = HashMap::from([
-            ("XMP-dc:Title".to_string(), serde_json::json!("abc 23333")),
-            ("XMP-dc:Creator".to_string(), serde_json::json!("moeuu")),
+            (
+                "XMP-dc:Title".to_string(),
+                serde_json::json!("Asset ID ASSET-2026"),
+            ),
+            (
+                "XMP-dc:Creator".to_string(),
+                serde_json::json!("Example Creator"),
+            ),
             (
                 "IPTC:Keywords".to_string(),
-                serde_json::json!(["clean", "23333"]),
+                serde_json::json!(["published", "ASSET-2026"]),
             ),
             (
                 "XMP-dc:Description".to_string(),
-                serde_json::json!("public note 23333"),
+                serde_json::json!("public note ASSET-2026"),
             ),
             (
                 "EXIF:LensModel".to_string(),
-                serde_json::json!("technical 23333 lens"),
+                serde_json::json!("technical ASSET-2026 lens"),
             ),
             (
                 "System:FileName".to_string(),
-                serde_json::json!("23333.jpg"),
+                serde_json::json!("ASSET-2026.jpg"),
             ),
             (
                 "SourceFile".to_string(),
-                serde_json::json!("C:/demo/23333.jpg"),
+                serde_json::json!("C:/Users/Public/Pictures/ASSET-2026.jpg"),
             ),
         ]);
-        let search_terms = vec!["23333".to_string()];
+        let search_terms = vec!["ASSET-2026".to_string()];
 
         let args = metadata_search_delete_args(&record, &search_terms);
 
@@ -4476,8 +4482,9 @@ mod tests {
         assert_eq!(quicktime_date.group, "QuickTime");
         assert_eq!(quicktime_date.name, "CreateDate");
 
-        let item_list_title = map_metadata_field("ItemList:Title", &serde_json::json!("moeuu"))
-            .expect("ItemList user metadata should be shown");
+        let item_list_title =
+            map_metadata_field("ItemList:Title", &serde_json::json!("Public Asset"))
+                .expect("ItemList user metadata should be shown");
         assert_eq!(item_list_title.group, "ItemList");
         assert_eq!(item_list_title.name, "Title");
     }
@@ -4494,7 +4501,7 @@ mod tests {
         fields.push(MetadataFieldPreview {
             group: "XMP-dc".to_string(),
             name: "Title".to_string(),
-            value_preview: "moeuu".to_string(),
+            value_preview: "Public Asset".to_string(),
         });
 
         let snapshot = build_metadata_snapshot(&fields);
@@ -4560,8 +4567,8 @@ mod tests {
         seed_command
             .arg("-overwrite_original")
             .arg("-P")
-            .arg("-EXIF:Artist=Xingtu")
-            .arg("-EXIF:Software=Xingtu 10.5.0")
+            .arg("-EXIF:Artist=Example Creator")
+            .arg("-EXIF:Software=Example Camera App 1.0")
             .arg("-PNG:Comment=secret")
             .arg("--")
             .arg(&working_copy);
@@ -4593,14 +4600,14 @@ mod tests {
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
                 enabled: true,
-                title: Some("moeuu".to_string()),
-                author: Some("Yo".to_string()),
-                description: Some("public png".to_string()),
+                title: Some("Public Asset".to_string()),
+                author: Some("Example Creator".to_string()),
+                description: Some("public PNG asset".to_string()),
                 keywords: Some("alpha, beta".to_string()),
-                rights: Some("© moeuu".to_string()),
+                rights: Some("© 2026 Example Studio".to_string()),
                 rating: Some("5".to_string()),
                 label: Some("public".to_string()),
-                rights_url: Some("https://example.com/rights".to_string()),
+                rights_url: Some("https://example.org/rights".to_string()),
             }),
         };
 
@@ -4618,12 +4625,15 @@ mod tests {
         assert!(!after.contains_key("IFD0:Software"));
         assert_eq!(
             after.get("PNG:Title").and_then(Value::as_str),
-            Some("moeuu")
+            Some("Public Asset")
         );
-        assert_eq!(after.get("PNG:Author").and_then(Value::as_str), Some("Yo"));
+        assert_eq!(
+            after.get("PNG:Author").and_then(Value::as_str),
+            Some("Example Creator")
+        );
         assert_eq!(
             after.get("PNG:Description").and_then(Value::as_str),
-            Some("public png")
+            Some("public PNG asset")
         );
         assert_eq!(
             after.get("PNG:Comment").and_then(Value::as_str),
@@ -4631,7 +4641,7 @@ mod tests {
         );
         assert_eq!(
             after.get("PNG:Copyright").and_then(Value::as_str),
-            Some("© moeuu")
+            Some("© 2026 Example Studio")
         );
         assert!(!after.contains_key("XMP-dc:Title"));
         assert!(!after.contains_key("XMP-x:XMPToolkit"));

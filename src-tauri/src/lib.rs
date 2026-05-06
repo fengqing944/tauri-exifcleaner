@@ -1071,6 +1071,22 @@ fn build_cleanup_preview_states(
         .collect()
 }
 
+fn summary_outcome_from(outcome: &FileCleanupOutcome) -> CleanupOutcome {
+    CleanupOutcome {
+        source_path: outcome.source_path.clone(),
+        output_path: outcome.output_path.clone(),
+        status: outcome.status.to_string(),
+        error: outcome.error.clone(),
+    }
+}
+
+fn should_keep_summary_outcome(outcome: &FileCleanupOutcome, options: &CleanupOptions) -> bool {
+    match options.output_mode {
+        OutputMode::Mirror => true,
+        OutputMode::Overwrite => outcome.status == "unchanged",
+    }
+}
+
 fn build_cleanup_preview_snapshot_map(
     exiftool_path: &Path,
     tracked_preview_files: &[QueuedFile],
@@ -1865,12 +1881,9 @@ async fn run_cleanup(
                         .map_err(|error| format!("无法发送行状态事件: {error}"))?;
                     }
 
-                    outcomes.push(CleanupOutcome {
-                        source_path: outcome.source_path.clone(),
-                        output_path: outcome.output_path.clone(),
-                        status: outcome.status.to_string(),
-                        error: outcome.error.clone(),
-                    });
+                    if should_keep_summary_outcome(&outcome, &options) {
+                        outcomes.push(summary_outcome_from(&outcome));
+                    }
 
                     completed += 1;
                     match outcome.status {
@@ -1944,6 +1957,9 @@ async fn run_cleanup(
         }
 
         let cancelled = cancel_flag.load(Ordering::Relaxed);
+        if matches!(options.output_mode, OutputMode::Overwrite) && !cancelled && succeeded == 0 {
+            outcomes.clear();
+        }
         let preview_snapshots = build_cleanup_preview_snapshot_map(
             &exiftool_path,
             &tracked_preview_files,
@@ -4010,6 +4026,55 @@ mod tests {
         );
         assert_eq!(cancelled_states[0].status, "cancelled");
         assert_eq!(cancelled_states[1].status, "cancelled");
+    }
+
+    #[test]
+    fn overwrite_summary_outcomes_only_keep_state_overrides() {
+        let overwrite_options = CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            preserve_structure: true,
+            parallelism: 1,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+            allow_readonly_overwrite: false,
+        };
+        let mirror_options = CleanupOptions {
+            output_mode: OutputMode::Mirror,
+            output_dir: Some("C:/out".to_string()),
+            preserve_structure: true,
+            parallelism: 1,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+            allow_readonly_overwrite: false,
+        };
+        let success = FileCleanupOutcome {
+            source_path: "C:/input/success.jpg".to_string(),
+            output_path: Some("C:/out/success.jpg".to_string()),
+            status: "success",
+            error: None,
+        };
+        let unchanged = FileCleanupOutcome {
+            source_path: "C:/input/unchanged.jpg".to_string(),
+            output_path: None,
+            status: "unchanged",
+            error: None,
+        };
+
+        assert!(
+            !should_keep_summary_outcome(&success, &overwrite_options),
+            "overwrite success can be inferred and should not inflate the final payload"
+        );
+        assert!(
+            should_keep_summary_outcome(&unchanged, &overwrite_options),
+            "mixed overwrite results need unchanged rows as exact overrides"
+        );
+        assert!(
+            should_keep_summary_outcome(&success, &mirror_options),
+            "mirror success needs output_path so later previews read the copied file"
+        );
     }
 
     #[test]

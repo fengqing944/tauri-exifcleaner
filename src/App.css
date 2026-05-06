@@ -1163,6 +1163,7 @@ kbd {
 }
 
 .queue-file strong,
+.queue-file span,
 .failure-row strong {
   overflow: hidden;
   text-overflow: ellipsis;

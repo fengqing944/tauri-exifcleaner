@@ -54,6 +54,8 @@ export function useWorkbenchController(options?: {
   const [autoStartCleanupRequested, setAutoStartCleanupRequested] = useState(false);
 
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
+  const pendingFailureEventsRef = useRef<Array<{ sourcePath: string; error: string }>>([]);
+  const seenRunFailureKeysRef = useRef(new Set<string>());
   const dropActiveRef = useRef(false);
 
   const fileCount = queueView?.supportedCount ?? 0;
@@ -67,6 +69,12 @@ export function useWorkbenchController(options?: {
 
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
+    if (payload.status === "failed" && payload.error) {
+      pendingFailureEventsRef.current.push({
+        sourcePath: payload.currentPath,
+        error: payload.error,
+      });
+    }
   });
 
   const handleCleanupFileEvent = useEffectEvent((payload: CleanupProgressEvent) => {
@@ -84,19 +92,34 @@ export function useWorkbenchController(options?: {
     });
   });
 
+  const resetRunFailures = () => {
+    pendingFailureEventsRef.current = [];
+    seenRunFailureKeysRef.current = new Set();
+    setRunFailures([]);
+  };
+
+  const replaceRunFailures = (failures: Array<{ sourcePath: string; error: string }>) => {
+    pendingFailureEventsRef.current = [];
+    seenRunFailureKeysRef.current = new Set(
+      failures.map((failure) => normalizePath(failure.sourcePath)),
+    );
+    setRunFailures(failures);
+  };
+
   const handleScanProgressEvent = useEffectEvent((payload: ScanProgressEvent) => {
     startTransition(() => {
       setQueueView(payload.view);
       setProgress(createProgressState(payload.view.supportedCount));
       setSummary(null);
-      setRunFailures([]);
+      resetRunFailures();
     });
   });
 
   const resetRunState = useEffectEvent(() => {
     pendingProgressRef.current = null;
+    pendingFailureEventsRef.current = [];
     setSummary(null);
-    setRunFailures([]);
+    resetRunFailures();
     setFileStates({});
   });
 
@@ -197,7 +220,7 @@ export function useWorkbenchController(options?: {
           setQueueView(null);
           setQueueFiles([]);
           setSummary(null);
-          setRunFailures([]);
+          resetRunFailures();
           setProgress(EMPTY_PROGRESS);
           setErrorMessage(null);
           setFileStates({});
@@ -268,10 +291,11 @@ export function useWorkbenchController(options?: {
 
     setIsRunning(true);
     setErrorMessage(null);
-    setRunFailures([]);
+    resetRunFailures();
     setSummary(null);
     setFileStates({});
     pendingProgressRef.current = null;
+    pendingFailureEventsRef.current = [];
     setProgress(createProgressState(fileCount));
 
     try {
@@ -302,8 +326,9 @@ export function useWorkbenchController(options?: {
       });
 
       pendingProgressRef.current = null;
+      pendingFailureEventsRef.current = [];
       setSummary(result);
-      setRunFailures(result.failures);
+      replaceRunFailures(result.failures);
       setFileStates(buildFileStateMap(result.previewStates));
       setProgress({
         total: result.total,
@@ -343,7 +368,7 @@ export function useWorkbenchController(options?: {
       setQueueView(null);
       setQueueFiles([]);
       setSummary(null);
-      setRunFailures([]);
+      resetRunFailures();
       setProgress(EMPTY_PROGRESS);
       setErrorMessage(null);
       setFileStates({});
@@ -489,32 +514,41 @@ export function useWorkbenchController(options?: {
 
     const timer = window.setInterval(() => {
       const payload = pendingProgressRef.current;
-      if (!payload) {
+      const pendingFailures = pendingFailureEventsRef.current;
+      if (!payload && !pendingFailures.length) {
         return;
       }
 
-      pendingProgressRef.current = null;
+      if (payload) {
+        pendingProgressRef.current = null;
+      }
+      pendingFailureEventsRef.current = [];
       startTransition(() => {
-        setProgress({
-          total: payload.total,
-          completed: payload.completed,
-          succeeded: payload.succeeded,
-          failed: payload.failed,
-          unchanged: payload.unchanged,
-          currentPath: payload.currentPath,
-          currentStatus: payload.status,
-        });
+        if (payload) {
+          setProgress({
+            total: payload.total,
+            completed: payload.completed,
+            succeeded: payload.succeeded,
+            failed: payload.failed,
+            unchanged: payload.unchanged,
+            currentPath: payload.currentPath,
+            currentStatus: payload.status,
+          });
+        }
 
-        if (payload.status === "failed" && payload.error) {
-          setRunFailures((current) =>
-            [
-              {
-                sourcePath: payload.currentPath,
-                error: payload.error ?? "处理失败",
-              },
-              ...current,
-            ],
-          );
+        if (pendingFailures.length) {
+          setRunFailures((current) => {
+            const next = [...current];
+            for (const failure of pendingFailures) {
+              const failureKey = normalizePath(failure.sourcePath);
+              if (seenRunFailureKeysRef.current.has(failureKey)) {
+                continue;
+              }
+              seenRunFailureKeysRef.current.add(failureKey);
+              next.unshift(failure);
+            }
+            return next;
+          });
         }
       });
     }, 220);

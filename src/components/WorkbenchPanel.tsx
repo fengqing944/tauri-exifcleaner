@@ -25,6 +25,15 @@ import {
 import { Panel, StatChip, StatusBadge } from "./AppPrimitives";
 import { MetadataPreviewFlyout } from "./MetadataPreviewFlyout";
 
+const COMPACT_QUEUE_MEDIA = "(max-width: 760px)";
+
+function canUseFixedRowVirtualization() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return true;
+  }
+  return !window.matchMedia(COMPACT_QUEUE_MEDIA).matches;
+}
+
 export function WorkbenchPanel(props: {
   dropActive: boolean;
   isScanning: boolean;
@@ -76,6 +85,7 @@ export function WorkbenchPanel(props: {
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [canVirtualizeRows, setCanVirtualizeRows] = useState(canUseFixedRowVirtualization);
 
   useEffect(() => {
     const body = props.queueBodyRef.current;
@@ -109,7 +119,19 @@ export function WorkbenchPanel(props: {
     <StatusBadge tone={props.dropActive ? "info" : "neutral"} label={props.dropActive ? "释放导入" : "待命"} />
   );
 
-  const shouldVirtualize = props.previewFiles.length > QUEUE_VIRTUALIZE_THRESHOLD;
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia(COMPACT_QUEUE_MEDIA);
+    const update = () => setCanVirtualizeRows(!media.matches);
+
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  const shouldVirtualize = canVirtualizeRows && props.previewFiles.length > QUEUE_VIRTUALIZE_THRESHOLD;
   const visibleStart = shouldVirtualize
     ? Math.max(0, Math.floor(scrollTop / QUEUE_ROW_HEIGHT) - QUEUE_VIRTUAL_OVERSCAN)
     : 0;

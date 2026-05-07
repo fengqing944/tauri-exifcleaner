@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8 - 2026-05-07
+
+- Changed the internal Tauri application identifier from `com.zero.metasweep` to `io.github.fengqing944.tagsweep`.
+- This makes the app identity match the public GitHub project and current product name.
+- Windows may treat this as a separate application from earlier builds, so previous local settings may not be reused automatically.
+
 ## 0.1.7 - 2026-05-07
 
 - Added a formal release metadata flow with versioned release notes and SHA256 checksum files.

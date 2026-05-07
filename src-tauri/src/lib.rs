@@ -207,6 +207,7 @@ struct QueueStore {
     queue_file_path: Option<PathBuf>,
     queue_page_offsets: Vec<u64>,
     file_hashes: HashSet<u64>,
+    tracked_ui_paths: HashSet<String>,
     roots: HashMap<String, RootSummary>,
     total_bytes: u64,
     ignored_count: usize,
@@ -321,6 +322,8 @@ struct CleanupProgressEvent {
     succeeded: usize,
     failed: usize,
     unchanged: usize,
+    active_workers: usize,
+    concurrency: usize,
     current_path: String,
     output_path: Option<String>,
     status: String,
@@ -642,6 +645,16 @@ fn clear_queue(
 
     *queue_state.inner.lock().unwrap() = QueueStore::default();
     Ok(())
+}
+
+#[tauri::command]
+fn set_cleanup_tracked_paths(queue_state: State<'_, QueueState>, paths: Vec<String>) {
+    let mut store = queue_state.inner.lock().unwrap();
+    store.tracked_ui_paths = paths
+        .into_iter()
+        .map(PathBuf::from)
+        .map(|path| dedupe_key(&path))
+        .collect();
 }
 
 #[tauri::command]
@@ -1736,12 +1749,13 @@ async fn run_cleanup(
         let (total, tracked_preview_files, tracked_paths, queue_file_path) = {
             let store = queue_state.inner.lock().unwrap();
             let tracked_preview_files = store.preview_files.clone();
-            let tracked_paths = store
+            let mut tracked_paths = store
                 .preview_files
                 .iter()
                 .take(MAX_QUEUE_PREVIEW_FILES)
                 .map(|file| dedupe_key(Path::new(&file.source_path)))
                 .collect::<HashSet<_>>();
+            tracked_paths.extend(store.tracked_ui_paths.iter().cloned());
             (
                 store.file_count,
                 tracked_preview_files,
@@ -1815,6 +1829,7 @@ async fn run_cleanup(
         let mut outcomes = Vec::new();
         let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
+        let mut active_workers = 0_usize;
         let emit_step = if total > 4_000 {
             48
         } else if total > 1_200 {
@@ -1832,6 +1847,7 @@ async fn run_cleanup(
         while let Some(event) = receiver.recv().await {
             match event {
                 WorkerEvent::Started(started) => {
+                    active_workers = active_workers.saturating_add(1).min(concurrency);
                     if tracked_paths.contains(&dedupe_key(Path::new(&started.source_path))) {
                         app.emit(
                             "cleanup-file",
@@ -1841,6 +1857,8 @@ async fn run_cleanup(
                                 succeeded,
                                 failed,
                                 unchanged,
+                                active_workers,
+                                concurrency,
                                 current_path: started.source_path,
                                 output_path: started.output_path,
                                 status: "running".to_string(),
@@ -1852,9 +1870,10 @@ async fn run_cleanup(
                 }
                 WorkerEvent::Outcome(outcome) => {
                     let outcome_key = dedupe_key(Path::new(&outcome.source_path));
+                    let active_workers_after = active_workers.saturating_sub(1);
                     if tracked_paths.contains(&outcome_key) {
                         tracked_preview_states.insert(
-                            outcome_key,
+                            outcome_key.clone(),
                             CleanupPreviewState {
                                 source_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
@@ -1872,6 +1891,8 @@ async fn run_cleanup(
                                 succeeded: succeeded + usize::from(outcome.status == "success"),
                                 failed: failed + usize::from(outcome.status == "failed"),
                                 unchanged: unchanged + usize::from(outcome.status == "unchanged"),
+                                active_workers: active_workers_after,
+                                concurrency,
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
@@ -1881,11 +1902,14 @@ async fn run_cleanup(
                         .map_err(|error| format!("无法发送行状态事件: {error}"))?;
                     }
 
-                    if should_keep_summary_outcome(&outcome, &options) {
+                    if tracked_paths.contains(&outcome_key)
+                        || should_keep_summary_outcome(&outcome, &options)
+                    {
                         outcomes.push(summary_outcome_from(&outcome));
                     }
 
                     completed += 1;
+                    active_workers = active_workers_after;
                     match outcome.status {
                         "success" => succeeded += 1,
                         "unchanged" => unchanged += 1,
@@ -1917,6 +1941,8 @@ async fn run_cleanup(
                                 succeeded,
                                 failed,
                                 unchanged,
+                                active_workers,
+                                concurrency,
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
                                 status: outcome.status.to_string(),
@@ -3644,6 +3670,7 @@ pub fn run() {
             scan_inputs,
             cancel_scan,
             clear_queue,
+            set_cleanup_tracked_paths,
             get_queue_files_page,
             get_debug_log_info,
             take_pending_shell_request,

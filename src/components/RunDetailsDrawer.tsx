@@ -3,6 +3,7 @@ import type {
   BadgeTone,
   MetadataDebugEntry,
   MetadataDebugState,
+  ProgressState,
 } from "../app-shared";
 import { trimMiddle } from "../app-shared";
 import { EmptyBox, StatusBadge } from "./AppPrimitives";
@@ -50,6 +51,7 @@ function buildFailureReport(failures: RunFailure[]) {
 export function RunDetailsDrawer(props: {
   isOpen: boolean;
   isRunning: boolean;
+  progress: ProgressState;
   metadataDebug: MetadataDebugState;
   metadataDebugEntries: MetadataDebugEntry[];
   debugLogPath: string;
@@ -117,6 +119,11 @@ export function RunDetailsDrawer(props: {
             tone={metadataDebugTone(props.metadataDebug.status)}
             label={metadataDebugLabel(props.metadataDebug.status)}
           />
+          {props.progress.configuredConcurrency > 0 ? (
+            <span className="topbar-meta-chip">
+              活跃 {props.progress.activeWorkers}/{props.progress.configuredConcurrency}
+            </span>
+          ) : null}
           <span className="topbar-meta-chip">
             批次 {props.metadataDebug.pendingBatches}
           </span>

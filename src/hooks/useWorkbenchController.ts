@@ -159,6 +159,9 @@ export function useWorkbenchController(options?: {
         offset: 0,
         limit: QUEUE_PAGE_SIZE,
       });
+      await invoke("set_cleanup_tracked_paths", {
+        paths: files.map((file) => normalizePath(file.sourcePath)),
+      });
       startTransition(() => {
         setQueueFiles(files);
       });
@@ -184,8 +187,12 @@ export function useWorkbenchController(options?: {
         return;
       }
 
+      const nextFiles = [...queueFiles, ...files];
+      await invoke("set_cleanup_tracked_paths", {
+        paths: nextFiles.map((file) => normalizePath(file.sourcePath)),
+      });
       startTransition(() => {
-        setQueueFiles((current) => [...current, ...files]);
+        setQueueFiles(nextFiles);
       });
     } catch (error) {
       setErrorMessage(toMessage(error));
@@ -299,7 +306,7 @@ export function useWorkbenchController(options?: {
     setFileStates({});
     pendingProgressRef.current = null;
     pendingFailureEventsRef.current = [];
-    setProgress(createProgressState(fileCount));
+    setProgress(createProgressState(fileCount, Math.min(fileCount, parallelism)));
 
     try {
       const result = await invoke<CleanupSummary>("run_cleanup", {
@@ -339,6 +346,8 @@ export function useWorkbenchController(options?: {
         succeeded: result.succeeded,
         failed: result.failed,
         unchanged: result.unchanged,
+        activeWorkers: 0,
+        configuredConcurrency: Math.min(parallelism, result.total || parallelism),
         currentPath: "",
         currentStatus: result.cancelled ? "cancelled" : "done",
       });
@@ -508,6 +517,8 @@ export function useWorkbenchController(options?: {
           succeeded: payload.succeeded,
           failed: payload.failed,
           unchanged: payload.unchanged,
+          activeWorkers: payload.activeWorkers,
+          configuredConcurrency: payload.concurrency,
           currentPath: payload.currentPath,
           currentStatus: payload.status,
         });
@@ -534,6 +545,8 @@ export function useWorkbenchController(options?: {
             succeeded: payload.succeeded,
             failed: payload.failed,
             unchanged: payload.unchanged,
+            activeWorkers: payload.activeWorkers,
+            configuredConcurrency: payload.concurrency,
             currentPath: payload.currentPath,
             currentStatus: payload.status,
           });

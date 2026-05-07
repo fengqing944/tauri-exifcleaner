@@ -203,6 +203,12 @@ export function WorkbenchPanel(props: {
                 {props.progress.completed}/{props.progress.total || props.fileCount}
               </span>
               <span>{props.progressPercent}%</span>
+              {props.progress.configuredConcurrency > 0 ? (
+                <span>
+                  活跃 {props.progress.activeWorkers}/
+                  {props.progress.configuredConcurrency}
+                </span>
+              ) : null}
               <span>{formatProgressStatus(props.progress.currentStatus)}</span>
             </div>
           </div>

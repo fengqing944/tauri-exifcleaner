@@ -56,6 +56,8 @@ export type CleanupProgressEvent = {
   succeeded: number;
   failed: number;
   unchanged: number;
+  activeWorkers: number;
+  concurrency: number;
   currentPath: string;
   outputPath: string | null;
   status: CleanupStatus;
@@ -128,6 +130,8 @@ export type ProgressState = {
   succeeded: number;
   failed: number;
   unchanged: number;
+  activeWorkers: number;
+  configuredConcurrency: number;
   currentPath: string;
   currentStatus: string;
 };
@@ -189,6 +193,8 @@ export const EMPTY_PROGRESS: ProgressState = {
   succeeded: 0,
   failed: 0,
   unchanged: 0,
+  activeWorkers: 0,
+  configuredConcurrency: 0,
   currentPath: "",
   currentStatus: "idle",
 };
@@ -245,13 +251,18 @@ export function normalizeSelection(paths: string[]): string[] {
   return result;
 }
 
-export function createProgressState(total: number): ProgressState {
+export function createProgressState(
+  total: number,
+  configuredConcurrency = 0,
+): ProgressState {
   return {
     total,
     completed: 0,
     succeeded: 0,
     failed: 0,
     unchanged: 0,
+    activeWorkers: 0,
+    configuredConcurrency,
     currentPath: "",
     currentStatus: "idle",
   };
@@ -364,6 +375,7 @@ export function mergeSummaryFileStates(
 
   for (const file of queueFiles) {
     const pathKey = normalizePath(file.sourcePath);
+    const currentState = next[pathKey];
     if (previewStateMap[pathKey]) {
       continue;
     }
@@ -389,9 +401,14 @@ export function mergeSummaryFileStates(
     }
 
     if (!summary.cancelled) {
+      if (currentState && currentState.status !== "running") {
+        next[pathKey] = currentState;
+        continue;
+      }
+
       next[pathKey] = {
         status: fallbackSuccessStatus,
-        outputPath: next[pathKey]?.outputPath ?? null,
+        outputPath: currentState?.outputPath ?? null,
         error: null,
       };
     }

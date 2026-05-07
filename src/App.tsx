@@ -684,6 +684,7 @@ function App() {
       <RunDetailsDrawer
         isOpen={isDetailsOpen}
         isRunning={isRunning}
+        progress={progress}
         metadataDebug={metadataDebug}
         metadataDebugEntries={metadataDebugEntries}
         debugLogPath={debugLogPath}

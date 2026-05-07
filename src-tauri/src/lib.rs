@@ -182,6 +182,7 @@ unsafe extern "system" {
 struct CleanupState {
     running: Mutex<bool>,
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    tracked_paths: Mutex<Option<Arc<Mutex<HashSet<String>>>>>,
 }
 
 #[derive(Default)]
@@ -648,13 +649,22 @@ fn clear_queue(
 }
 
 #[tauri::command]
-fn set_cleanup_tracked_paths(queue_state: State<'_, QueueState>, paths: Vec<String>) {
+fn set_cleanup_tracked_paths(
+    cleanup_state: State<'_, CleanupState>,
+    queue_state: State<'_, QueueState>,
+    paths: Vec<String>,
+) {
     let mut store = queue_state.inner.lock().unwrap();
     store.tracked_ui_paths = paths
         .into_iter()
         .map(PathBuf::from)
         .map(|path| dedupe_key(&path))
         .collect();
+
+    let combined_paths = collect_tracked_queue_paths(&store);
+    if let Some(active_paths) = cleanup_state.tracked_paths.lock().unwrap().as_ref() {
+        *active_paths.lock().unwrap() = combined_paths;
+    }
 }
 
 #[tauri::command]
@@ -1091,6 +1101,17 @@ fn summary_outcome_from(outcome: &FileCleanupOutcome) -> CleanupOutcome {
         status: outcome.status.to_string(),
         error: outcome.error.clone(),
     }
+}
+
+fn collect_tracked_queue_paths(store: &QueueStore) -> HashSet<String> {
+    let mut tracked_paths = store
+        .preview_files
+        .iter()
+        .take(MAX_QUEUE_PREVIEW_FILES)
+        .map(|file| dedupe_key(Path::new(&file.source_path)))
+        .collect::<HashSet<_>>();
+    tracked_paths.extend(store.tracked_ui_paths.iter().cloned());
+    tracked_paths
 }
 
 fn should_keep_summary_outcome(outcome: &FileCleanupOutcome, options: &CleanupOptions) -> bool {
@@ -1749,13 +1770,7 @@ async fn run_cleanup(
         let (total, tracked_preview_files, tracked_paths, queue_file_path) = {
             let store = queue_state.inner.lock().unwrap();
             let tracked_preview_files = store.preview_files.clone();
-            let mut tracked_paths = store
-                .preview_files
-                .iter()
-                .take(MAX_QUEUE_PREVIEW_FILES)
-                .map(|file| dedupe_key(Path::new(&file.source_path)))
-                .collect::<HashSet<_>>();
-            tracked_paths.extend(store.tracked_ui_paths.iter().cloned());
+            let tracked_paths = Arc::new(Mutex::new(collect_tracked_queue_paths(&store)));
             (
                 store.file_count,
                 tracked_preview_files,
@@ -1763,6 +1778,10 @@ async fn run_cleanup(
                 store.queue_file_path.clone(),
             )
         };
+        {
+            let mut active_tracked_paths = cleanup_state.tracked_paths.lock().unwrap();
+            *active_tracked_paths = Some(tracked_paths.clone());
+        }
 
         if total == 0 {
             return Ok(CleanupSummary {
@@ -1848,7 +1867,8 @@ async fn run_cleanup(
             match event {
                 WorkerEvent::Started(started) => {
                     active_workers = active_workers.saturating_add(1).min(concurrency);
-                    if tracked_paths.contains(&dedupe_key(Path::new(&started.source_path))) {
+                    let started_key = dedupe_key(Path::new(&started.source_path));
+                    if tracked_paths.lock().unwrap().contains(&started_key) {
                         app.emit(
                             "cleanup-file",
                             CleanupProgressEvent {
@@ -1871,7 +1891,8 @@ async fn run_cleanup(
                 WorkerEvent::Outcome(outcome) => {
                     let outcome_key = dedupe_key(Path::new(&outcome.source_path));
                     let active_workers_after = active_workers.saturating_sub(1);
-                    if tracked_paths.contains(&outcome_key) {
+                    let is_tracked = tracked_paths.lock().unwrap().contains(&outcome_key);
+                    if is_tracked {
                         tracked_preview_states.insert(
                             outcome_key.clone(),
                             CleanupPreviewState {
@@ -1902,9 +1923,7 @@ async fn run_cleanup(
                         .map_err(|error| format!("无法发送行状态事件: {error}"))?;
                     }
 
-                    if tracked_paths.contains(&outcome_key)
-                        || should_keep_summary_outcome(&outcome, &options)
-                    {
+                    if is_tracked || should_keep_summary_outcome(&outcome, &options) {
                         outcomes.push(summary_outcome_from(&outcome));
                     }
 
@@ -2029,6 +2048,10 @@ async fn run_cleanup(
     {
         let mut stored_flag = cleanup_state.cancel_flag.lock().unwrap();
         *stored_flag = None;
+    }
+    {
+        let mut active_tracked_paths = cleanup_state.tracked_paths.lock().unwrap();
+        *active_tracked_paths = None;
     }
 
     run_result
@@ -2285,17 +2308,11 @@ fn build_clean_command_args(
 }
 
 fn clean_command_needs_spawned_process(
-    planned_file: &PlannedCleanupFile,
-    removal_args: &[String],
-    write_args: &[String],
+    _planned_file: &PlannedCleanupFile,
+    _removal_args: &[String],
+    _write_args: &[String],
 ) -> bool {
-    !planned_file.source_path.to_string_lossy().is_ascii()
-        || planned_file
-            .output_path
-            .as_ref()
-            .is_some_and(|path| !path.to_string_lossy().is_ascii())
-        || removal_args.iter().any(|arg| !arg.is_ascii())
-        || write_args.iter().any(|arg| !arg.is_ascii())
+    false
 }
 
 #[derive(Debug)]
@@ -3770,6 +3787,57 @@ mod tests {
         assert_eq!(page.len(), 3);
         assert_eq!(page[0].relative_path, "8.jpg");
         assert_eq!(page[2].relative_path, "10.jpg");
+    }
+
+    #[test]
+    fn tracked_queue_paths_include_preview_and_loaded_ui_rows() {
+        let mut store = QueueStore::default();
+
+        merge_scan_batch(
+            &mut store,
+            ScanBatch {
+                files: (0..16)
+                    .map(|index| {
+                        queued_file(
+                            &format!("C:/input/{index}.jpg"),
+                            &format!("{index}.jpg"),
+                            "input",
+                            "C:/input",
+                        )
+                    })
+                    .collect(),
+                ignored_count: 0,
+                ignored_samples: Vec::new(),
+            },
+        )
+        .expect("merge scan batch");
+
+        store
+            .tracked_ui_paths
+            .insert(dedupe_key(Path::new("C:/input/15.jpg")));
+
+        let tracked = collect_tracked_queue_paths(&store);
+        assert!(tracked.contains(&dedupe_key(Path::new("C:/input/0.jpg"))));
+        assert!(tracked.contains(&dedupe_key(Path::new("C:/input/11.jpg"))));
+        assert!(tracked.contains(&dedupe_key(Path::new("C:/input/15.jpg"))));
+        assert_eq!(tracked.len(), MAX_QUEUE_PREVIEW_FILES + 1);
+    }
+
+    #[test]
+    fn persistent_session_path_check_keeps_unicode_on_fast_path() {
+        let planned = PlannedCleanupFile {
+            source_path: PathBuf::from("C:/测试/图片 文件.jpg"),
+            output_path: Some(PathBuf::from("C:/测试/输出 文件.jpg")),
+        };
+
+        assert!(
+            !clean_command_needs_spawned_process(
+                &planned,
+                &["-all=".to_string()],
+                &["XMP-dc:Title=中文".to_string()]
+            ),
+            "unicode paths and metadata writes should stay on the persistent exiftool path"
+        );
     }
 
     #[test]

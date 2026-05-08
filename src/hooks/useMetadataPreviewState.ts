@@ -53,9 +53,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [debugLogPath, setDebugLogPath] = useState("");
   const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
-  const activeSnapshotRequestKeysRef = useRef(new Set<string>());
+  const activeSnapshotRequestKeysRef = useRef(new Map<string, number>());
   const completedSnapshotRequestKeysRef = useRef(new Set<string>());
   const snapshotGenerationRef = useRef(0);
+  const snapshotRequestTokenRef = useRef(0);
+  const snapshotEpochRef = useRef(0);
 
   const metadataSeedKey = useMemo(
     () => input.metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
@@ -72,6 +74,13 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const nextSnapshotGeneration = () => {
     snapshotGenerationRef.current += 1;
     return snapshotGenerationRef.current;
+  };
+
+  const snapshotStaleKey = (key: string) => `${snapshotEpochRef.current}:${key}`;
+
+  const nextSnapshotRequestToken = () => {
+    snapshotRequestTokenRef.current += 1;
+    return snapshotRequestTokenRef.current;
   };
 
   const hasSnapshotResult = (
@@ -186,6 +195,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         return;
       }
 
+      const requestToken = nextSnapshotRequestToken();
       const requests: MetadataSnapshotRequest[] = [];
       const loadingKeys: string[] = [];
       for (const request of options.requests) {
@@ -197,7 +207,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           continue;
         }
 
-        activeSnapshotRequestKeysRef.current.add(loadingKey);
+        activeSnapshotRequestKeysRef.current.set(loadingKey, requestToken);
         loadingKeys.push(loadingKey);
         requests.push(request);
       }
@@ -229,7 +239,20 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
           requests: requestPayload,
         });
-        const activeResponses = responses.filter((response) => !response.stale);
+        const requestStillCurrent = loadingKeys.some(
+          (key) => activeSnapshotRequestKeysRef.current.get(key) === requestToken,
+        );
+        if (!requestStillCurrent) {
+          return;
+        }
+
+        const activeResponses = responses.filter((response) => {
+          const loadingKey = snapshotRequestKey(options.phase, response.requestKey);
+          return (
+            !response.stale &&
+            activeSnapshotRequestKeysRef.current.get(loadingKey) === requestToken
+          );
+        });
 
         for (const response of activeResponses) {
           completedSnapshotRequestKeysRef.current.add(
@@ -276,41 +299,53 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         });
       } catch (error) {
         const message = toMessage(error);
-        for (const request of requests) {
+        const activeRequests = requests.filter(
+          (request) =>
+            activeSnapshotRequestKeysRef.current.get(
+              snapshotRequestKey(options.phase, request.requestKey),
+            ) === requestToken,
+        );
+        for (const request of activeRequests) {
           completedSnapshotRequestKeysRef.current.add(
             snapshotRequestKey(options.phase, request.requestKey),
           );
         }
-        input.onError(message);
-        startTransition(() => {
-          setSnapshotErrors((current) => {
-            const next = { ...current };
-            for (const request of requests) {
-              next[snapshotRequestKey(options.phase, request.requestKey)] = message;
-            }
-            return next;
+        if (activeRequests.length) {
+          input.onError(message);
+          startTransition(() => {
+            setSnapshotErrors((current) => {
+              const next = { ...current };
+              for (const request of activeRequests) {
+                next[snapshotRequestKey(options.phase, request.requestKey)] = message;
+              }
+              return next;
+            });
           });
-        });
-        finishMetadataDebug({
-          origin: options.origin,
-          requestCount: requests.length,
-          durationMs: Math.round(performance.now() - startedAt),
-          responseCount: 0,
-          missingCount: 0,
-          error: message,
-        });
+          finishMetadataDebug({
+            origin: options.origin,
+            requestCount: activeRequests.length,
+            durationMs: Math.round(performance.now() - startedAt),
+            responseCount: 0,
+            missingCount: 0,
+            error: message,
+          });
+        }
       } finally {
         startTransition(() => {
           setLoadingSnapshots((current) => {
             const next = { ...current };
             for (const key of loadingKeys) {
-              delete next[key];
+              if (activeSnapshotRequestKeysRef.current.get(key) === requestToken) {
+                delete next[key];
+              }
             }
             return next;
           });
         });
         for (const key of loadingKeys) {
-          activeSnapshotRequestKeysRef.current.delete(key);
+          if (activeSnapshotRequestKeysRef.current.get(key) === requestToken) {
+            activeSnapshotRequestKeysRef.current.delete(key);
+          }
         }
       }
     },
@@ -319,6 +354,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const resetMetadataState = useEffectEvent(() => {
     activeSnapshotRequestKeysRef.current.clear();
     clearCompletedSnapshotKeys();
+    snapshotEpochRef.current += 1;
     snapshotGenerationRef.current = 0;
     setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
@@ -344,8 +380,23 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   });
 
   const clearAfterSnapshots = useEffectEvent(() => {
+    snapshotEpochRef.current += 1;
     clearCompletedSnapshotKeys("after");
+    for (const key of Array.from(activeSnapshotRequestKeysRef.current.keys())) {
+      if (key.startsWith("after:")) {
+        activeSnapshotRequestKeysRef.current.delete(key);
+      }
+    }
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setLoadingSnapshots((current) => {
+      const next = { ...current };
+      for (const key of Object.keys(next)) {
+        if (key.startsWith("after:")) {
+          delete next[key];
+        }
+      }
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
     setSnapshotErrors((current) => {
       const next = { ...current };
       for (const key of Object.keys(next)) {
@@ -459,7 +510,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       phase: "before",
       requests,
       priority: 10,
-      staleKey: "before:auto",
+      staleKey: snapshotStaleKey("before:auto"),
       generation: nextSnapshotGeneration(),
     });
   }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey]);
@@ -500,7 +551,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         phase: "before",
         requests,
         priority: 40,
-        staleKey: "before:auto",
+        staleKey: snapshotStaleKey("before:auto"),
         generation: nextSnapshotGeneration(),
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
@@ -530,7 +581,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         },
       ],
       priority: 100,
-      staleKey: "before:hover",
+      staleKey: snapshotStaleKey("before:hover"),
       generation: nextSnapshotGeneration(),
     });
   }, [beforeSnapshots, input.previewFile, input.previewPathKey, loadingSnapshots]);
@@ -559,7 +610,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         },
       ],
       priority: 110,
-      staleKey: "after:hover",
+      staleKey: snapshotStaleKey("after:hover"),
       generation: nextSnapshotGeneration(),
     });
   }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey, loadingSnapshots]);
@@ -606,7 +657,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         phase: "after",
         requests: limitedRequests,
         priority: 35,
-        staleKey: "after:auto",
+        staleKey: snapshotStaleKey("after:auto"),
         generation: nextSnapshotGeneration(),
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
@@ -643,7 +694,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       phase: "after",
       requests,
       priority: 25,
-      staleKey: "after:task",
+      staleKey: snapshotStaleKey("after:task"),
       generation: nextSnapshotGeneration(),
     });
   }, [afterSnapshots, input.fileStates, input.metadataSeedFiles, input.summary, loadingSnapshots, metadataSeedKey]);

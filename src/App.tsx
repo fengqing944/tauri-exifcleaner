@@ -236,6 +236,8 @@ function App() {
     if (isScanning && !wasScanningRef.current) {
       resetMetadataState();
       hidePreview();
+      visibleMetadataFileKeyRef.current = "";
+      setVisibleMetadataFiles([]);
     }
     wasScanningRef.current = isScanning;
   }, [isScanning]);

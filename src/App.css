@@ -764,8 +764,7 @@ kbd {
 .panel-body {
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  gap: 6px;
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .badge,
@@ -833,8 +832,9 @@ kbd {
 .queue-workspace {
   margin-top: 0;
   padding: 8px;
-  display: flex;
-  flex-direction: column;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 8px;
   min-height: 0;
   overflow: hidden;
@@ -1062,7 +1062,6 @@ kbd {
 .queue-list-shell {
   margin-top: 0;
   min-height: 0;
-  flex: 1 1 auto;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   align-content: stretch;
@@ -1118,6 +1117,10 @@ kbd {
   min-height: 0;
   max-height: none;
   overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
 }
 
 .queue-virtual-spacer {
@@ -1400,27 +1403,6 @@ kbd {
   color: #475569;
 }
 
-.task-callout {
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
-  font-size: 11px;
-  color: #334155;
-}
-
-.task-callout.warning {
-  color: #92400e;
-  background: #fffbeb;
-  border-color: #fde68a;
-}
-
-.task-callout.success {
-  color: #166534;
-  background: #ecfdf3;
-  border-color: #bbf7d0;
-}
-
 .task-block-head {
   display: flex;
   align-items: center;
@@ -1479,18 +1461,19 @@ kbd {
 }
 
 .compact-message {
+  grid-row: 3;
   padding: 8px 10px;
   font-size: 11px;
 }
 
 .compact-dropstage {
-  min-height: 280px;
-  flex: 1 1 320px;
+  grid-row: 4;
+  min-height: 0;
 }
 
 .compact-list-shell {
-  min-height: 280px;
-  flex: 1 1 320px;
+  grid-row: 4;
+  min-height: 0;
 }
 
 .compact-table-head,
@@ -1501,12 +1484,6 @@ kbd {
 
 .compact-scroll-body {
   min-height: 0;
-}
-
-.workbench-bottom {
-  margin-top: 2px;
-  display: grid;
-  gap: 8px;
 }
 
 .details-drawer-backdrop {
@@ -1561,10 +1538,6 @@ kbd {
   display: grid;
   gap: 8px;
   background: #f8fafc;
-}
-
-.compact-callout {
-  padding: 8px 10px;
 }
 
 .footnote {

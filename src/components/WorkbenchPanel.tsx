@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent, RefObject } from "react";
 
 import type {
@@ -81,6 +81,7 @@ export function WorkbenchPanel(props: {
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const previousSummaryRef = useRef<CleanupSummary | null>(null);
 
   useEffect(() => {
     const body = props.queueBodyRef.current;
@@ -156,6 +157,29 @@ export function WorkbenchPanel(props: {
 
     props.onQueueWindowChange(visibleStart, visibleEnd);
   }, [props.fileCount, props.onQueueWindowChange, visibleEnd, visibleStart]);
+
+  useEffect(() => {
+    if (!props.summary) {
+      previousSummaryRef.current = null;
+      return;
+    }
+    if (previousSummaryRef.current === props.summary) {
+      return;
+    }
+
+    previousSummaryRef.current = props.summary;
+    const frame = window.requestAnimationFrame(() => {
+      const body = props.queueBodyRef.current;
+      if (!body) {
+        return;
+      }
+
+      body.scrollTo({ top: 0, behavior: "auto" });
+      setScrollTop(0);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [props.queueBodyRef, props.summary]);
 
   const previewErrorPathKey = props.previewFile
     ? normalizePath(props.previewFile.sourcePath)
@@ -378,32 +402,6 @@ export function WorkbenchPanel(props: {
             ) : null}
           </div>
         )}
-      </div>
-
-      <div className="workbench-bottom">
-        <div className={`task-callout compact-callout ${props.summary?.cancelled ? "warning" : props.summary ? "success" : "neutral"}`}>
-          {props.summary ? (
-            props.summary.cancelled ? (
-              <span>
-                任务已取消，已完成{" "}
-                {props.summary.succeeded +
-                  props.summary.failed +
-                  props.summary.unchanged}
-                /{props.summary.total} 项。
-              </span>
-            ) : (
-              <span>
-                任务完成，成功 {props.summary.succeeded} 项，
-                {props.summary.unchanged
-                  ? `未改动 ${props.summary.unchanged} 项，`
-                  : ""}
-                失败 {props.summary.failed} 项。
-              </span>
-            )
-          ) : (
-            <span>清理开始后，这里会持续显示当前任务状态。</span>
-          )}
-        </div>
       </div>
     </Panel>
   );

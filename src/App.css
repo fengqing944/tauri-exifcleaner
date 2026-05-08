@@ -1831,6 +1831,23 @@ kbd {
     gap: 8px;
   }
 
+  .queue-list-shell.is-windowed .queue-row {
+    grid-template-columns: minmax(0, 1fr) 52px 52px 64px;
+    gap: 6px;
+  }
+
+  .queue-list-shell.is-windowed .queue-file span {
+    display: none;
+  }
+
+  .queue-list-shell.is-windowed .queue-count {
+    font-size: 12px;
+  }
+
+  .queue-list-shell.is-windowed .row-pill {
+    padding: 0 5px;
+  }
+
   .preview-flyout-shell {
     width: calc(100vw - 32px);
     max-height: calc(100vh - 32px);

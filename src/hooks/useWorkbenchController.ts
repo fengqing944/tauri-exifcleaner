@@ -101,6 +101,7 @@ export function useWorkbenchController(options?: {
   const queuePageCacheRef = useRef(new Map<number, QueuedFile[]>());
   const loadingQueuePagesRef = useRef(new Set<number>());
   const queueWindowPagesRef = useRef<{ startPage: number; endPage: number } | null>(null);
+  const queueEpochRef = useRef(0);
 
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
@@ -111,6 +112,7 @@ export function useWorkbenchController(options?: {
   const canStart = fileCount > 0 && !isScanning && !isRunning;
 
   const resetQueuePageCache = useEffectEvent(() => {
+    queueEpochRef.current += 1;
     queuePageCacheRef.current.clear();
     loadingQueuePagesRef.current.clear();
     queueWindowPagesRef.current = null;
@@ -303,21 +305,30 @@ export function useWorkbenchController(options?: {
   });
 
   const refreshQueueFiles = useEffectEvent(async (totalOverride?: number) => {
+    const requestEpoch = queueEpochRef.current;
     try {
       setIsLoadingQueuePage(true);
       const files = await invoke<QueuedFile[]>("get_queue_files_page", {
         offset: 0,
         limit: QUEUE_PAGE_SIZE,
       });
+      if (queueEpochRef.current !== requestEpoch) {
+        return;
+      }
+
       queuePageCacheRef.current.set(0, files);
       queueWindowPagesRef.current = { startPage: 0, endPage: 0 };
       startTransition(() => {
         publishQueueWindow(0, 0, totalOverride);
       });
     } catch (error) {
-      setErrorMessage(toMessage(error));
+      if (queueEpochRef.current === requestEpoch) {
+        setErrorMessage(toMessage(error));
+      }
     } finally {
-      setIsLoadingQueuePage(loadingQueuePagesRef.current.size > 0);
+      if (queueEpochRef.current === requestEpoch) {
+        setIsLoadingQueuePage(loadingQueuePagesRef.current.size > 0);
+      }
     }
   });
 
@@ -326,6 +337,7 @@ export function useWorkbenchController(options?: {
       return;
     }
 
+    const requestEpoch = queueEpochRef.current;
     const lastIndex = Math.max(0, fileCount - 1);
     const safeStart = Math.max(0, Math.min(Math.floor(startIndex), lastIndex));
     const safeEnd = Math.max(
@@ -365,12 +377,21 @@ export function useWorkbenchController(options?: {
             offset: page * QUEUE_PAGE_SIZE,
             limit: QUEUE_PAGE_SIZE,
           });
+          if (queueEpochRef.current !== requestEpoch) {
+            return;
+          }
           queuePageCacheRef.current.set(page, files);
         }),
       );
     } catch (error) {
-      setErrorMessage(toMessage(error));
+      if (queueEpochRef.current === requestEpoch) {
+        setErrorMessage(toMessage(error));
+      }
     } finally {
+      if (queueEpochRef.current !== requestEpoch) {
+        return;
+      }
+
       for (const page of missingPages) {
         loadingQueuePagesRef.current.delete(page);
       }

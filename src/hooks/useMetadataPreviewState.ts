@@ -54,6 +54,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [metadataDebug, setMetadataDebug] = useState<MetadataDebugState>(EMPTY_METADATA_DEBUG);
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
   const activeSnapshotRequestKeysRef = useRef(new Map<string, number>());
+  const activeMetadataDebugRequestsRef = useRef(
+    new Map<number, { phase: SnapshotPhase; requestCount: number }>(),
+  );
   const completedSnapshotRequestKeysRef = useRef(new Set<string>());
   const snapshotGenerationRef = useRef(0);
   const snapshotRequestTokenRef = useRef(0);
@@ -182,6 +185,78 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     );
   });
 
+  const finishAbortedMetadataDebug = useEffectEvent((
+    requestCount: number,
+    batchCount = 1,
+  ) => {
+    startTransition(() => {
+      setMetadataDebug((current) => {
+        if (!current.pendingBatches && !current.pendingFiles) {
+          return current;
+        }
+
+        const pendingBatches = Math.max(0, current.pendingBatches - batchCount);
+        const pendingFiles = Math.max(0, current.pendingFiles - requestCount);
+        const hasPending = Boolean(pendingBatches || pendingFiles);
+        const keepSettledStatus = current.status === "error";
+        return {
+          ...current,
+          status: hasPending || keepSettledStatus ? current.status : "success",
+          pendingBatches,
+          pendingFiles,
+          lastMessage:
+            hasPending || keepSettledStatus
+              ? current.lastMessage
+              : "已跳过过期字段请求。",
+        };
+      });
+    });
+  });
+
+  const beginTrackedMetadataDebug = useEffectEvent((
+    requestToken: number,
+    phase: SnapshotPhase,
+    origin: string,
+    requestCount: number,
+  ) => {
+    activeMetadataDebugRequestsRef.current.set(requestToken, {
+      phase,
+      requestCount,
+    });
+    beginMetadataDebug(origin, requestCount);
+  });
+
+  const finishTrackedMetadataDebug = useEffectEvent((
+    requestToken: number,
+    result: {
+      origin: string;
+      requestCount: number;
+      durationMs: number;
+      responseCount: number;
+      missingCount: number;
+      errorCount?: number;
+      staleCount?: number;
+      error?: string;
+    },
+  ) => {
+    if (!activeMetadataDebugRequestsRef.current.has(requestToken)) {
+      return;
+    }
+
+    activeMetadataDebugRequestsRef.current.delete(requestToken);
+    finishMetadataDebug(result);
+  });
+
+  const abortTrackedMetadataDebug = useEffectEvent((requestToken: number) => {
+    const entry = activeMetadataDebugRequestsRef.current.get(requestToken);
+    if (!entry) {
+      return;
+    }
+
+    activeMetadataDebugRequestsRef.current.delete(requestToken);
+    finishAbortedMetadataDebug(entry.requestCount);
+  });
+
   const requestSnapshots = useEffectEvent(
     async (options: {
       origin: string;
@@ -226,7 +301,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           return next;
         });
       });
-      beginMetadataDebug(options.origin, requests.length);
+      beginTrackedMetadataDebug(requestToken, options.phase, options.origin, requests.length);
 
       try {
         const requestPayload = requests.map((request) => ({
@@ -243,6 +318,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           (key) => activeSnapshotRequestKeysRef.current.get(key) === requestToken,
         );
         if (!requestStillCurrent) {
+          abortTrackedMetadataDebug(requestToken);
           return;
         }
 
@@ -288,7 +364,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           });
         });
 
-        finishMetadataDebug({
+        finishTrackedMetadataDebug(requestToken, {
           origin: options.origin,
           requestCount: requests.length,
           durationMs: Math.round(performance.now() - startedAt),
@@ -321,7 +397,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
               return next;
             });
           });
-          finishMetadataDebug({
+          finishTrackedMetadataDebug(requestToken, {
             origin: options.origin,
             requestCount: activeRequests.length,
             durationMs: Math.round(performance.now() - startedAt),
@@ -329,6 +405,8 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
             missingCount: 0,
             error: message,
           });
+        } else {
+          abortTrackedMetadataDebug(requestToken);
         }
       } finally {
         startTransition(() => {
@@ -353,6 +431,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
   const resetMetadataState = useEffectEvent(() => {
     activeSnapshotRequestKeysRef.current.clear();
+    activeMetadataDebugRequestsRef.current.clear();
     clearCompletedSnapshotKeys();
     snapshotEpochRef.current += 1;
     snapshotGenerationRef.current = 0;
@@ -382,6 +461,20 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const clearAfterSnapshots = useEffectEvent(() => {
     snapshotEpochRef.current += 1;
     clearCompletedSnapshotKeys("after");
+    let abortedAfterFiles = 0;
+    let abortedAfterBatches = 0;
+    for (const [requestToken, entry] of Array.from(
+      activeMetadataDebugRequestsRef.current.entries(),
+    )) {
+      if (entry.phase === "after") {
+        abortedAfterFiles += entry.requestCount;
+        abortedAfterBatches += 1;
+        activeMetadataDebugRequestsRef.current.delete(requestToken);
+      }
+    }
+    if (abortedAfterFiles || abortedAfterBatches) {
+      finishAbortedMetadataDebug(abortedAfterFiles, abortedAfterBatches);
+    }
     for (const key of Array.from(activeSnapshotRequestKeysRef.current.keys())) {
       if (key.startsWith("after:")) {
         activeSnapshotRequestKeysRef.current.delete(key);

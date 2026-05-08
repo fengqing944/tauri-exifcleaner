@@ -3277,6 +3277,7 @@ dependencies = [
 name = "tagsweep"
 version = "0.1.8"
 dependencies = [
+ "crossbeam-channel",
  "num_cpus",
  "serde",
  "serde_json",

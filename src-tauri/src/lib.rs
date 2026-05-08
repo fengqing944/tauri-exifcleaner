@@ -1,3 +1,4 @@
+use crossbeam_channel::{Receiver as CleanupReceiver, Sender as CleanupSender};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -116,6 +117,7 @@ const QUEUE_PAGE_SIZE_MAX: usize = 512;
 const QUEUE_INDEX_STRIDE: usize = 128;
 const DEBUG_LOG_MAX_BYTES: u64 = 512 * 1024;
 const METADATA_PREVIEW_FIELD_LIMIT: usize = 80;
+const METADATA_PREVIEW_CACHE_MAX_ENTRIES: usize = 512;
 const SHELL_CLEAN_ARG: &str = "--shell-clean";
 const SHELL_IMPORT_ARG: &str = "--shell-import";
 const WINDOW_STATE_FILENAME: &str = ".window-state.json";
@@ -171,6 +173,7 @@ const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
 const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static METADATA_PREVIEW_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
@@ -183,6 +186,12 @@ struct CleanupState {
     running: Mutex<bool>,
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
     tracked_paths: Mutex<Option<Arc<Mutex<HashSet<String>>>>>,
+}
+
+#[derive(Default)]
+struct MetadataPreviewState {
+    session: Mutex<Option<ExifToolSession>>,
+    cache: Mutex<HashMap<String, MetadataPreviewCacheEntry>>,
 }
 
 #[derive(Default)]
@@ -493,6 +502,27 @@ struct ExifToolSession {
     stderr_thread: Option<thread::JoinHandle<()>>,
     next_execute_id: u64,
     needs_restart: bool,
+    closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MetadataPreviewCacheSignature {
+    size_bytes: u64,
+    modified_millis: Option<u128>,
+}
+
+#[derive(Debug, Clone)]
+struct MetadataPreviewCacheEntry {
+    signature: MetadataPreviewCacheSignature,
+    snapshot: MetadataPreviewSnapshot,
+    last_used: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MetadataPreviewPath {
+    key: String,
+    path: PathBuf,
+    signature: MetadataPreviewCacheSignature,
 }
 
 enum StderrEvent {
@@ -699,11 +729,15 @@ fn take_pending_shell_request(
 #[tauri::command]
 async fn load_metadata_snapshots(
     app: AppHandle,
+    metadata_preview_state: State<'_, Arc<MetadataPreviewState>>,
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
-    tauri::async_runtime::spawn_blocking(move || build_metadata_snapshots(app, requests))
-        .await
-        .map_err(|error| format!("元数据预览任务异常: {error}"))?
+    let metadata_preview_state = Arc::clone(metadata_preview_state.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        build_metadata_snapshots(app, metadata_preview_state, requests)
+    })
+    .await
+    .map_err(|error| format!("元数据预览任务异常: {error}"))?
 }
 
 fn perform_scan_inputs(
@@ -746,7 +780,7 @@ fn perform_scan_inputs(
                     break;
                 }
 
-                let file_path = entry.into_path();
+                let file_path = entry.path().to_path_buf();
                 if !is_supported_file(&file_path) {
                     record_ignored_path(&sender, &mut batch, &mut last_flush_at, &file_path)?;
                     continue;
@@ -757,7 +791,7 @@ fn perform_scan_inputs(
                     continue;
                 }
 
-                let metadata = match fs::metadata(&file_path) {
+                let metadata = match entry.metadata() {
                     Ok(metadata) => metadata,
                     Err(_) => {
                         record_ignored_path(&sender, &mut batch, &mut last_flush_at, &file_path)?;
@@ -1208,6 +1242,7 @@ fn build_cleanup_preview_snapshot_map(
 
 fn build_metadata_snapshots(
     app: AppHandle,
+    metadata_preview_state: Arc<MetadataPreviewState>,
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
     let exiftool_path = resolve_exiftool(&app)?;
@@ -1225,27 +1260,44 @@ fn build_metadata_snapshots(
 
     for request in &requests {
         let file_path = PathBuf::from(&request.file_path);
-        if !file_path.is_file() {
-            missing_count += 1;
-            continue;
-        }
+        let metadata = match fs::metadata(&file_path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => {
+                missing_count += 1;
+                continue;
+            }
+        };
 
         let key = dedupe_key(&file_path);
-        if seen.insert(key) {
-            deduped_paths.push(file_path);
+        if seen.insert(key.clone()) {
+            deduped_paths.push(MetadataPreviewPath {
+                key,
+                path: file_path,
+                signature: metadata_preview_cache_signature(&metadata),
+            });
         }
     }
 
-    let (snapshot_map, snapshot_errors) = match read_metadata_snapshot_map(
+    let (mut snapshot_map, paths_to_read) =
+        read_metadata_preview_cache(&metadata_preview_state, &deduped_paths);
+    let cache_hit_count = snapshot_map.len();
+    let paths_for_read = paths_to_read
+        .iter()
+        .map(|entry| entry.path.clone())
+        .collect::<Vec<_>>();
+
+    let (fresh_snapshot_map, snapshot_errors) = match read_metadata_snapshot_map_with_state(
+        &metadata_preview_state,
         &exiftool_path,
-        &deduped_paths,
+        &paths_for_read,
     ) {
         Ok(snapshot_map) => (snapshot_map, HashMap::<String, String>::new()),
         Err(error) => {
             append_debug_log(format!(
-                    "metadata.batch_error requests={} valid_files={} missing_files={} elapsed_ms={} error={}",
+                    "metadata.batch_error requests={} valid_files={} cache_hits={} missing_files={} elapsed_ms={} error={}",
                     request_count,
                     deduped_paths.len(),
+                    cache_hit_count,
                     missing_count,
                     started_at.elapsed().as_millis(),
                     sanitize_debug_message(&error)
@@ -1253,18 +1305,21 @@ fn build_metadata_snapshots(
 
             let mut snapshot_map = HashMap::new();
             let mut snapshot_errors = HashMap::new();
-            for path in &deduped_paths {
-                let key = dedupe_key(path);
-                match read_metadata_snapshot_map(&exiftool_path, std::slice::from_ref(path)) {
+            for entry in &paths_to_read {
+                match read_metadata_snapshot_map_with_state(
+                    &metadata_preview_state,
+                    &exiftool_path,
+                    std::slice::from_ref(&entry.path),
+                ) {
                     Ok(single_map) => {
                         let snapshot = single_map
-                            .get(&key)
+                            .get(&entry.key)
                             .cloned()
                             .unwrap_or_else(empty_metadata_snapshot);
-                        snapshot_map.insert(key, snapshot);
+                        snapshot_map.insert(entry.key.clone(), snapshot);
                     }
                     Err(error) => {
-                        snapshot_errors.insert(key, error);
+                        snapshot_errors.insert(entry.key.clone(), error);
                     }
                 }
             }
@@ -1272,6 +1327,10 @@ fn build_metadata_snapshots(
             (snapshot_map, snapshot_errors)
         }
     };
+
+    write_metadata_preview_cache(&metadata_preview_state, &paths_to_read, &fresh_snapshot_map);
+    snapshot_map.extend(fresh_snapshot_map);
+
     let mut results = Vec::with_capacity(requests.len());
 
     for request in requests {
@@ -1297,9 +1356,10 @@ fn build_metadata_snapshots(
 
     if !snapshot_errors.is_empty() {
         append_debug_log(format!(
-            "metadata.partial_error requests={} valid_files={} missing_files={} resolved_files={} failed_files={} elapsed_ms={}",
+            "metadata.partial_error requests={} valid_files={} cache_hits={} missing_files={} resolved_files={} failed_files={} elapsed_ms={}",
             request_count,
             deduped_paths.len(),
+            cache_hit_count,
             missing_count,
             snapshot_map.len(),
             snapshot_errors.len(),
@@ -1307,9 +1367,10 @@ fn build_metadata_snapshots(
         ));
     } else {
         append_debug_log(format!(
-            "metadata.done requests={} valid_files={} missing_files={} resolved_files={} elapsed_ms={}",
+            "metadata.done requests={} valid_files={} cache_hits={} missing_files={} resolved_files={} elapsed_ms={}",
             request_count,
             deduped_paths.len(),
+            cache_hit_count,
             missing_count,
             snapshot_map.len(),
             started_at.elapsed().as_millis()
@@ -1317,6 +1378,270 @@ fn build_metadata_snapshots(
     }
 
     Ok(results)
+}
+
+fn metadata_preview_cache_signature(metadata: &fs::Metadata) -> MetadataPreviewCacheSignature {
+    let modified_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis());
+
+    MetadataPreviewCacheSignature {
+        size_bytes: metadata.len(),
+        modified_millis,
+    }
+}
+
+fn read_metadata_preview_cache(
+    state: &MetadataPreviewState,
+    paths: &[MetadataPreviewPath],
+) -> (
+    HashMap<String, MetadataPreviewSnapshot>,
+    Vec<MetadataPreviewPath>,
+) {
+    let mut snapshot_map = HashMap::new();
+    let mut paths_to_read = Vec::new();
+    let mut cache = state.cache.lock().unwrap();
+
+    for path in paths {
+        if let Some(entry) = cache.get_mut(&path.key) {
+            if entry.signature == path.signature {
+                entry.last_used = METADATA_PREVIEW_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
+                snapshot_map.insert(path.key.clone(), entry.snapshot.clone());
+                continue;
+            }
+        }
+
+        paths_to_read.push(path.clone());
+    }
+
+    (snapshot_map, paths_to_read)
+}
+
+fn write_metadata_preview_cache(
+    state: &MetadataPreviewState,
+    paths: &[MetadataPreviewPath],
+    snapshots: &HashMap<String, MetadataPreviewSnapshot>,
+) {
+    if paths.is_empty() || snapshots.is_empty() {
+        return;
+    }
+
+    let mut cache = state.cache.lock().unwrap();
+    for path in paths {
+        let Some(snapshot) = snapshots.get(&path.key) else {
+            continue;
+        };
+
+        cache.insert(
+            path.key.clone(),
+            MetadataPreviewCacheEntry {
+                signature: path.signature.clone(),
+                snapshot: snapshot.clone(),
+                last_used: METADATA_PREVIEW_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed),
+            },
+        );
+    }
+
+    trim_metadata_preview_cache(&mut cache);
+}
+
+fn trim_metadata_preview_cache(cache: &mut HashMap<String, MetadataPreviewCacheEntry>) {
+    if cache.len() <= METADATA_PREVIEW_CACHE_MAX_ENTRIES {
+        return;
+    }
+
+    let mut entries = cache
+        .iter()
+        .map(|(key, entry)| (key.clone(), entry.last_used))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(_, last_used)| *last_used);
+
+    let remove_count = cache
+        .len()
+        .saturating_sub(METADATA_PREVIEW_CACHE_MAX_ENTRIES);
+    for (key, _) in entries.into_iter().take(remove_count) {
+        cache.remove(&key);
+    }
+}
+
+fn read_metadata_snapshot_map_with_state(
+    state: &MetadataPreviewState,
+    exiftool_path: &Path,
+    input_paths: &[PathBuf],
+) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
+    if input_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut session_guard = state.session.lock().unwrap();
+    let needs_new_session = session_guard
+        .as_ref()
+        .map(|session| session.exiftool_path != exiftool_path)
+        .unwrap_or(true);
+    if needs_new_session {
+        *session_guard = Some(ExifToolSession::new(exiftool_path)?);
+    }
+
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "元数据预览引擎不可用。".to_string())?;
+    let result = read_metadata_snapshot_map_with_session(session, input_paths);
+    if result.is_err() && session.should_restart() {
+        if session.restart().is_err() {
+            *session_guard = None;
+        }
+    }
+
+    result
+}
+
+fn read_metadata_snapshot_map_with_session(
+    session: &mut ExifToolSession,
+    input_paths: &[PathBuf],
+) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
+    let records = session.read_metadata_records(input_paths, "ExifTool 元数据预览")?;
+    metadata_records_to_snapshot_map(records)
+}
+
+fn metadata_records_to_snapshot_map(
+    records: Vec<HashMap<String, Value>>,
+) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
+    let mut snapshots = HashMap::new();
+
+    for record in records {
+        let Some(source_file) = record
+            .get("SourceFile")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        let mut fields = record
+            .into_iter()
+            .filter_map(|(key, value)| map_metadata_field(&key, &value))
+            .collect::<Vec<_>>();
+        fields.sort_by(|left, right| {
+            left.group
+                .cmp(&right.group)
+                .then(left.name.cmp(&right.name))
+        });
+
+        snapshots.insert(
+            dedupe_key(Path::new(&source_file)),
+            build_metadata_snapshot(&fields),
+        );
+    }
+
+    Ok(snapshots)
+}
+
+fn read_metadata_snapshot_map(
+    exiftool_path: &Path,
+    input_paths: &[PathBuf],
+) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
+    if input_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let argfile_path = write_utf8_argfile(
+        "metadata-preview",
+        input_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string()),
+    )?;
+    let mut command = Command::new(exiftool_path);
+    command
+        .arg("-charset")
+        .arg("filename=UTF8")
+        .arg("-j")
+        .arg("-G1")
+        .arg("-s")
+        .arg("-a")
+        .arg("-u")
+        .arg("-m")
+        .arg("-ignoreMinorErrors")
+        .arg("-@")
+        .arg(&argfile_path);
+    configure_hidden_process(&mut command);
+
+    if let Some(parent) = exiftool_path.parent() {
+        command.current_dir(parent);
+    }
+
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
+        "ExifTool 元数据预览",
+    );
+    let _ = fs::remove_file(&argfile_path);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "ExifTool 元数据预览失败。".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
+        .map_err(|error| format!("无法解析元数据预览结果: {error}"))?;
+    metadata_records_to_snapshot_map(records)
+}
+
+#[cfg(test)]
+fn read_raw_metadata_record(
+    exiftool_path: &Path,
+    input_path: &Path,
+) -> Result<HashMap<String, Value>, String> {
+    let argfile_path = write_utf8_argfile(
+        "metadata-search",
+        std::iter::once(input_path.to_string_lossy().to_string()),
+    )?;
+    let mut command = Command::new(exiftool_path);
+    command
+        .arg("-charset")
+        .arg("filename=UTF8")
+        .arg("-j")
+        .arg("-G1")
+        .arg("-s")
+        .arg("-a")
+        .arg("-u")
+        .arg("-m")
+        .arg("-ignoreMinorErrors")
+        .arg("-@")
+        .arg(&argfile_path);
+    configure_hidden_process(&mut command);
+
+    if let Some(parent) = exiftool_path.parent() {
+        command.current_dir(parent);
+    }
+
+    let output = command_output_with_timeout(
+        &mut command,
+        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
+        "ExifTool 指定清理搜索",
+    );
+    let _ = fs::remove_file(&argfile_path);
+    let output = output?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "ExifTool 指定清理搜索失败。".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let mut records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
+        .map_err(|error| format!("无法解析指定清理搜索结果: {error}"))?;
+
+    Ok(records.pop().unwrap_or_default())
 }
 
 fn debug_log_path() -> PathBuf {
@@ -1374,138 +1699,6 @@ fn append_debug_log(message: String) {
             .unwrap_or_default();
         let _ = writeln!(file, "[{timestamp}] {message}");
     }
-}
-
-fn read_metadata_snapshot_map(
-    exiftool_path: &Path,
-    input_paths: &[PathBuf],
-) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
-    if input_paths.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let argfile_path = write_utf8_argfile(
-        "metadata-preview",
-        input_paths
-            .iter()
-            .map(|path| path.to_string_lossy().to_string()),
-    )?;
-    let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-j")
-        .arg("-G1")
-        .arg("-s")
-        .arg("-a")
-        .arg("-u")
-        .arg("-m")
-        .arg("-ignoreMinorErrors")
-        .arg("-@")
-        .arg(&argfile_path);
-    configure_hidden_process(&mut command);
-
-    if let Some(parent) = exiftool_path.parent() {
-        command.current_dir(parent);
-    }
-
-    let output = command_output_with_timeout(
-        &mut command,
-        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
-        "ExifTool 元数据预览",
-    );
-    let _ = fs::remove_file(&argfile_path);
-    let output = output?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "ExifTool 元数据预览失败。".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    let records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
-        .map_err(|error| format!("无法解析元数据预览结果: {error}"))?;
-    let mut snapshots = HashMap::new();
-
-    for record in records {
-        let Some(source_file) = record
-            .get("SourceFile")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        else {
-            continue;
-        };
-
-        let mut fields = record
-            .into_iter()
-            .filter_map(|(key, value)| map_metadata_field(&key, &value))
-            .collect::<Vec<_>>();
-        fields.sort_by(|left, right| {
-            left.group
-                .cmp(&right.group)
-                .then(left.name.cmp(&right.name))
-        });
-
-        snapshots.insert(
-            dedupe_key(Path::new(&source_file)),
-            build_metadata_snapshot(&fields),
-        );
-    }
-
-    Ok(snapshots)
-}
-
-fn read_raw_metadata_record(
-    exiftool_path: &Path,
-    input_path: &Path,
-) -> Result<HashMap<String, Value>, String> {
-    let argfile_path = write_utf8_argfile(
-        "metadata-search",
-        std::iter::once(input_path.to_string_lossy().to_string()),
-    )?;
-    let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-j")
-        .arg("-G1")
-        .arg("-s")
-        .arg("-a")
-        .arg("-u")
-        .arg("-m")
-        .arg("-ignoreMinorErrors")
-        .arg("-@")
-        .arg(&argfile_path);
-    configure_hidden_process(&mut command);
-
-    if let Some(parent) = exiftool_path.parent() {
-        command.current_dir(parent);
-    }
-
-    let output = command_output_with_timeout(
-        &mut command,
-        Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
-        "ExifTool 指定清理搜索",
-    );
-    let _ = fs::remove_file(&argfile_path);
-    let output = output?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "ExifTool 指定清理搜索失败。".to_string()
-        } else {
-            stderr
-        });
-    }
-
-    let mut records = serde_json::from_slice::<Vec<HashMap<String, Value>>>(&output.stdout)
-        .map_err(|error| format!("无法解析指定清理搜索结果: {error}"))?;
-
-    Ok(records.pop().unwrap_or_default())
 }
 
 fn map_metadata_field(key: &str, value: &Value) -> Option<MetadataFieldPreview> {
@@ -1804,7 +1997,7 @@ async fn run_cleanup(
             .min(total.max(1));
 
         let (planned_sender, planned_receiver) =
-            std_mpsc::sync_channel::<PlannedCleanupFile>((concurrency * 4).max(16));
+            crossbeam_channel::bounded::<PlannedCleanupFile>((concurrency * 4).max(16));
         let producer_options = options.clone();
         let producer_cancel_flag = cancel_flag.clone();
         let producer_handle = thread::spawn(move || {
@@ -1816,12 +2009,11 @@ async fn run_cleanup(
             )
         });
 
-        let queue = Arc::new(Mutex::new(planned_receiver));
         let (sender, mut receiver) = mpsc::unbounded_channel::<WorkerEvent>();
         let mut worker_handles = Vec::with_capacity(concurrency);
 
         for worker_index in 0..concurrency {
-            let queue = queue.clone();
+            let queue = planned_receiver.clone();
             let sender = sender.clone();
             let options = options.clone();
             let exiftool_path = exiftool_path.clone();
@@ -2059,7 +2251,7 @@ async fn run_cleanup(
 
 fn run_cleanup_worker(
     worker_index: usize,
-    queue: Arc<Mutex<std_mpsc::Receiver<PlannedCleanupFile>>>,
+    queue: CleanupReceiver<PlannedCleanupFile>,
     sender: mpsc::UnboundedSender<WorkerEvent>,
     options: CleanupOptions,
     exiftool_path: PathBuf,
@@ -2082,10 +2274,7 @@ fn run_cleanup_worker(
             break;
         }
 
-        let planned_file = {
-            let queue = queue.lock().unwrap();
-            queue.recv()
-        };
+        let planned_file = queue.recv();
 
         let Ok(planned_file) = planned_file else {
             break;
@@ -2141,7 +2330,7 @@ fn run_cleanup_worker(
 fn produce_planned_cleanup_files(
     queue_file_path: Option<PathBuf>,
     options: CleanupOptions,
-    sender: std_mpsc::SyncSender<PlannedCleanupFile>,
+    sender: CleanupSender<PlannedCleanupFile>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let path = queue_file_path.ok_or_else(|| "队列暂存文件不可用。".to_string())?;
@@ -2169,8 +2358,8 @@ fn produce_planned_cleanup_files(
         loop {
             match sender.try_send(planned_file) {
                 Ok(()) => break,
-                Err(std_mpsc::TrySendError::Disconnected(_)) => return Ok(()),
-                Err(std_mpsc::TrySendError::Full(returned_file)) => {
+                Err(crossbeam_channel::TrySendError::Disconnected(_)) => return Ok(()),
+                Err(crossbeam_channel::TrySendError::Full(returned_file)) => {
                     if cancel_flag.load(Ordering::Relaxed) {
                         return Ok(());
                     }
@@ -2476,7 +2665,7 @@ fn cleanup_removal_args(options: &CleanupOptions) -> Vec<String> {
 fn cleanup_removal_args_for_file(
     options: &CleanupOptions,
     source_path: &Path,
-    exiftool_path: &Path,
+    session: Option<&mut ExifToolSession>,
 ) -> Result<Vec<String>, String> {
     let Some(targeted) = options.targeted_image_cleanup.as_ref() else {
         return Ok(default_cleanup_removal_args_for_file(options, source_path));
@@ -2484,8 +2673,12 @@ fn cleanup_removal_args_for_file(
     if !targeted.enabled || !is_image_path(source_path) {
         return Ok(default_cleanup_removal_args_for_file(options, source_path));
     }
+    if sanitize_targeted_search_terms(targeted.search.as_deref()).is_empty() {
+        return Ok(Vec::new());
+    }
 
-    targeted_image_cleanup_args(targeted, source_path, exiftool_path)
+    let session = session.ok_or_else(|| "图片指定清理需要可用的 ExifTool 会话。".to_string())?;
+    targeted_image_cleanup_args(targeted, source_path, session)
 }
 
 fn default_cleanup_removal_args_for_file(
@@ -2522,12 +2715,12 @@ fn is_png_path(path: &Path) -> bool {
 fn targeted_image_cleanup_args(
     targeted: &TargetedImageCleanupOptions,
     source_path: &Path,
-    exiftool_path: &Path,
+    session: &mut ExifToolSession,
 ) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     let search_terms = sanitize_targeted_search_terms(targeted.search.as_deref());
     if !search_terms.is_empty() {
-        let record = read_raw_metadata_record(exiftool_path, source_path)?;
+        let record = session.read_raw_metadata_record(source_path)?;
         args.extend(metadata_search_delete_args(&record, &search_terms));
     }
 
@@ -2809,7 +3002,106 @@ impl ExifToolSession {
             stderr_thread: Some(stderr_thread),
             next_execute_id: 1,
             needs_restart: false,
+            closed: false,
         })
+    }
+
+    fn read_metadata_records(
+        &mut self,
+        input_paths: &[PathBuf],
+        description: &str,
+    ) -> Result<Vec<HashMap<String, Value>>, String> {
+        if input_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let execute_id = self.next_execute_id;
+        self.next_execute_id += 1;
+        let stderr_marker = format!("__TAGSWEEP_METADATA_DONE__:{execute_id}:");
+        let mut command_args = vec![
+            "-charset".to_string(),
+            "filename=UTF8".to_string(),
+            "-j".to_string(),
+            "-G1".to_string(),
+            "-s".to_string(),
+            "-a".to_string(),
+            "-u".to_string(),
+            "-m".to_string(),
+            "-ignoreMinorErrors".to_string(),
+            "-echo4".to_string(),
+            format!("{stderr_marker}${{status}}"),
+            "--".to_string(),
+        ];
+        command_args.extend(
+            input_paths
+                .iter()
+                .map(|path| path.to_string_lossy().to_string()),
+        );
+
+        for arg in command_args {
+            self.write_arg(&arg)?;
+        }
+        self.write_arg(&format!("-execute{execute_id}"))?;
+        self.stdin
+            .flush()
+            .map_err(|error| format!("无法刷新 ExifTool 读取指令: {error}"))?;
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let watchdog = spawn_process_watchdog(
+            self.child.id(),
+            Duration::from_secs(EXIFTOOL_METADATA_TIMEOUT_SECS),
+            finished.clone(),
+            timed_out.clone(),
+        );
+
+        let command_result = (|| {
+            let stdout = self.collect_stdout_until_ready(execute_id)?;
+            let stderr = self.consume_stderr_until_marker(&stderr_marker)?;
+            Ok::<_, String>((stdout, stderr))
+        })();
+        finished.store(true, Ordering::Relaxed);
+        let _ = watchdog.join();
+
+        if timed_out.load(Ordering::Relaxed) {
+            self.needs_restart = true;
+            return Err(format!(
+                "{description}超时，已终止当前 ExifTool worker（超过 {} 秒）。",
+                EXIFTOOL_METADATA_TIMEOUT_SECS
+            ));
+        }
+
+        let (stdout, result) = match command_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.mark_restart_if_exited();
+                return Err(error);
+            }
+        };
+
+        if result.status != 0 {
+            return Err(if result.stderr_output.is_empty() {
+                format!(
+                    "{description}失败，ExifTool 返回了非零状态码 {}",
+                    result.status
+                )
+            } else {
+                result.stderr_output
+            });
+        }
+
+        serde_json::from_str::<Vec<HashMap<String, Value>>>(&stdout)
+            .map_err(|error| format!("无法解析{description}结果: {error}"))
+    }
+
+    fn read_raw_metadata_record(
+        &mut self,
+        input_path: &Path,
+    ) -> Result<HashMap<String, Value>, String> {
+        let input_paths = [input_path.to_path_buf()];
+        let mut records = self.read_metadata_records(&input_paths, "ExifTool 指定清理搜索")?;
+
+        Ok(records.pop().unwrap_or_default())
     }
 
     fn clean_file(
@@ -2833,7 +3125,7 @@ impl ExifToolSession {
             && source_metadata.permissions().readonly();
 
         let removal_args =
-            cleanup_removal_args_for_file(options, &planned_file.source_path, &self.exiftool_path)?;
+            cleanup_removal_args_for_file(options, &planned_file.source_path, Some(self))?;
         let write_args = metadata_write_args(options, &planned_file.source_path);
 
         if removal_args.is_empty() && write_args.is_empty() {
@@ -3051,6 +3343,10 @@ impl ExifToolSession {
     }
 
     fn close(&mut self) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
         let _ = self.write_arg("-stay_open");
         let _ = self.write_arg("False");
         let _ = self.stdin.flush();
@@ -3105,13 +3401,20 @@ impl ExifToolSession {
     }
 
     fn consume_stdout_until_ready(&mut self, execute_id: u64) -> Result<(), String> {
+        self.collect_stdout_until_ready(execute_id).map(|_| ())
+    }
+
+    fn collect_stdout_until_ready(&mut self, execute_id: u64) -> Result<String, String> {
         let ready_marker = format!("{{ready{execute_id}}}");
+        let mut output = String::new();
 
         loop {
             let line = read_line(&mut self.stdout, "stdout")?;
             if line == ready_marker {
-                return Ok(());
+                return Ok(output);
             }
+            output.push_str(&line);
+            output.push('\n');
         }
     }
 
@@ -3150,6 +3453,12 @@ impl ExifToolSession {
                 StderrEvent::Error(error) => return Err(error),
             }
         }
+    }
+}
+
+impl Drop for ExifToolSession {
+    fn drop(&mut self) {
+        let _ = self.close();
     }
 }
 
@@ -3665,6 +3974,7 @@ pub fn run() {
 
     builder
         .manage(CleanupState::default())
+        .manage(Arc::new(MetadataPreviewState::default()))
         .manage(ScanState::default())
         .manage(QueueState::default())
         .manage(PendingShellRequestState {
@@ -4393,9 +4703,8 @@ mod tests {
             metadata_write: None,
         };
 
-        let args =
-            cleanup_removal_args_for_file(&options, Path::new("sample.png"), Path::new("unused"))
-                .expect("build png cleanup args");
+        let args = cleanup_removal_args_for_file(&options, Path::new("sample.png"), None)
+            .expect("build png cleanup args");
 
         assert!(!args.contains(&"-all=".to_string()));
         assert!(args.contains(&"-EXIF:All=".to_string()));
@@ -4443,9 +4752,8 @@ mod tests {
             metadata_write: None,
         };
 
-        let args =
-            cleanup_removal_args_for_file(&options, Path::new("sample.jpg"), Path::new("unused"))
-                .expect("build targeted args");
+        let args = cleanup_removal_args_for_file(&options, Path::new("sample.jpg"), None)
+            .expect("build targeted args");
 
         assert!(!args.contains(&"-all=".to_string()));
         assert!(args.is_empty());
@@ -4467,9 +4775,8 @@ mod tests {
             metadata_write: None,
         };
 
-        let args =
-            cleanup_removal_args_for_file(&options, Path::new("sample.mp4"), Path::new("unused"))
-                .expect("build video args");
+        let args = cleanup_removal_args_for_file(&options, Path::new("sample.mp4"), None)
+            .expect("build video args");
 
         assert!(args.contains(&"-all=".to_string()));
         assert!(args.contains(&"-QuickTime:CreateDate=".to_string()));

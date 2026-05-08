@@ -91,7 +91,6 @@ button {
 .badge,
 .message,
 .empty-box span,
-.progress-meta,
 .footnote,
 .queue-file span,
 .preview-panel-title span,
@@ -179,31 +178,6 @@ button {
 
 .toolbar-utility-group {
   justify-content: flex-end;
-}
-
-.toolbar-label {
-  font-size: 12px;
-  color: #475569;
-}
-
-.toolbar-slider {
-  min-width: 180px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-}
-
-.toolbar-slider input[type="range"] {
-  width: 100%;
-  accent-color: #2563eb;
-}
-
-.toolbar-slider-value {
-  min-width: 28px;
-  text-align: center;
-  font-size: 12px;
-  color: #0f172a;
 }
 
 .utility-drawer {
@@ -684,17 +658,6 @@ button {
   line-height: 16px;
 }
 
-.setting-check-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.setting-check-grid .setting-check {
-  padding: 8px;
-  border-radius: 8px;
-}
-
 .setting-advanced-block {
   padding: 0;
   overflow: hidden;
@@ -764,7 +727,6 @@ kbd {
 }
 
 .content,
-.sidebar,
 .failure-list {
   display: grid;
   gap: 10px;
@@ -856,11 +818,9 @@ kbd {
   border-color: #fecdd3;
 }
 
-.import-strip,
 .queue-workspace,
 .summary-strip,
 .activity-strip,
-.progress-panel,
 .message,
 .empty-box,
 .table-shell,
@@ -868,14 +828,6 @@ kbd {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-}
-
-.import-strip {
-  padding: 10px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
 }
 
 .queue-workspace {
@@ -1044,15 +996,8 @@ kbd {
 
 .activity-strip,
 .message,
-.empty-box,
-.progress-panel {
+.empty-box {
   padding: 10px;
-}
-
-.workspace-overview {
-  margin-top: 12px;
-  display: grid;
-  gap: 10px;
 }
 
 .activity-strip {
@@ -1455,33 +1400,6 @@ kbd {
   color: #475569;
 }
 
-.progress-head,
-.progress-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.progress-head strong {
-  font-size: 20px;
-}
-
-.task-board {
-  display: grid;
-  gap: 10px;
-}
-
-.task-progress-panel {
-  margin-top: 0;
-}
-
-.task-stats-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
 .task-callout {
   padding: 8px 10px;
   border-radius: 10px;
@@ -1501,11 +1419,6 @@ kbd {
   color: #166534;
   background: #ecfdf3;
   border-color: #bbf7d0;
-}
-
-.task-errors-block {
-  display: grid;
-  gap: 8px;
 }
 
 .task-block-head {
@@ -1531,23 +1444,6 @@ kbd {
   justify-content: end;
   gap: 8px;
   min-width: 0;
-}
-
-.progress-track {
-  height: 8px;
-  margin-top: 12px;
-  background: #dbe2ea;
-  border-radius: 999px;
-  overflow: hidden;
-}
-
-.progress-value {
-  height: 100%;
-  background: #2563eb;
-}
-
-.progress-meta {
-  margin-top: 12px;
 }
 
 .empty-box strong {
@@ -1667,44 +1563,6 @@ kbd {
   background: #f8fafc;
 }
 
-.details-block {
-  border: 1px solid #dbe2ea;
-  border-radius: 10px;
-  background: #fbfcfe;
-  overflow: hidden;
-}
-
-.details-block summary {
-  list-style: none;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  font-size: 11px;
-  color: #334155;
-}
-
-.details-block summary::-webkit-details-marker {
-  display: none;
-}
-
-.details-block[open] summary {
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.details-block summary span:first-child {
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.workbench-aux-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
-  gap: 8px;
-}
-
 .compact-callout {
   padding: 8px 10px;
 }
@@ -1728,8 +1586,7 @@ kbd {
     grid-template-columns: 1fr;
   }
 
-  .workbench-meta-row,
-  .workbench-aux-grid {
+  .workbench-meta-row {
     grid-template-columns: 1fr;
   }
 
@@ -1738,10 +1595,6 @@ kbd {
 @media (max-width: 920px) {
   .summary-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .import-strip {
-    grid-template-columns: 1fr;
   }
 
   .import-actions {
@@ -1793,17 +1646,11 @@ kbd {
     grid-template-columns: 1fr;
   }
 
-  .toolbar-slider {
-    min-width: 0;
-  }
-
   .summary-strip,
   .import-actions,
-  .task-stats-strip,
   .preview-card-grid,
   .preview-card-grid.compare-grid,
   .preview-summary-grid,
-  .setting-check-grid,
   .setting-segmented,
   .setting-path-row,
   .setting-text-grid {

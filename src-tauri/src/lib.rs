@@ -128,6 +128,7 @@ const EXIFTOOL_VERSION_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
 const METADATA_KEYWORD_MAX_CHARS: usize = 60;
 const METADATA_KEYWORD_MAX_COUNT: usize = 20;
+const METADATA_READ_ARGS: &[&str] = &["-j", "-G1", "-s", "-a", "-u", "-m", "-ignoreMinorErrors"];
 const SAFE_CLEAN_REMOVAL_ARGS: &[&str] = &["-all="];
 const PNG_SAFE_CLEAN_REMOVAL_ARGS: &[&str] = &[
     "-EXIF:All=",
@@ -1785,6 +1786,19 @@ fn metadata_records_to_snapshot_map(
     Ok(snapshots)
 }
 
+fn append_metadata_read_command_args(command: &mut Command) {
+    command.arg("-charset").arg("filename=UTF8");
+    for arg in METADATA_READ_ARGS {
+        command.arg(arg);
+    }
+}
+
+fn metadata_read_session_args() -> Vec<String> {
+    let mut args = vec!["-charset".to_string(), "filename=UTF8".to_string()];
+    args.extend(METADATA_READ_ARGS.iter().map(|arg| (*arg).to_string()));
+    args
+}
+
 fn read_metadata_snapshot_map(
     exiftool_path: &Path,
     input_paths: &[PathBuf],
@@ -1800,18 +1814,8 @@ fn read_metadata_snapshot_map(
             .map(|path| path.to_string_lossy().to_string()),
     )?;
     let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-j")
-        .arg("-G1")
-        .arg("-s")
-        .arg("-a")
-        .arg("-u")
-        .arg("-m")
-        .arg("-ignoreMinorErrors")
-        .arg("-@")
-        .arg(&argfile_path);
+    append_metadata_read_command_args(&mut command);
+    command.arg("-@").arg(&argfile_path);
     configure_hidden_process(&mut command);
 
     if let Some(parent) = exiftool_path.parent() {
@@ -1850,18 +1854,8 @@ fn read_raw_metadata_record(
         std::iter::once(input_path.to_string_lossy().to_string()),
     )?;
     let mut command = Command::new(exiftool_path);
-    command
-        .arg("-charset")
-        .arg("filename=UTF8")
-        .arg("-j")
-        .arg("-G1")
-        .arg("-s")
-        .arg("-a")
-        .arg("-u")
-        .arg("-m")
-        .arg("-ignoreMinorErrors")
-        .arg("-@")
-        .arg(&argfile_path);
+    append_metadata_read_command_args(&mut command);
+    command.arg("-@").arg(&argfile_path);
     configure_hidden_process(&mut command);
 
     if let Some(parent) = exiftool_path.parent() {
@@ -2708,7 +2702,6 @@ fn build_clean_command_args(
     removal_args: Vec<String>,
     write_args: Vec<String>,
     stderr_marker: Option<&str>,
-    end_options_before_source: bool,
     overwrite_output_path: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     let mut args = vec![
@@ -2747,19 +2740,8 @@ fn build_clean_command_args(
         args.push(format!("{marker}${{status}}"));
     }
 
-    if end_options_before_source {
-        args.push("--".to_string());
-    }
     args.push(planned_file.source_path.to_string_lossy().to_string());
     Ok(args)
-}
-
-fn clean_command_needs_spawned_process(
-    _planned_file: &PlannedCleanupFile,
-    _removal_args: &[String],
-    _write_args: &[String],
-) -> bool {
-    false
 }
 
 #[derive(Debug)]
@@ -3276,19 +3258,9 @@ impl ExifToolSession {
         let execute_id = self.next_execute_id;
         self.next_execute_id += 1;
         let stderr_marker = format!("__TAGSWEEP_METADATA_DONE__:{execute_id}:");
-        let mut command_args = vec![
-            "-charset".to_string(),
-            "filename=UTF8".to_string(),
-            "-j".to_string(),
-            "-G1".to_string(),
-            "-s".to_string(),
-            "-a".to_string(),
-            "-u".to_string(),
-            "-m".to_string(),
-            "-ignoreMinorErrors".to_string(),
-            "-echo4".to_string(),
-            format!("{stderr_marker}${{status}}"),
-        ];
+        let mut command_args = metadata_read_session_args();
+        command_args.push("-echo4".to_string());
+        command_args.push(format!("{stderr_marker}${{status}}"));
         command_args.extend(
             input_paths
                 .iter()
@@ -3410,24 +3382,13 @@ impl ExifToolSession {
             .as_ref()
             .map(|workspace| workspace.output_path.as_path());
 
-        let clean_result =
-            if clean_command_needs_spawned_process(planned_file, &removal_args, &write_args) {
-                self.clean_file_with_spawned_process(
-                    planned_file,
-                    options,
-                    removal_args,
-                    write_args,
-                    overwrite_temp_path,
-                )
-            } else {
-                self.clean_file_with_stay_open(
-                    planned_file,
-                    options,
-                    removal_args,
-                    write_args,
-                    overwrite_temp_path,
-                )
-            };
+        let clean_result = self.clean_file_with_stay_open(
+            planned_file,
+            options,
+            removal_args,
+            write_args,
+            overwrite_temp_path,
+        );
 
         if let Err(error) = clean_result {
             if let Some(workspace) = overwrite_workspace.as_ref() {
@@ -3491,7 +3452,6 @@ impl ExifToolSession {
             removal_args,
             write_args,
             Some(&stderr_marker),
-            false,
             overwrite_output_path,
         )?;
         for arg in command_args {
@@ -3539,61 +3499,6 @@ impl ExifToolSession {
         }
         if result.status != 0 {
             return Err(format!("ExifTool 返回了非零状态码 {}", result.status));
-        }
-
-        Ok(())
-    }
-
-    fn clean_file_with_spawned_process(
-        &self,
-        planned_file: &PlannedCleanupFile,
-        options: &CleanupOptions,
-        removal_args: Vec<String>,
-        write_args: Vec<String>,
-        overwrite_output_path: Option<&Path>,
-    ) -> Result<(), String> {
-        let command_args = build_clean_command_args(
-            planned_file,
-            options,
-            removal_args,
-            write_args,
-            None,
-            true,
-            overwrite_output_path,
-        )?;
-        let argfile_path = write_utf8_argfile("clean", command_args)?;
-        let mut command = Command::new(&self.exiftool_path);
-        command
-            .arg("-charset")
-            .arg("filename=UTF8")
-            .arg("-@")
-            .arg(&argfile_path);
-        configure_hidden_process(&mut command);
-
-        if let Some(parent) = self.exiftool_path.parent() {
-            command.current_dir(parent);
-        }
-
-        let output = command_output_with_timeout(
-            &mut command,
-            Duration::from_secs(EXIFTOOL_CLEAN_TIMEOUT_SECS),
-            "ExifTool 清理",
-        );
-        let _ = fs::remove_file(&argfile_path);
-        let output = output?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if stderr.is_empty() {
-                format!("ExifTool 返回了非零状态码 {}", output.status)
-            } else {
-                stderr
-            });
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if !stderr.is_empty() {
-            return Err(stderr);
         }
 
         Ok(())
@@ -4388,23 +4293,6 @@ mod tests {
         assert!(tracked.contains(&dedupe_key(Path::new("C:/input/11.jpg"))));
         assert!(tracked.contains(&dedupe_key(Path::new("C:/input/15.jpg"))));
         assert_eq!(tracked.len(), MAX_QUEUE_PREVIEW_FILES + 1);
-    }
-
-    #[test]
-    fn persistent_session_path_check_keeps_unicode_on_fast_path() {
-        let planned = PlannedCleanupFile {
-            source_path: PathBuf::from("C:/测试/图片 文件.jpg"),
-            output_path: Some(PathBuf::from("C:/测试/输出 文件.jpg")),
-        };
-
-        assert!(
-            !clean_command_needs_spawned_process(
-                &planned,
-                &["-all=".to_string()],
-                &["XMP-dc:Title=中文".to_string()]
-            ),
-            "unicode paths and metadata writes should stay on the persistent exiftool path"
-        );
     }
 
     #[test]

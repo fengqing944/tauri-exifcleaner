@@ -499,6 +499,48 @@ export function resolveAfterCountLabel(
   return "—";
 }
 
+export function resolveBeforeCountLabel(
+  snapshot: MetadataPreviewSnapshot | undefined,
+  error: string | undefined,
+  loading: boolean,
+  queued = false,
+): string {
+  if (snapshot) {
+    return String(snapshot.count);
+  }
+  if (error) {
+    return "读取失败";
+  }
+  if (loading) {
+    return "读取中";
+  }
+  if (queued) {
+    return "排队中";
+  }
+  return "—";
+}
+
+export function resolveMetadataColumnStatusLabel(
+  snapshot: MetadataPreviewSnapshot | undefined,
+  error: string | undefined,
+  loading: boolean,
+  queued = false,
+): string {
+  if (snapshot) {
+    return `${snapshot.count} 条`;
+  }
+  if (error) {
+    return "读取失败";
+  }
+  if (loading) {
+    return "读取中";
+  }
+  if (queued) {
+    return "排队中";
+  }
+  return "暂无";
+}
+
 export function resolveAfterEmptyText(rowState?: FileRunState): string {
   if (!rowState) {
     return "清理完成后可查看处理后的字段。";

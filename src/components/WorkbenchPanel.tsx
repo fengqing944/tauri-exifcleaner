@@ -20,6 +20,7 @@ import {
   QUEUE_VIRTUAL_OVERSCAN,
   QUEUE_VIRTUALIZE_THRESHOLD,
   resolveAfterCountLabel,
+  resolveBeforeCountLabel,
   trimMiddle,
 } from "../app-shared";
 import { Panel, StatChip, StatusBadge } from "./AppPrimitives";
@@ -314,15 +315,12 @@ export function WorkbenchPanel(props: {
                       <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
                     </div>
                     <span className="queue-count">
-                      {beforeSnapshot
-                        ? beforeSnapshot.count
-                        : beforeError
-                            ? "读取失败"
-                          : beforeLoading
-                            ? "读取中"
-                            : beforeQueued
-                              ? "排队中"
-                              : "—"}
+                      {resolveBeforeCountLabel(
+                        beforeSnapshot,
+                        beforeError,
+                        beforeLoading,
+                        beforeQueued,
+                      )}
                     </span>
                     <span className="queue-count">
                       {afterError

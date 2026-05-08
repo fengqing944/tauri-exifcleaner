@@ -5,6 +5,8 @@ import {
   getRowStatusDescriptor,
   resolveAfterCountLabel,
   resolveAfterEmptyText,
+  resolveBeforeCountLabel,
+  resolveMetadataColumnStatusLabel,
   trimMiddle,
 } from "../app-shared";
 
@@ -38,15 +40,12 @@ export function MetadataPreviewFlyout(props: {
         <div className="preview-summary-card">
           <span>处理前</span>
           <strong>
-            {props.beforeSnapshot
-              ? props.beforeSnapshot.count
-              : props.beforeError
-                  ? "读取失败"
-                : props.beforeLoading
-                  ? "读取中"
-                  : props.beforeQueued
-                    ? "排队中"
-                    : "—"}
+            {resolveBeforeCountLabel(
+              props.beforeSnapshot,
+              props.beforeError,
+              props.beforeLoading,
+              props.beforeQueued,
+            )}
           </strong>
         </div>
         <div className="preview-summary-card">
@@ -102,15 +101,12 @@ function MetadataColumn(props: {
       <header>
         <strong>{props.title}</strong>
         <span>
-          {props.snapshot
-            ? `${props.snapshot.count} 条`
-            : props.error
-                ? "读取失败"
-              : props.loading
-                ? "读取中"
-                : props.queued
-                  ? "排队中"
-                  : "暂无"}
+          {resolveMetadataColumnStatusLabel(
+            props.snapshot,
+            props.error,
+            props.loading,
+            props.queued,
+          )}
         </span>
       </header>
 

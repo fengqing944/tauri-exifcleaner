@@ -16,7 +16,7 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
         <ol className="utility-list ordered-list">
           <li>拖入文件或文件夹，程序会自动扫描支持的项目并生成队列。</li>
           <li>在工作台里查看处理前字段、处理后字段和当前状态。</li>
-          <li>确认无误后点击顶部的“开始清理”，按当前并发执行原地覆盖。</li>
+          <li>确认无误后点击顶部的“开始清理”，按当前并发和输出方式执行。</li>
           <li>任务结束后查看工作台状态和“运行详情”里的错误项。</li>
         </ol>
       </section>
@@ -66,15 +66,15 @@ export function HelpDrawer(props: { isOpen: boolean; onClose: () => void }) {
           <span>这版程序的处理方式</span>
         </div>
         <div className="utility-note">
-          <strong>原地覆盖</strong>
+          <strong>输出方式</strong>
           <span>
-            当前版本固定为原地覆盖清理。程序会保留文件时间信息，并在工作台里反馈成功、失败和字段结果。
+            设置里可以选择原地覆盖或镜像输出。原地覆盖会替换源文件；镜像输出会把清理后的文件写入单独目录，源文件保持不变。
           </span>
         </div>
         <div className="utility-note">
-          <strong>PNG 安全清理</strong>
+          <strong>PNG 处理</strong>
           <span>
-            PNG 只删除 EXIF、XMP、IPTC 和文本类隐私字段，不写入新标记，也不删除颜色配置、Gamma 或 ICC Profile。
+            PNG 会按安全列表清理 EXIF、XMP、IPTC 和文本类隐私字段，不删除颜色配置、Gamma 或 ICC Profile。启用清理后标记时，PNG 会写入原生文本字段。
           </span>
         </div>
       </section>

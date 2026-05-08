@@ -3288,7 +3288,6 @@ impl ExifToolSession {
             "-ignoreMinorErrors".to_string(),
             "-echo4".to_string(),
             format!("{stderr_marker}${{status}}"),
-            "--".to_string(),
         ];
         command_args.extend(
             input_paths
@@ -5758,6 +5757,34 @@ mod tests {
         assert!(
             snapshot_map.contains_key(&dedupe_key(&working_copy)),
             "expected snapshot map to contain unicode path key"
+        );
+    }
+
+    #[test]
+    fn persistent_session_reads_metadata_preview_records() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir()
+            .join("metasweep-tests")
+            .join("stay-open-preview");
+        fs::create_dir_all(&temp_dir).expect("create preview temp dir");
+
+        let working_copy = temp_dir.join("preview-session.png");
+        fs::copy(&source, &working_copy).expect("copy preview png");
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let snapshot_map =
+            read_metadata_snapshot_map_with_session(&mut session, &[working_copy.clone()])
+                .expect("read metadata through stay-open session");
+        let _ = session.close();
+
+        let snapshot = snapshot_map
+            .get(&dedupe_key(&working_copy))
+            .expect("snapshot should be keyed by source path");
+        assert!(
+            snapshot.count > 0,
+            "expected persistent session preview to return metadata fields"
         );
     }
 

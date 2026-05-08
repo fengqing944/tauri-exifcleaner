@@ -13,6 +13,8 @@ export function MetadataPreviewFlyout(props: {
   beforeSnapshot?: MetadataPreviewSnapshot;
   afterSnapshot?: MetadataPreviewSnapshot;
   rowState?: FileRunState;
+  beforeQueued: boolean;
+  afterQueued: boolean;
   beforeLoading: boolean;
   afterLoading: boolean;
   beforeError?: string;
@@ -38,11 +40,13 @@ export function MetadataPreviewFlyout(props: {
           <strong>
             {props.beforeSnapshot
               ? props.beforeSnapshot.count
-              : props.beforeLoading
-                ? "读取中"
-                : props.beforeError
+              : props.beforeError
                   ? "读取失败"
-                  : "—"}
+                : props.beforeLoading
+                  ? "读取中"
+                  : props.beforeQueued
+                    ? "排队中"
+                    : "—"}
           </strong>
         </div>
         <div className="preview-summary-card">
@@ -50,7 +54,12 @@ export function MetadataPreviewFlyout(props: {
           <strong>
             {props.afterError
               ? "读取失败"
-              : resolveAfterCountLabel(props.afterSnapshot, props.rowState, props.afterLoading)}
+              : resolveAfterCountLabel(
+                  props.afterSnapshot,
+                  props.rowState,
+                  props.afterLoading,
+                  props.afterQueued,
+                )}
           </strong>
         </div>
       </div>
@@ -59,6 +68,7 @@ export function MetadataPreviewFlyout(props: {
         <MetadataColumn
           title="处理前"
           snapshot={props.beforeSnapshot}
+          queued={props.beforeQueued}
           loading={props.beforeLoading}
           error={props.beforeError}
           emptyText="正在读取字段摘要..."
@@ -67,6 +77,7 @@ export function MetadataPreviewFlyout(props: {
         <MetadataColumn
           title="处理后"
           snapshot={props.afterSnapshot}
+          queued={props.afterQueued}
           loading={props.afterLoading}
           error={props.afterError}
           emptyText={resolveAfterEmptyText(props.rowState)}
@@ -79,6 +90,7 @@ export function MetadataPreviewFlyout(props: {
 function MetadataColumn(props: {
   title: string;
   snapshot?: MetadataPreviewSnapshot;
+  queued: boolean;
   loading: boolean;
   error?: string;
   emptyText: string;
@@ -92,11 +104,13 @@ function MetadataColumn(props: {
         <span>
           {props.snapshot
             ? `${props.snapshot.count} 条`
-            : props.loading
-              ? "读取中"
-              : props.error
+            : props.error
                 ? "读取失败"
-                : "暂无"}
+              : props.loading
+                ? "读取中"
+                : props.queued
+                  ? "排队中"
+                  : "暂无"}
         </span>
       </header>
 
@@ -126,7 +140,13 @@ function MetadataColumn(props: {
           <div className="preview-empty">没有可展示的字段。</div>
         )
       ) : (
-        <div className="preview-empty">{props.loading ? "正在读取字段..." : props.emptyText}</div>
+        <div className="preview-empty">
+          {props.loading
+            ? "正在读取字段..."
+            : props.queued
+              ? "已加入读取队列..."
+              : props.emptyText}
+        </div>
       )}
     </section>
   );

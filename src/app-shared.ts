@@ -476,12 +476,16 @@ export function resolveAfterCountLabel(
   snapshot: MetadataPreviewSnapshot | undefined,
   rowState: FileRunState | undefined,
   loading: boolean,
+  queued = false,
 ): string {
   if (snapshot) {
     return String(snapshot.count);
   }
   if (loading) {
     return "读取中";
+  }
+  if (queued) {
+    return "排队中";
   }
   if (rowState?.status === "success") {
     return "待读取";

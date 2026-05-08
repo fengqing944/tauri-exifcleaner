@@ -214,6 +214,7 @@ function App() {
   const {
     beforeSnapshots,
     afterSnapshots,
+    queuedSnapshots,
     loadingSnapshots,
     snapshotErrors,
     debugLogPath,
@@ -579,6 +580,12 @@ function App() {
   const previewAfterLoading = previewPathKey
     ? Boolean(loadingSnapshots[`after:${previewPathKey}`])
     : false;
+  const previewBeforeQueued = previewPathKey
+    ? Boolean(queuedSnapshots[`before:${previewPathKey}`])
+    : false;
+  const previewAfterQueued = previewPathKey
+    ? Boolean(queuedSnapshots[`after:${previewPathKey}`])
+    : false;
   const detailsLabel =
     metadataDebug.status === "running"
       ? "读取中"
@@ -651,6 +658,7 @@ function App() {
             fileStates={fileStates}
             beforeSnapshots={beforeSnapshots}
             afterSnapshots={afterSnapshots}
+            queuedSnapshots={queuedSnapshots}
             loadingSnapshots={loadingSnapshots}
             snapshotErrors={snapshotErrors}
             hoveredPathKey={hoveredPathKey}
@@ -663,6 +671,8 @@ function App() {
             previewAfterSnapshot={previewAfterSnapshot}
             previewBeforeLoading={previewBeforeLoading}
             previewAfterLoading={previewAfterLoading}
+            previewBeforeQueued={previewBeforeQueued}
+            previewAfterQueued={previewAfterQueued}
             flyoutPosition={flyoutPosition}
             tableShellRef={tableShellRef}
             queueBodyRef={queueBodyRef}

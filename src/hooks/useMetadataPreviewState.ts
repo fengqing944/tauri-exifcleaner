@@ -41,6 +41,31 @@ type UseMetadataPreviewStateInput = {
 
 type SnapshotPhase = "before" | "after";
 
+type SnapshotQueueItem = {
+  queueKey: string;
+  phase: SnapshotPhase;
+  request: MetadataSnapshotRequest;
+  origin: string;
+  priority: number;
+  staleKey: string;
+  generation: number;
+  sequence: number;
+};
+
+const SNAPSHOT_HIGH_PRIORITY = 100;
+const SNAPSHOT_VISIBLE_PRIORITY = 35;
+const SNAPSHOT_STALE_RETRY_COOLDOWN_MS = 800;
+
+function snapshotBatchSizeForPriority(priority: number) {
+  if (priority >= SNAPSHOT_HIGH_PRIORITY) {
+    return 1;
+  }
+  if (priority >= SNAPSHOT_VISIBLE_PRIORITY) {
+    return 6;
+  }
+  return 4;
+}
+
 export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [beforeSnapshots, setBeforeSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>(
     {},
@@ -48,6 +73,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [afterSnapshots, setAfterSnapshots] = useState<Record<string, MetadataPreviewSnapshot>>(
     {},
   );
+  const [queuedSnapshots, setQueuedSnapshots] = useState<Record<string, boolean>>({});
   const [loadingSnapshots, setLoadingSnapshots] = useState<Record<string, boolean>>({});
   const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
   const [debugLogPath, setDebugLogPath] = useState("");
@@ -58,6 +84,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     new Map<number, { phase: SnapshotPhase; requestCount: number }>(),
   );
   const completedSnapshotRequestKeysRef = useRef(new Set<string>());
+  const queuedSnapshotRequestsRef = useRef(new Map<string, SnapshotQueueItem>());
+  const snapshotRetryAfterRef = useRef(new Map<string, number>());
+  const snapshotSchedulerRunningRef = useRef(false);
+  const snapshotSchedulerEpochRef = useRef(0);
+  const snapshotQueueSequenceRef = useRef(0);
   const snapshotGenerationRef = useRef(0);
   const snapshotRequestTokenRef = useRef(0);
   const snapshotEpochRef = useRef(0);
@@ -98,6 +129,12 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     Boolean(loadingSnapshots[snapshotRequestKey(phase, requestKey)]) ||
     activeSnapshotRequestKeysRef.current.has(snapshotRequestKey(phase, requestKey));
 
+  const hasSnapshotQueued = (phase: SnapshotPhase, requestKey: string) =>
+    queuedSnapshotRequestsRef.current.has(snapshotRequestKey(phase, requestKey));
+
+  const hasSnapshotPending = (phase: SnapshotPhase, requestKey: string) =>
+    hasSnapshotInFlight(phase, requestKey) || hasSnapshotQueued(phase, requestKey);
+
   const clearCompletedSnapshotKeys = (phase?: SnapshotPhase) => {
     if (!phase) {
       completedSnapshotRequestKeysRef.current.clear();
@@ -111,6 +148,17 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       }
     }
   };
+
+  const publishQueuedSnapshots = useEffectEvent(() => {
+    const next: Record<string, boolean> = {};
+    for (const key of queuedSnapshotRequestsRef.current.keys()) {
+      next[key] = true;
+    }
+
+    startTransition(() => {
+      setQueuedSnapshots(next);
+    });
+  });
 
   const pushMetadataDebugEntry = useEffectEvent(
     (tone: MetadataDebugEntry["tone"], title: string, detail: string) => {
@@ -314,6 +362,15 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
           requests: requestPayload,
         });
+        const retryAfter = performance.now() + SNAPSHOT_STALE_RETRY_COOLDOWN_MS;
+        for (const response of responses) {
+          if (response.stale) {
+            snapshotRetryAfterRef.current.set(
+              snapshotRequestKey(options.phase, response.requestKey),
+              retryAfter,
+            );
+          }
+        }
         const requestStillCurrent = loadingKeys.some(
           (key) => activeSnapshotRequestKeysRef.current.get(key) === requestToken,
         );
@@ -429,14 +486,157 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     },
   );
 
+  const drainSnapshotQueue = useEffectEvent(async () => {
+    if (snapshotSchedulerRunningRef.current) {
+      return;
+    }
+
+    const schedulerEpoch = snapshotSchedulerEpochRef.current;
+    snapshotSchedulerRunningRef.current = true;
+    try {
+      while (queuedSnapshotRequestsRef.current.size) {
+        if (schedulerEpoch !== snapshotSchedulerEpochRef.current) {
+          return;
+        }
+
+        const candidates = Array.from(queuedSnapshotRequestsRef.current.values()).filter(
+          (item) => {
+            const snapshots = item.phase === "before" ? beforeSnapshots : afterSnapshots;
+            return (
+              !hasSnapshotResult(item.phase, item.request.requestKey, snapshots) &&
+              !hasSnapshotInFlight(item.phase, item.request.requestKey)
+            );
+          },
+        );
+
+        if (!candidates.length) {
+          queuedSnapshotRequestsRef.current.clear();
+          publishQueuedSnapshots();
+          return;
+        }
+
+        candidates.sort(
+          (left, right) => right.priority - left.priority || left.sequence - right.sequence,
+        );
+        const first = candidates[0];
+        const batchLimit = snapshotBatchSizeForPriority(first.priority);
+        const batch = candidates
+          .filter(
+            (item) =>
+              item.phase === first.phase &&
+              item.origin === first.origin &&
+              item.priority === first.priority &&
+              item.staleKey === first.staleKey,
+          )
+          .slice(0, batchLimit);
+
+        for (const item of batch) {
+          queuedSnapshotRequestsRef.current.delete(item.queueKey);
+        }
+        publishQueuedSnapshots();
+
+        await requestSnapshots({
+          origin: first.origin,
+          phase: first.phase,
+          requests: batch.map((item) => item.request),
+          priority: first.priority,
+          staleKey: first.staleKey,
+          generation: Math.max(...batch.map((item) => item.generation)),
+        });
+        if (schedulerEpoch !== snapshotSchedulerEpochRef.current) {
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+    } finally {
+      if (schedulerEpoch !== snapshotSchedulerEpochRef.current) {
+        return;
+      }
+
+      snapshotSchedulerRunningRef.current = false;
+      if (queuedSnapshotRequestsRef.current.size) {
+        void drainSnapshotQueue();
+      }
+    }
+  });
+
+  const scheduleSnapshotRequests = useEffectEvent(
+    (options: {
+      origin: string;
+      phase: SnapshotPhase;
+      requests: MetadataSnapshotRequest[];
+      priority: number;
+      staleKey: string;
+      generation: number;
+      snapshots: Record<string, MetadataPreviewSnapshot>;
+    }) => {
+      if (!options.requests.length) {
+        return;
+      }
+
+      let changed = false;
+      const now = performance.now();
+      for (const request of options.requests) {
+        const queueKey = snapshotRequestKey(options.phase, request.requestKey);
+        const retryAfter = snapshotRetryAfterRef.current.get(queueKey);
+        if (
+          retryAfter &&
+          retryAfter > now &&
+          options.priority < SNAPSHOT_HIGH_PRIORITY
+        ) {
+          continue;
+        }
+        if (retryAfter && retryAfter <= now) {
+          snapshotRetryAfterRef.current.delete(queueKey);
+        }
+        if (
+          hasSnapshotResult(options.phase, request.requestKey, options.snapshots) ||
+          hasSnapshotInFlight(options.phase, request.requestKey)
+        ) {
+          continue;
+        }
+
+        const existing = queuedSnapshotRequestsRef.current.get(queueKey);
+        if (existing && existing.priority >= options.priority) {
+          continue;
+        }
+
+        queuedSnapshotRequestsRef.current.set(queueKey, {
+          queueKey,
+          phase: options.phase,
+          request,
+          origin: options.origin,
+          priority: options.priority,
+          staleKey: options.staleKey,
+          generation: options.generation,
+          sequence: existing?.sequence ?? ++snapshotQueueSequenceRef.current,
+        });
+        snapshotRetryAfterRef.current.delete(queueKey);
+        changed = true;
+      }
+
+      if (!changed) {
+        return;
+      }
+
+      publishQueuedSnapshots();
+      void drainSnapshotQueue();
+    },
+  );
+
   const resetMetadataState = useEffectEvent(() => {
     activeSnapshotRequestKeysRef.current.clear();
     activeMetadataDebugRequestsRef.current.clear();
+    queuedSnapshotRequestsRef.current.clear();
+    snapshotRetryAfterRef.current.clear();
+    snapshotSchedulerEpochRef.current += 1;
+    snapshotSchedulerRunningRef.current = false;
     clearCompletedSnapshotKeys();
     snapshotEpochRef.current += 1;
     snapshotGenerationRef.current = 0;
     setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
+    setQueuedSnapshots((current) => (Object.keys(current).length ? {} : current));
     setLoadingSnapshots((current) => (Object.keys(current).length ? {} : current));
     setSnapshotErrors((current) => (Object.keys(current).length ? {} : current));
     setMetadataDebug((current) => {
@@ -461,6 +661,17 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const clearAfterSnapshots = useEffectEvent(() => {
     snapshotEpochRef.current += 1;
     clearCompletedSnapshotKeys("after");
+    for (const key of Array.from(queuedSnapshotRequestsRef.current.keys())) {
+      if (key.startsWith("after:")) {
+        queuedSnapshotRequestsRef.current.delete(key);
+      }
+    }
+    for (const key of Array.from(snapshotRetryAfterRef.current.keys())) {
+      if (key.startsWith("after:")) {
+        snapshotRetryAfterRef.current.delete(key);
+      }
+    }
+    publishQueuedSnapshots();
     let abortedAfterFiles = 0;
     let abortedAfterBatches = 0;
     for (const [requestToken, entry] of Array.from(
@@ -590,7 +801,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const pathKey = normalizePath(file.sourcePath);
         return (
           !hasSnapshotResult("before", pathKey, beforeSnapshots) &&
-          !hasSnapshotInFlight("before", pathKey)
+          !hasSnapshotPending("before", pathKey)
         );
       })
       .map((file) => ({
@@ -598,15 +809,16 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         filePath: file.sourcePath,
       }));
 
-    void requestSnapshots({
+    scheduleSnapshotRequests({
       origin: "列表预读",
       phase: "before",
       requests,
       priority: 10,
       staleKey: snapshotStaleKey("before:auto"),
       generation: nextSnapshotGeneration(),
+      snapshots: beforeSnapshots,
     });
-  }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey]);
+  }, [beforeSnapshots, input.metadataSeedFiles, metadataSeedKey]);
 
   useEffect(() => {
     if (!input.visibleFiles.length) {
@@ -626,7 +838,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const pathKey = normalizePath(file.sourcePath);
         return (
           !hasSnapshotResult("before", pathKey, beforeSnapshots) &&
-          !hasSnapshotInFlight("before", pathKey)
+          !hasSnapshotPending("before", pathKey)
         );
       })
       .slice(0, VISIBLE_METADATA_BEFORE_BATCH_LIMIT)
@@ -639,18 +851,19 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     }
 
     const timeoutId = window.setTimeout(() => {
-      void requestSnapshots({
+      scheduleSnapshotRequests({
         origin: "可见预读",
         phase: "before",
         requests,
         priority: 40,
         staleKey: snapshotStaleKey("before:auto"),
         generation: nextSnapshotGeneration(),
+        snapshots: beforeSnapshots,
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [beforeSnapshots, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
+  }, [beforeSnapshots, input.visibleFiles, visibleMetadataKey]);
 
   useEffect(() => {
     if (!input.previewFile || !input.previewPathKey) {
@@ -659,12 +872,12 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
     if (
       hasSnapshotResult("before", input.previewPathKey, beforeSnapshots) ||
-      hasSnapshotInFlight("before", input.previewPathKey)
+      hasSnapshotPending("before", input.previewPathKey)
     ) {
       return;
     }
 
-    void requestSnapshots({
+    scheduleSnapshotRequests({
       origin: "悬停预读",
       phase: "before",
       requests: [
@@ -676,8 +889,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       priority: 100,
       staleKey: snapshotStaleKey("before:hover"),
       generation: nextSnapshotGeneration(),
+      snapshots: beforeSnapshots,
     });
-  }, [beforeSnapshots, input.previewFile, input.previewPathKey, loadingSnapshots]);
+  }, [beforeSnapshots, input.previewFile, input.previewPathKey]);
 
   useEffect(() => {
     if (!input.previewFile || !input.previewPathKey) {
@@ -688,12 +902,12 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     if (
       rowState?.status !== "success" ||
       hasSnapshotResult("after", input.previewPathKey, afterSnapshots) ||
-      hasSnapshotInFlight("after", input.previewPathKey)
+      hasSnapshotPending("after", input.previewPathKey)
     ) {
       return;
     }
 
-    void requestSnapshots({
+    scheduleSnapshotRequests({
       origin: "悬停后览",
       phase: "after",
       requests: [
@@ -705,8 +919,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       priority: 110,
       staleKey: snapshotStaleKey("after:hover"),
       generation: nextSnapshotGeneration(),
+      snapshots: afterSnapshots,
     });
-  }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey, loadingSnapshots]);
+  }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey]);
 
   useEffect(() => {
     if (!input.visibleFiles.length) {
@@ -728,7 +943,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         if (
           rowState?.status !== "success" ||
           hasSnapshotResult("after", pathKey, afterSnapshots) ||
-          hasSnapshotInFlight("after", pathKey)
+          hasSnapshotPending("after", pathKey)
         ) {
           return null;
         }
@@ -745,18 +960,19 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     }
 
     const timeoutId = window.setTimeout(() => {
-      void requestSnapshots({
+      scheduleSnapshotRequests({
         origin: "可见后览",
         phase: "after",
         requests: limitedRequests,
         priority: 35,
         staleKey: snapshotStaleKey("after:auto"),
         generation: nextSnapshotGeneration(),
+        snapshots: afterSnapshots,
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
 
     return () => window.clearTimeout(timeoutId);
-  }, [afterSnapshots, input.fileStates, input.visibleFiles, loadingSnapshots, visibleMetadataKey]);
+  }, [afterSnapshots, input.fileStates, input.visibleFiles, visibleMetadataKey]);
 
   useEffect(() => {
     if (!input.summary || input.summary.cancelled || !input.metadataSeedFiles.length) {
@@ -770,7 +986,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         if (
           rowState?.status !== "success" ||
           hasSnapshotResult("after", pathKey, afterSnapshots) ||
-          hasSnapshotInFlight("after", pathKey)
+          hasSnapshotPending("after", pathKey)
         ) {
           return null;
         }
@@ -782,19 +998,21 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       })
       .filter((request): request is MetadataSnapshotRequest => Boolean(request));
 
-    void requestSnapshots({
+    scheduleSnapshotRequests({
       origin: "任务回填",
       phase: "after",
       requests,
       priority: 25,
       staleKey: snapshotStaleKey("after:task"),
       generation: nextSnapshotGeneration(),
+      snapshots: afterSnapshots,
     });
-  }, [afterSnapshots, input.fileStates, input.metadataSeedFiles, input.summary, loadingSnapshots, metadataSeedKey]);
+  }, [afterSnapshots, input.fileStates, input.metadataSeedFiles, input.summary, metadataSeedKey]);
 
   return {
     beforeSnapshots,
     afterSnapshots,
+    queuedSnapshots,
     loadingSnapshots,
     snapshotErrors,
     debugLogPath,

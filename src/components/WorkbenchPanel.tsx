@@ -25,15 +25,6 @@ import {
 import { Panel, StatChip, StatusBadge } from "./AppPrimitives";
 import { MetadataPreviewFlyout } from "./MetadataPreviewFlyout";
 
-const COMPACT_QUEUE_MEDIA = "(max-width: 760px)";
-
-function canUseFixedRowVirtualization() {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return true;
-  }
-  return !window.matchMedia(COMPACT_QUEUE_MEDIA).matches;
-}
-
 export function WorkbenchPanel(props: {
   dropActive: boolean;
   isScanning: boolean;
@@ -47,7 +38,6 @@ export function WorkbenchPanel(props: {
   progress: ProgressState;
   progressPercent: number;
   activity: ActivityState;
-  previewFiles: QueuedFile[];
   fileStates: Record<string, FileRunState>;
   beforeSnapshots: Record<string, MetadataPreviewSnapshot>;
   afterSnapshots: Record<string, MetadataPreviewSnapshot>;
@@ -56,7 +46,6 @@ export function WorkbenchPanel(props: {
   hoveredPathKey: string | null;
   selectedPreviewPathKey: string | null;
   highlightedPathKey: string;
-  hasMoreQueueFiles: boolean;
   isLoadingQueuePage: boolean;
   previewFile: QueuedFile | null;
   previewRowState?: FileRunState;
@@ -82,10 +71,12 @@ export function WorkbenchPanel(props: {
   onFlyoutLeave: () => void;
   onRegisterRowRef: (pathKey: string, row: HTMLDivElement | null) => void;
   onVisibleFilesChange: (files: QueuedFile[]) => void;
+  onQueueWindowChange: (startIndex: number, endIndex: number) => void;
+  queueFilesByIndex: Record<number, QueuedFile>;
+  loadedQueueFileCount: number;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
-  const [canVirtualizeRows, setCanVirtualizeRows] = useState(canUseFixedRowVirtualization);
 
   useEffect(() => {
     const body = props.queueBodyRef.current;
@@ -119,42 +110,48 @@ export function WorkbenchPanel(props: {
     <StatusBadge tone={props.dropActive ? "info" : "neutral"} label={props.dropActive ? "释放导入" : "待命"} />
   );
 
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const media = window.matchMedia(COMPACT_QUEUE_MEDIA);
-    const update = () => setCanVirtualizeRows(!media.matches);
-
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, []);
-
-  const shouldVirtualize = canVirtualizeRows && props.previewFiles.length > QUEUE_VIRTUALIZE_THRESHOLD;
+  const shouldVirtualize = props.fileCount > QUEUE_VIRTUALIZE_THRESHOLD;
   const visibleStart = shouldVirtualize
     ? Math.max(0, Math.floor(scrollTop / QUEUE_ROW_HEIGHT) - QUEUE_VIRTUAL_OVERSCAN)
     : 0;
   const visibleCount = shouldVirtualize
     ? Math.ceil((viewportHeight || QUEUE_ROW_HEIGHT) / QUEUE_ROW_HEIGHT) +
       QUEUE_VIRTUAL_OVERSCAN * 2
-    : props.previewFiles.length;
+    : props.fileCount;
   const visibleEnd = shouldVirtualize
-    ? Math.min(props.previewFiles.length, visibleStart + visibleCount)
-    : props.previewFiles.length;
+    ? Math.min(props.fileCount, visibleStart + visibleCount)
+    : props.fileCount;
+  const visibleIndexes = useMemo(
+    () =>
+      Array.from(
+        { length: Math.max(0, visibleEnd - visibleStart) },
+        (_, index) => visibleStart + index,
+      ),
+    [visibleEnd, visibleStart],
+  );
   const visibleFiles = useMemo(
     () =>
-      shouldVirtualize ? props.previewFiles.slice(visibleStart, visibleEnd) : props.previewFiles,
-    [props.previewFiles, shouldVirtualize, visibleEnd, visibleStart],
+      visibleIndexes
+        .map((index) => props.queueFilesByIndex[index])
+        .filter((file): file is QueuedFile => Boolean(file)),
+    [props.queueFilesByIndex, visibleIndexes],
   );
   const topSpacerHeight = shouldVirtualize ? visibleStart * QUEUE_ROW_HEIGHT : 0;
   const bottomSpacerHeight = shouldVirtualize
-    ? Math.max(0, (props.previewFiles.length - visibleEnd) * QUEUE_ROW_HEIGHT)
+    ? Math.max(0, (props.fileCount - visibleEnd) * QUEUE_ROW_HEIGHT)
     : 0;
 
   useEffect(() => {
     props.onVisibleFilesChange(visibleFiles);
   }, [props.onVisibleFilesChange, visibleFiles]);
+
+  useEffect(() => {
+    if (!props.fileCount) {
+      return;
+    }
+
+    props.onQueueWindowChange(visibleStart, visibleEnd);
+  }, [props.fileCount, props.onQueueWindowChange, visibleEnd, visibleStart]);
 
   const previewErrorPathKey = props.previewFile
     ? normalizePath(props.previewFile.sourcePath)
@@ -232,14 +229,14 @@ export function WorkbenchPanel(props: {
           </button>
         ) : (
           <div
-            className={`table-shell queue-list-shell compact-list-shell ${props.previewFile ? "is-flyout-open" : ""}`}
+            className={`table-shell queue-list-shell compact-list-shell ${shouldVirtualize ? "is-windowed" : ""} ${props.previewFile ? "is-flyout-open" : ""}`}
             ref={props.tableShellRef}
             onMouseLeave={props.onClearHover}
           >
             <div className="queue-table-note">
               <span>悬停看摘要，点击固定，方向键切换。</span>
               <span>
-                已加载 {props.previewFiles.length} / {props.fileCount}
+                已缓存 {props.loadedQueueFileCount} / {props.fileCount}
               </span>
             </div>
             <div className="table-head compact-table-head">
@@ -258,7 +255,26 @@ export function WorkbenchPanel(props: {
                 />
               ) : null}
 
-              {visibleFiles.map((file) => {
+              {visibleIndexes.map((itemIndex) => {
+                const file = props.queueFilesByIndex[itemIndex];
+                if (!file) {
+                  return (
+                    <div
+                      key={`queue-placeholder-${itemIndex}`}
+                      className="queue-row compact-row is-placeholder"
+                      aria-hidden="true"
+                    >
+                      <div className="queue-file">
+                        <strong>正在载入...</strong>
+                        <span>第 {itemIndex + 1} 项</span>
+                      </div>
+                      <span className="queue-count">—</span>
+                      <span className="queue-count">—</span>
+                      <span className="row-pill neutral">载入中</span>
+                    </div>
+                  );
+                }
+
                 const pathKey = normalizePath(file.sourcePath);
                 const rowState = props.fileStates[pathKey];
                 const beforeSnapshot = props.beforeSnapshots[pathKey];
@@ -320,9 +336,9 @@ export function WorkbenchPanel(props: {
               ) : null}
             </div>
 
-            {props.hasMoreQueueFiles ? (
+            {props.isLoadingQueuePage ? (
               <div className="queue-scroll-hint">
-                {props.isLoadingQueuePage ? "正在继续载入列表..." : "继续向下滚动以载入更多文件"}
+                正在按需载入当前区域...
               </div>
             ) : null}
 

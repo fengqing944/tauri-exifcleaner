@@ -55,6 +55,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const [metadataDebugEntries, setMetadataDebugEntries] = useState<MetadataDebugEntry[]>([]);
   const activeSnapshotRequestKeysRef = useRef(new Set<string>());
   const completedSnapshotRequestKeysRef = useRef(new Set<string>());
+  const snapshotGenerationRef = useRef(0);
 
   const metadataSeedKey = useMemo(
     () => input.metadataSeedFiles.map((file) => normalizePath(file.sourcePath)).join("|"),
@@ -67,6 +68,11 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
 
   const snapshotRequestKey = (phase: SnapshotPhase, requestKey: string) =>
     `${phase}:${requestKey}`;
+
+  const nextSnapshotGeneration = () => {
+    snapshotGenerationRef.current += 1;
+    return snapshotGenerationRef.current;
+  };
 
   const hasSnapshotResult = (
     phase: SnapshotPhase,
@@ -129,10 +135,15 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
     responseCount: number;
     missingCount: number;
     errorCount?: number;
+    staleCount?: number;
     error?: string;
   }) => {
     const errorCount = result.errorCount ?? 0;
-    const successCount = Math.max(0, result.responseCount - result.missingCount - errorCount);
+    const staleCount = result.staleCount ?? 0;
+    const successCount = Math.max(
+      0,
+      result.responseCount - result.missingCount - errorCount - staleCount,
+    );
     startTransition(() => {
       setMetadataDebug((current) => ({
         status: result.error || errorCount ? "error" : "success",
@@ -147,6 +158,8 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           ? `${result.origin} 失败: ${result.error}`
           : errorCount
             ? `${result.origin} 完成，${errorCount} 项读取失败`
+            : staleCount
+              ? `${result.origin} 跳过 ${staleCount} 项过期请求`
             : `${result.origin} 完成，返回 ${result.responseCount} 项`,
       }));
     });
@@ -156,7 +169,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       result.origin,
       result.error
         ? result.error
-        : `耗时 ${result.durationMs} ms，成功 ${successCount} 项，缺失 ${result.missingCount} 项，失败 ${errorCount} 项`,
+        : `耗时 ${result.durationMs} ms，成功 ${successCount} 项，缺失 ${result.missingCount} 项，失败 ${errorCount} 项，跳过 ${staleCount} 项`,
     );
   });
 
@@ -165,6 +178,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       origin: string;
       phase: "before" | "after";
       requests: MetadataSnapshotRequest[];
+      priority: number;
+      staleKey: string;
+      generation: number;
     }) => {
       if (!options.requests.length) {
         return;
@@ -206,12 +222,16 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         const requestPayload = requests.map((request) => ({
           ...request,
           bypassCache: options.phase === "after",
+          priority: options.priority,
+          staleKey: options.staleKey,
+          generation: options.generation,
         }));
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
           requests: requestPayload,
         });
+        const activeResponses = responses.filter((response) => !response.stale);
 
-        for (const response of responses) {
+        for (const response of activeResponses) {
           completedSnapshotRequestKeysRef.current.add(
             snapshotRequestKey(options.phase, response.requestKey),
           );
@@ -222,7 +242,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
             options.phase === "before" ? setBeforeSnapshots : setAfterSnapshots;
           applyResponses((current) => {
             const next = { ...current };
-            for (const response of responses) {
+            for (const response of activeResponses) {
               if (response.error) {
                 delete next[response.requestKey];
               } else {
@@ -233,7 +253,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           });
           setSnapshotErrors((current) => {
             const next = { ...current };
-            for (const response of responses) {
+            for (const response of activeResponses) {
               const errorKey = snapshotRequestKey(options.phase, response.requestKey);
               if (response.error) {
                 next[errorKey] = response.error;
@@ -250,8 +270,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           requestCount: requests.length,
           durationMs: Math.round(performance.now() - startedAt),
           responseCount: responses.length,
-          missingCount: responses.filter((response) => response.missing).length,
-          errorCount: responses.filter((response) => Boolean(response.error)).length,
+          missingCount: activeResponses.filter((response) => response.missing).length,
+          errorCount: activeResponses.filter((response) => Boolean(response.error)).length,
+          staleCount: responses.filter((response) => response.stale).length,
         });
       } catch (error) {
         const message = toMessage(error);
@@ -298,6 +319,7 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
   const resetMetadataState = useEffectEvent(() => {
     activeSnapshotRequestKeysRef.current.clear();
     clearCompletedSnapshotKeys();
+    snapshotGenerationRef.current = 0;
     setBeforeSnapshots((current) => (Object.keys(current).length ? {} : current));
     setAfterSnapshots((current) => (Object.keys(current).length ? {} : current));
     setLoadingSnapshots((current) => (Object.keys(current).length ? {} : current));
@@ -436,6 +458,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       origin: "列表预读",
       phase: "before",
       requests,
+      priority: 10,
+      staleKey: "before:auto",
+      generation: nextSnapshotGeneration(),
     });
   }, [beforeSnapshots, input.metadataSeedFiles, loadingSnapshots, metadataSeedKey]);
 
@@ -474,6 +499,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         origin: "可见预读",
         phase: "before",
         requests,
+        priority: 40,
+        staleKey: "before:auto",
+        generation: nextSnapshotGeneration(),
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
 
@@ -501,6 +529,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           filePath: input.previewFile.sourcePath,
         },
       ],
+      priority: 100,
+      staleKey: "before:hover",
+      generation: nextSnapshotGeneration(),
     });
   }, [beforeSnapshots, input.previewFile, input.previewPathKey, loadingSnapshots]);
 
@@ -527,6 +558,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
           filePath: rowState.outputPath || input.previewFile.sourcePath,
         },
       ],
+      priority: 110,
+      staleKey: "after:hover",
+      generation: nextSnapshotGeneration(),
     });
   }, [afterSnapshots, input.fileStates, input.previewFile, input.previewPathKey, loadingSnapshots]);
 
@@ -571,6 +605,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
         origin: "可见后览",
         phase: "after",
         requests: limitedRequests,
+        priority: 35,
+        staleKey: "after:auto",
+        generation: nextSnapshotGeneration(),
       });
     }, VISIBLE_METADATA_PREFETCH_DELAY_MS);
 
@@ -605,6 +642,9 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       origin: "任务回填",
       phase: "after",
       requests,
+      priority: 25,
+      staleKey: "after:task",
+      generation: nextSnapshotGeneration(),
     });
   }, [afterSnapshots, input.fileStates, input.metadataSeedFiles, input.summary, loadingSnapshots, metadataSeedKey]);
 

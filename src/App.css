@@ -1190,10 +1190,29 @@ kbd {
 
 .queue-row {
   position: relative;
+  box-sizing: border-box;
   padding: 9px 12px;
   background: #ffffff;
   cursor: pointer;
   outline: none;
+}
+
+.queue-list-shell.is-windowed .queue-row {
+  height: 58px;
+  overflow: hidden;
+  align-items: center;
+}
+
+.queue-row.is-placeholder {
+  cursor: default;
+  background: #f8fafc;
+  color: #94a3b8;
+}
+
+.queue-row.is-placeholder .queue-file strong,
+.queue-row.is-placeholder .queue-file span,
+.queue-row.is-placeholder .queue-count {
+  color: #94a3b8;
 }
 
 .queue-row + .queue-row {

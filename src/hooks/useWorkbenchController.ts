@@ -20,6 +20,8 @@ import {
   type VideoCleanupMode,
   EMPTY_PROGRESS,
   QUEUE_PAGE_SIZE,
+  QUEUE_WINDOW_CACHE_EXTRA_PAGES,
+  QUEUE_WINDOW_PAGE_RADIUS,
   buildFileStateMap,
   createProgressState,
   mergeSummaryFileStates,
@@ -73,6 +75,8 @@ export function useWorkbenchController(options?: {
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [queueView, setQueueView] = useState<QueueView | null>(null);
   const [queueFiles, setQueueFiles] = useState<QueuedFile[]>([]);
+  const [queueFilesByIndex, setQueueFilesByIndex] = useState<Record<number, QueuedFile>>({});
+  const [loadedQueueFileCount, setLoadedQueueFileCount] = useState(0);
   const [dropActive, setDropActive] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -94,6 +98,9 @@ export function useWorkbenchController(options?: {
   const queuedTrackedPathSyncRef = useRef<string[] | null>(null);
   const trackedPathSyncInFlightRef = useRef(false);
   const dropActiveRef = useRef(false);
+  const queuePageCacheRef = useRef(new Map<number, QueuedFile[]>());
+  const loadingQueuePagesRef = useRef(new Set<number>());
+  const queueWindowPagesRef = useRef<{ startPage: number; endPage: number } | null>(null);
 
   const fileCount = queueView?.supportedCount ?? 0;
   const rootCount = queueView?.rootCount ?? 0;
@@ -102,7 +109,62 @@ export function useWorkbenchController(options?: {
   const activePathKey = progress.currentPath ? normalizePath(progress.currentPath) : "";
   const isBusy = isScanning || isRunning;
   const canStart = fileCount > 0 && !isScanning && !isRunning;
-  const hasMoreQueueFiles = queueFiles.length < fileCount;
+
+  const resetQueuePageCache = useEffectEvent(() => {
+    queuePageCacheRef.current.clear();
+    loadingQueuePagesRef.current.clear();
+    queueWindowPagesRef.current = null;
+    setQueueFiles([]);
+    setQueueFilesByIndex({});
+    setLoadedQueueFileCount(0);
+    setIsLoadingQueuePage(false);
+  });
+
+  const trimQueuePageCache = (
+    startPage: number,
+    endPage: number,
+    lastPage: number,
+  ) => {
+    const keepStart = Math.max(0, startPage - QUEUE_WINDOW_CACHE_EXTRA_PAGES);
+    const keepEnd = Math.min(lastPage, endPage + QUEUE_WINDOW_CACHE_EXTRA_PAGES);
+
+    for (const page of Array.from(queuePageCacheRef.current.keys())) {
+      if (page < keepStart || page > keepEnd) {
+        queuePageCacheRef.current.delete(page);
+      }
+    }
+  };
+
+  const publishQueueWindow = useEffectEvent(
+    (startPage: number, endPage: number, totalOverride?: number) => {
+      const total = totalOverride ?? fileCount;
+      const nextByIndex: Record<number, QueuedFile> = {};
+      const nextFiles: QueuedFile[] = [];
+
+      for (let page = startPage; page <= endPage; page += 1) {
+        const files = queuePageCacheRef.current.get(page);
+        if (!files) {
+          continue;
+        }
+
+        const pageOffset = page * QUEUE_PAGE_SIZE;
+        files.forEach((file, index) => {
+          const itemIndex = pageOffset + index;
+          if (itemIndex >= total) {
+            return;
+          }
+          nextByIndex[itemIndex] = file;
+          nextFiles.push(file);
+        });
+      }
+
+      startTransition(() => {
+        setQueueFiles(nextFiles);
+        setQueueFilesByIndex(nextByIndex);
+        setLoadedQueueFileCount(Object.keys(nextByIndex).length);
+      });
+    },
+  );
 
   const handleProgressEvent = useEffectEvent((payload: CleanupProgressEvent) => {
     pendingProgressRef.current = payload;
@@ -240,46 +302,83 @@ export function useWorkbenchController(options?: {
     }
   });
 
-  const refreshQueueFiles = useEffectEvent(async () => {
+  const refreshQueueFiles = useEffectEvent(async (totalOverride?: number) => {
     try {
       setIsLoadingQueuePage(true);
       const files = await invoke<QueuedFile[]>("get_queue_files_page", {
         offset: 0,
         limit: QUEUE_PAGE_SIZE,
       });
+      queuePageCacheRef.current.set(0, files);
+      queueWindowPagesRef.current = { startPage: 0, endPage: 0 };
       startTransition(() => {
-        setQueueFiles(files);
+        publishQueueWindow(0, 0, totalOverride);
       });
     } catch (error) {
       setErrorMessage(toMessage(error));
     } finally {
-      setIsLoadingQueuePage(false);
+      setIsLoadingQueuePage(loadingQueuePagesRef.current.size > 0);
     }
   });
 
-  const loadMoreQueueFiles = useEffectEvent(async () => {
-    if (isLoadingQueuePage || queueFiles.length >= fileCount || !fileCount) {
+  const ensureQueueWindow = useEffectEvent(async (startIndex: number, endIndex: number) => {
+    if (!fileCount) {
+      return;
+    }
+
+    const lastIndex = Math.max(0, fileCount - 1);
+    const safeStart = Math.max(0, Math.min(Math.floor(startIndex), lastIndex));
+    const safeEnd = Math.max(
+      safeStart + 1,
+      Math.min(fileCount, Math.ceil(endIndex)),
+    );
+    const visibleStartPage = Math.floor(safeStart / QUEUE_PAGE_SIZE);
+    const visibleEndPage = Math.floor((safeEnd - 1) / QUEUE_PAGE_SIZE);
+    const lastPage = Math.floor(lastIndex / QUEUE_PAGE_SIZE);
+    const startPage = Math.max(0, visibleStartPage - QUEUE_WINDOW_PAGE_RADIUS);
+    const endPage = Math.min(lastPage, visibleEndPage + QUEUE_WINDOW_PAGE_RADIUS);
+
+    queueWindowPagesRef.current = { startPage, endPage };
+    trimQueuePageCache(startPage, endPage, lastPage);
+    publishQueueWindow(startPage, endPage);
+
+    const missingPages: number[] = [];
+    for (let page = startPage; page <= endPage; page += 1) {
+      if (
+        !queuePageCacheRef.current.has(page) &&
+        !loadingQueuePagesRef.current.has(page)
+      ) {
+        missingPages.push(page);
+        loadingQueuePagesRef.current.add(page);
+      }
+    }
+
+    if (!missingPages.length) {
       return;
     }
 
     try {
       setIsLoadingQueuePage(true);
-      const files = await invoke<QueuedFile[]>("get_queue_files_page", {
-        offset: queueFiles.length,
-        limit: QUEUE_PAGE_SIZE,
-      });
-      if (!files.length) {
-        return;
-      }
-
-      const nextFiles = [...queueFiles, ...files];
-      startTransition(() => {
-        setQueueFiles(nextFiles);
-      });
+      await Promise.all(
+        missingPages.map(async (page) => {
+          const files = await invoke<QueuedFile[]>("get_queue_files_page", {
+            offset: page * QUEUE_PAGE_SIZE,
+            limit: QUEUE_PAGE_SIZE,
+          });
+          queuePageCacheRef.current.set(page, files);
+        }),
+      );
     } catch (error) {
       setErrorMessage(toMessage(error));
     } finally {
-      setIsLoadingQueuePage(false);
+      for (const page of missingPages) {
+        loadingQueuePagesRef.current.delete(page);
+      }
+      const currentWindow = queueWindowPagesRef.current;
+      if (currentWindow) {
+        publishQueueWindow(currentWindow.startPage, currentWindow.endPage);
+      }
+      setIsLoadingQueuePage(loadingQueuePagesRef.current.size > 0);
     }
   });
 
@@ -308,13 +407,13 @@ export function useWorkbenchController(options?: {
         await invoke("clear_queue");
         startTransition(() => {
           setQueueView(null);
-          setQueueFiles([]);
           setSummary(null);
           resetRunFailures();
           setProgress(EMPTY_PROGRESS);
           setErrorMessage(null);
           setFileStates({});
         });
+        resetQueuePageCache();
         resetTrackedQueuePaths();
       } catch (error) {
         setErrorMessage(toMessage(error));
@@ -325,7 +424,7 @@ export function useWorkbenchController(options?: {
     setIsScanning(true);
     setErrorMessage(null);
     resetRunState();
-    setQueueFiles([]);
+    resetQueuePageCache();
     resetTrackedQueuePaths();
 
     try {
@@ -337,7 +436,7 @@ export function useWorkbenchController(options?: {
         setQueueView(result.view);
         setProgress(createProgressState(result.view.supportedCount));
       });
-      await refreshQueueFiles();
+      await refreshQueueFiles(result.view.supportedCount);
       if (options?.autoStartCleanup && result.view.supportedCount > 0) {
         setAutoStartCleanupRequested(true);
       }
@@ -462,12 +561,12 @@ export function useWorkbenchController(options?: {
     try {
       await invoke("clear_queue");
       setQueueView(null);
-      setQueueFiles([]);
       setSummary(null);
       resetRunFailures();
       setProgress(EMPTY_PROGRESS);
       setErrorMessage(null);
       setFileStates({});
+      resetQueuePageCache();
       resetTrackedQueuePaths();
     } catch (error) {
       setErrorMessage(toMessage(error));
@@ -670,6 +769,8 @@ export function useWorkbenchController(options?: {
     runtimeInfo,
     queueView,
     queueFiles,
+    queueFilesByIndex,
+    loadedQueueFileCount,
     dropActive,
     isScanning,
     isRunning,
@@ -689,8 +790,7 @@ export function useWorkbenchController(options?: {
     activePathKey,
     isBusy,
     canStart,
-    hasMoreQueueFiles,
-    loadMoreQueueFiles,
+    ensureQueueWindow,
     addFiles,
     addFolders,
     startCleanup,

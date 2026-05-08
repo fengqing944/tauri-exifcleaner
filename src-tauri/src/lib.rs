@@ -218,10 +218,13 @@ enum MetadataPreviewWorkItem {
     Read {
         exiftool_path: PathBuf,
         requests: Vec<MetadataSnapshotRequest>,
+        priority: u8,
+        stale_key: String,
+        generation: u64,
         response_sender: std_mpsc::SyncSender<Result<Vec<MetadataSnapshotResponse>, String>>,
     },
     Invalidate {
-        paths: Vec<String>,
+        paths: Option<Vec<String>>,
     },
 }
 
@@ -441,6 +444,12 @@ struct MetadataSnapshotRequest {
     file_path: String,
     #[serde(default)]
     bypass_cache: bool,
+    #[serde(default)]
+    priority: u8,
+    #[serde(default)]
+    stale_key: Option<String>,
+    #[serde(default)]
+    generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,6 +475,7 @@ struct MetadataSnapshotResponse {
     snapshot: MetadataPreviewSnapshot,
     missing: bool,
     error: Option<String>,
+    stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1281,11 +1291,28 @@ fn queue_metadata_snapshot_work(
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
     let (response_sender, response_receiver) = std_mpsc::sync_channel(1);
+    let priority = requests
+        .iter()
+        .map(|request| request.priority)
+        .max()
+        .unwrap_or(0);
+    let stale_key = requests
+        .iter()
+        .find_map(|request| request.stale_key.clone())
+        .unwrap_or_default();
+    let generation = requests
+        .iter()
+        .map(|request| request.generation)
+        .max()
+        .unwrap_or(0);
     state
         .sender
         .send(MetadataPreviewWorkItem::Read {
             exiftool_path,
             requests,
+            priority,
+            stale_key,
+            generation,
             response_sender,
         })
         .map_err(|_| "元数据预览队列已关闭。".to_string())?;
@@ -1295,12 +1322,11 @@ fn queue_metadata_snapshot_work(
         .map_err(|_| "元数据预览 worker 已退出。".to_string())?
 }
 
-fn queue_metadata_cache_invalidation(state: &MetadataPreviewState, paths: Vec<String>) {
-    if paths.is_empty() {
-        return;
-    }
+fn queue_metadata_cache_clear(state: &MetadataPreviewState) {
+    queue_metadata_preview_work_item(state, MetadataPreviewWorkItem::Invalidate { paths: None });
+}
 
-    let item = MetadataPreviewWorkItem::Invalidate { paths };
+fn queue_metadata_preview_work_item(state: &MetadataPreviewState, item: MetadataPreviewWorkItem) {
     match state.sender.try_send(item) {
         Ok(()) | Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
         Err(crossbeam_channel::TrySendError::Full(item)) => {
@@ -1314,21 +1340,132 @@ fn queue_metadata_cache_invalidation(state: &MetadataPreviewState, paths: Vec<St
 
 fn run_metadata_preview_worker(receiver: crossbeam_channel::Receiver<MetadataPreviewWorkItem>) {
     let mut worker = MetadataPreviewWorker::default();
+    let mut pending = Vec::<MetadataPreviewWorkItem>::new();
+    let mut latest_generations = HashMap::<String, u64>::new();
+
     while let Ok(item) = receiver.recv() {
-        match item {
-            MetadataPreviewWorkItem::Read {
-                exiftool_path,
-                requests,
-                response_sender,
-            } => {
-                let result = build_metadata_snapshots(&mut worker, exiftool_path, requests);
-                let _ = response_sender.send(result);
-            }
-            MetadataPreviewWorkItem::Invalidate { paths } => {
-                invalidate_metadata_preview_cache(&mut worker.cache, &paths);
+        pending.push(item);
+        while let Ok(item) = receiver.try_recv() {
+            pending.push(item);
+        }
+
+        while !pending.is_empty() {
+            refresh_latest_metadata_generations(&pending, &mut latest_generations);
+            let next_index = select_next_metadata_work_item(&pending);
+            let item = pending.swap_remove(next_index);
+
+            match item {
+                MetadataPreviewWorkItem::Read {
+                    exiftool_path,
+                    requests,
+                    priority: _,
+                    stale_key,
+                    generation,
+                    response_sender,
+                } => {
+                    let result = if is_stale_metadata_generation(
+                        &stale_key,
+                        generation,
+                        &latest_generations,
+                    ) {
+                        append_debug_log(format!(
+                            "metadata.stale requests={} key={} generation={generation}",
+                            requests.len(),
+                            sanitize_debug_message(&stale_key)
+                        ));
+                        Ok(stale_metadata_snapshot_responses(requests))
+                    } else {
+                        build_metadata_snapshots(&mut worker, exiftool_path, requests)
+                    };
+                    let _ = response_sender.send(result);
+                }
+                MetadataPreviewWorkItem::Invalidate { paths } => {
+                    if let Some(paths) = paths {
+                        invalidate_metadata_preview_cache(&mut worker.cache, &paths);
+                    } else {
+                        worker.cache.clear();
+                    }
+                }
             }
         }
     }
+}
+
+fn metadata_work_item_priority(item: &MetadataPreviewWorkItem) -> u8 {
+    match item {
+        MetadataPreviewWorkItem::Invalidate { .. } => u8::MAX - 1,
+        MetadataPreviewWorkItem::Read { priority, .. } => *priority,
+    }
+}
+
+fn select_next_metadata_work_item(pending: &[MetadataPreviewWorkItem]) -> usize {
+    let mut best_index = 0;
+    let mut best_priority = metadata_work_item_priority(&pending[0]);
+
+    for (index, item) in pending.iter().enumerate().skip(1) {
+        let priority = metadata_work_item_priority(item);
+        if priority > best_priority {
+            best_priority = priority;
+            best_index = index;
+        }
+    }
+
+    best_index
+}
+
+fn refresh_latest_metadata_generations(
+    pending: &[MetadataPreviewWorkItem],
+    latest_generations: &mut HashMap<String, u64>,
+) {
+    for item in pending {
+        let MetadataPreviewWorkItem::Read {
+            stale_key,
+            generation,
+            ..
+        } = item
+        else {
+            continue;
+        };
+
+        if stale_key.is_empty() || *generation == 0 {
+            continue;
+        }
+
+        let entry = latest_generations
+            .entry(stale_key.clone())
+            .or_insert(*generation);
+        *entry = (*entry).max(*generation);
+    }
+}
+
+fn is_stale_metadata_generation(
+    stale_key: &str,
+    generation: u64,
+    latest_generations: &HashMap<String, u64>,
+) -> bool {
+    if stale_key.is_empty() || generation == 0 {
+        return false;
+    }
+
+    latest_generations
+        .get(stale_key)
+        .map(|latest_generation| generation < *latest_generation)
+        .unwrap_or(false)
+}
+
+fn stale_metadata_snapshot_responses(
+    requests: Vec<MetadataSnapshotRequest>,
+) -> Vec<MetadataSnapshotResponse> {
+    requests
+        .into_iter()
+        .map(|request| MetadataSnapshotResponse {
+            request_key: request.request_key,
+            snapshot: empty_metadata_snapshot(),
+            missing: false,
+            error: None,
+            stale: true,
+        })
+        .collect()
 }
 
 fn build_metadata_snapshots(
@@ -1447,6 +1584,7 @@ fn build_metadata_snapshots(
             snapshot,
             missing: !path.is_file(),
             error,
+            stale: false,
         });
     }
 
@@ -2149,7 +2287,7 @@ async fn run_cleanup(
         let mut unchanged = 0_usize;
         let mut failures = Vec::new();
         let mut outcomes = Vec::new();
-        let mut cache_invalidation_paths = HashSet::<String>::new();
+        let mut should_clear_metadata_cache = false;
         let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
         let mut active_workers = 0_usize;
@@ -2232,10 +2370,7 @@ async fn run_cleanup(
                     }
 
                     if outcome.status == "success" {
-                        cache_invalidation_paths.insert(outcome.source_path.clone());
-                        if let Some(output_path) = outcome.output_path.clone() {
-                            cache_invalidation_paths.insert(output_path);
-                        }
+                        should_clear_metadata_cache = true;
                     }
 
                     completed += 1;
@@ -2292,10 +2427,9 @@ async fn run_cleanup(
             }
         }
 
-        queue_metadata_cache_invalidation(
-            &metadata_preview_state,
-            cache_invalidation_paths.into_iter().collect(),
-        );
+        if should_clear_metadata_cache {
+            queue_metadata_cache_clear(&metadata_preview_state);
+        }
 
         for handle in worker_handles {
             if let Err(error) = handle.await {
@@ -5121,6 +5255,70 @@ mod tests {
         invalidate_metadata_preview_cache(&mut cache, &["c:\\demo\\a.jpg".to_string()]);
 
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn metadata_preview_work_item_priority_prefers_cache_clear_then_hover() {
+        let (sender, _receiver) = std_mpsc::sync_channel(1);
+        let pending = vec![
+            MetadataPreviewWorkItem::Read {
+                exiftool_path: PathBuf::from("exiftool"),
+                requests: Vec::new(),
+                priority: 10,
+                stale_key: "before:auto".to_string(),
+                generation: 1,
+                response_sender: sender.clone(),
+            },
+            MetadataPreviewWorkItem::Read {
+                exiftool_path: PathBuf::from("exiftool"),
+                requests: Vec::new(),
+                priority: 100,
+                stale_key: "before:hover".to_string(),
+                generation: 1,
+                response_sender: sender,
+            },
+            MetadataPreviewWorkItem::Invalidate { paths: None },
+        ];
+
+        assert_eq!(select_next_metadata_work_item(&pending), 2);
+        assert_eq!(metadata_work_item_priority(&pending[1]), 100);
+    }
+
+    #[test]
+    fn metadata_preview_generation_marks_older_visible_request_stale() {
+        let mut latest_generations = HashMap::new();
+        let (sender, _receiver) = std_mpsc::sync_channel(1);
+        let pending = vec![
+            MetadataPreviewWorkItem::Read {
+                exiftool_path: PathBuf::from("exiftool"),
+                requests: Vec::new(),
+                priority: 40,
+                stale_key: "before:auto".to_string(),
+                generation: 1,
+                response_sender: sender.clone(),
+            },
+            MetadataPreviewWorkItem::Read {
+                exiftool_path: PathBuf::from("exiftool"),
+                requests: Vec::new(),
+                priority: 40,
+                stale_key: "before:auto".to_string(),
+                generation: 2,
+                response_sender: sender,
+            },
+        ];
+
+        refresh_latest_metadata_generations(&pending, &mut latest_generations);
+
+        assert!(is_stale_metadata_generation(
+            "before:auto",
+            1,
+            &latest_generations
+        ));
+        assert!(!is_stale_metadata_generation(
+            "before:auto",
+            2,
+            &latest_generations
+        ));
     }
 
     #[test]

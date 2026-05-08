@@ -122,6 +122,8 @@ function App() {
     runFailures,
     summary,
     fileStates,
+    queueFilesByIndex,
+    loadedQueueFileCount,
     isLoadingQueuePage,
     fileCount,
     rootCount,
@@ -130,8 +132,7 @@ function App() {
     activePathKey,
     isBusy,
     canStart,
-    hasMoreQueueFiles,
-    loadMoreQueueFiles,
+    ensureQueueWindow,
     addFiles,
     addFolders,
     startCleanup,
@@ -152,7 +153,7 @@ function App() {
   const progressPercent = progress.total
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
-  const allQueueFilesLoaded = fileCount > 0 && !hasMoreQueueFiles;
+  const allQueueFilesLoaded = fileCount > 0 && loadedQueueFileCount >= fileCount;
   const metadataSeedFiles = useMemo(() => {
     if (allQueueFilesLoaded && fileCount <= SMALL_QUEUE_EAGER_LOAD_THRESHOLD) {
       return previewFiles;
@@ -163,6 +164,14 @@ function App() {
       Math.min(previewFiles.length, EAGER_METADATA_PREFETCH_LIMIT),
     );
   }, [allQueueFilesLoaded, fileCount, previewFiles]);
+
+  const queueIndexByPath = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const [index, file] of Object.entries(queueFilesByIndex)) {
+      next.set(normalizePath(file.sourcePath), Number(index));
+    }
+    return next;
+  }, [queueFilesByIndex]);
 
   const handleVisibleFilesChange = useCallback((files: QueuedFile[]) => {
     const nextKey = files.map((file) => file.sourcePath).join("|");
@@ -322,26 +331,6 @@ function App() {
     }
   }, [previewFiles, previewPathKey]);
 
-  useEffect(() => {
-    const body = queueBodyRef.current;
-    if (!body) {
-      return;
-    }
-
-    const handleScroll = () => {
-      if (
-        body.scrollTop + body.clientHeight >= body.scrollHeight - 160 &&
-        hasMoreQueueFiles &&
-        !isLoadingQueuePage
-      ) {
-        void loadMoreQueueFiles();
-      }
-    };
-
-    body.addEventListener("scroll", handleScroll);
-    return () => body.removeEventListener("scroll", handleScroll);
-  }, [hasMoreQueueFiles, isLoadingQueuePage, previewFiles.length]);
-
   const positionFlyout = (
     rowElement: HTMLDivElement,
     pointerPosition?: { x: number; y: number },
@@ -432,20 +421,25 @@ function App() {
         return;
       }
 
-      const currentIndex = previewFiles.findIndex(
-        (file) => normalizePath(file.sourcePath) === pathKey,
-      );
-      if (currentIndex < 0) {
+      const currentIndex = queueIndexByPath.get(pathKey);
+      if (currentIndex === undefined) {
         return;
       }
 
       event.preventDefault();
       const nextIndex =
         event.key === "ArrowDown"
-          ? Math.min(previewFiles.length - 1, currentIndex + 1)
+          ? Math.min(fileCount - 1, currentIndex + 1)
           : Math.max(0, currentIndex - 1);
-      const nextFile = previewFiles[nextIndex];
+      const nextFile = queueFilesByIndex[nextIndex];
       if (!nextFile) {
+        const body = queueBodyRef.current;
+        if (body) {
+          body.scrollTo({
+            top: Math.max(0, nextIndex * QUEUE_ROW_HEIGHT - QUEUE_ROW_HEIGHT * 2),
+            behavior: "auto",
+          });
+        }
         return;
       }
 
@@ -650,7 +644,8 @@ function App() {
             progress={progress}
             progressPercent={progressPercent}
             activity={activity}
-            previewFiles={previewFiles}
+            queueFilesByIndex={queueFilesByIndex}
+            loadedQueueFileCount={loadedQueueFileCount}
             fileStates={fileStates}
             beforeSnapshots={beforeSnapshots}
             afterSnapshots={afterSnapshots}
@@ -659,7 +654,6 @@ function App() {
             hoveredPathKey={hoveredPathKey}
             selectedPreviewPathKey={pinnedPathKey}
             highlightedPathKey={highlightedPathKey}
-            hasMoreQueueFiles={hasMoreQueueFiles}
             isLoadingQueuePage={isLoadingQueuePage}
             previewFile={previewFile}
             previewRowState={previewRowState}
@@ -681,6 +675,7 @@ function App() {
             onFlyoutLeave={handleFlyoutLeave}
             onRegisterRowRef={registerRowRef}
             onVisibleFilesChange={handleVisibleFilesChange}
+            onQueueWindowChange={ensureQueueWindow}
           />
         </section>
       </section>

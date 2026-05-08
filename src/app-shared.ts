@@ -140,6 +140,9 @@ export type MetadataSnapshotRequest = {
   requestKey: string;
   filePath: string;
   bypassCache?: boolean;
+  priority?: number;
+  staleKey?: string;
+  generation?: number;
 };
 
 export type MetadataSnapshotResponse = {
@@ -147,6 +150,7 @@ export type MetadataSnapshotResponse = {
   snapshot: MetadataPreviewSnapshot;
   missing: boolean;
   error: string | null;
+  stale: boolean;
 };
 
 export type DebugLogInfo = {
@@ -201,6 +205,8 @@ export const EMPTY_PROGRESS: ProgressState = {
 };
 
 export const QUEUE_PAGE_SIZE = 240;
+export const QUEUE_WINDOW_PAGE_RADIUS = 1;
+export const QUEUE_WINDOW_CACHE_EXTRA_PAGES = 2;
 export const EAGER_METADATA_PREFETCH_LIMIT = 48;
 export const VISIBLE_METADATA_PREFETCH_DELAY_MS = 120;
 export const VISIBLE_METADATA_BEFORE_BATCH_LIMIT = 24;

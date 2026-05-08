@@ -203,8 +203,12 @@ export function useMetadataPreviewState(input: UseMetadataPreviewStateInput) {
       beginMetadataDebug(options.origin, requests.length);
 
       try {
+        const requestPayload = requests.map((request) => ({
+          ...request,
+          bypassCache: options.phase === "after",
+        }));
         const responses = await invoke<MetadataSnapshotResponse[]>("load_metadata_snapshots", {
-          requests,
+          requests: requestPayload,
         });
 
         for (const response of responses) {

@@ -139,6 +139,7 @@ export type ProgressState = {
 export type MetadataSnapshotRequest = {
   requestKey: string;
   filePath: string;
+  bypassCache?: boolean;
 };
 
 export type MetadataSnapshotResponse = {

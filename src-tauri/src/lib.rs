@@ -181,6 +181,23 @@ unsafe extern "system" {
     fn MoveFileExW(existing_file_name: *const u16, new_file_name: *const u16, flags: u32) -> i32;
 }
 
+impl Default for MetadataPreviewState {
+    fn default() -> Self {
+        let (sender, receiver) = crossbeam_channel::bounded::<MetadataPreviewWorkItem>(64);
+        thread::spawn(move || run_metadata_preview_worker(receiver));
+        Self { sender }
+    }
+}
+
+impl Default for MetadataPreviewWorker {
+    fn default() -> Self {
+        Self {
+            session: None,
+            cache: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct CleanupState {
     running: Mutex<bool>,
@@ -188,10 +205,24 @@ struct CleanupState {
     tracked_paths: Mutex<Option<Arc<Mutex<HashSet<String>>>>>,
 }
 
-#[derive(Default)]
 struct MetadataPreviewState {
-    session: Mutex<Option<ExifToolSession>>,
-    cache: Mutex<HashMap<String, MetadataPreviewCacheEntry>>,
+    sender: crossbeam_channel::Sender<MetadataPreviewWorkItem>,
+}
+
+struct MetadataPreviewWorker {
+    session: Option<ExifToolSession>,
+    cache: HashMap<String, MetadataPreviewCacheEntry>,
+}
+
+enum MetadataPreviewWorkItem {
+    Read {
+        exiftool_path: PathBuf,
+        requests: Vec<MetadataSnapshotRequest>,
+        response_sender: std_mpsc::SyncSender<Result<Vec<MetadataSnapshotResponse>, String>>,
+    },
+    Invalidate {
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Default)]
@@ -408,9 +439,11 @@ struct ShellOpenRequest {
 struct MetadataSnapshotRequest {
     request_key: String,
     file_path: String,
+    #[serde(default)]
+    bypass_cache: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MetadataFieldPreview {
     group: String,
@@ -418,7 +451,7 @@ struct MetadataFieldPreview {
     value_preview: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MetadataPreviewSnapshot {
     count: usize,
@@ -523,6 +556,7 @@ struct MetadataPreviewPath {
     key: String,
     path: PathBuf,
     signature: MetadataPreviewCacheSignature,
+    bypass_cache: bool,
 }
 
 enum StderrEvent {
@@ -732,9 +766,10 @@ async fn load_metadata_snapshots(
     metadata_preview_state: State<'_, Arc<MetadataPreviewState>>,
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
+    let exiftool_path = resolve_exiftool(&app)?;
     let metadata_preview_state = Arc::clone(metadata_preview_state.inner());
     tauri::async_runtime::spawn_blocking(move || {
-        build_metadata_snapshots(app, metadata_preview_state, requests)
+        queue_metadata_snapshot_work(&metadata_preview_state, exiftool_path, requests)
     })
     .await
     .map_err(|error| format!("元数据预览任务异常: {error}"))?
@@ -1240,12 +1275,67 @@ fn build_cleanup_preview_snapshot_map(
     CleanupPreviewSnapshots { snapshots, errors }
 }
 
-fn build_metadata_snapshots(
-    app: AppHandle,
-    metadata_preview_state: Arc<MetadataPreviewState>,
+fn queue_metadata_snapshot_work(
+    state: &MetadataPreviewState,
+    exiftool_path: PathBuf,
     requests: Vec<MetadataSnapshotRequest>,
 ) -> Result<Vec<MetadataSnapshotResponse>, String> {
-    let exiftool_path = resolve_exiftool(&app)?;
+    let (response_sender, response_receiver) = std_mpsc::sync_channel(1);
+    state
+        .sender
+        .send(MetadataPreviewWorkItem::Read {
+            exiftool_path,
+            requests,
+            response_sender,
+        })
+        .map_err(|_| "元数据预览队列已关闭。".to_string())?;
+
+    response_receiver
+        .recv()
+        .map_err(|_| "元数据预览 worker 已退出。".to_string())?
+}
+
+fn queue_metadata_cache_invalidation(state: &MetadataPreviewState, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    let item = MetadataPreviewWorkItem::Invalidate { paths };
+    match state.sender.try_send(item) {
+        Ok(()) | Err(crossbeam_channel::TrySendError::Disconnected(_)) => {}
+        Err(crossbeam_channel::TrySendError::Full(item)) => {
+            let sender = state.sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(item);
+            });
+        }
+    }
+}
+
+fn run_metadata_preview_worker(receiver: crossbeam_channel::Receiver<MetadataPreviewWorkItem>) {
+    let mut worker = MetadataPreviewWorker::default();
+    while let Ok(item) = receiver.recv() {
+        match item {
+            MetadataPreviewWorkItem::Read {
+                exiftool_path,
+                requests,
+                response_sender,
+            } => {
+                let result = build_metadata_snapshots(&mut worker, exiftool_path, requests);
+                let _ = response_sender.send(result);
+            }
+            MetadataPreviewWorkItem::Invalidate { paths } => {
+                invalidate_metadata_preview_cache(&mut worker.cache, &paths);
+            }
+        }
+    }
+}
+
+fn build_metadata_snapshots(
+    worker: &mut MetadataPreviewWorker,
+    exiftool_path: PathBuf,
+    requests: Vec<MetadataSnapshotRequest>,
+) -> Result<Vec<MetadataSnapshotResponse>, String> {
     let request_count = requests.len();
     if requests.is_empty() {
         return Ok(Vec::new());
@@ -1254,8 +1344,8 @@ fn build_metadata_snapshots(
     let started_at = Instant::now();
     append_debug_log(format!("metadata.start requests={request_count}"));
 
-    let mut deduped_paths = Vec::new();
-    let mut seen = HashSet::new();
+    let mut deduped_paths = Vec::<MetadataPreviewPath>::new();
+    let mut seen = HashMap::<String, usize>::new();
     let mut missing_count = 0_usize;
 
     for request in &requests {
@@ -1269,25 +1359,31 @@ fn build_metadata_snapshots(
         };
 
         let key = dedupe_key(&file_path);
-        if seen.insert(key.clone()) {
+        if let Some(index) = seen.get(&key).copied() {
+            if request.bypass_cache {
+                deduped_paths[index].bypass_cache = true;
+            }
+        } else {
+            seen.insert(key.clone(), deduped_paths.len());
             deduped_paths.push(MetadataPreviewPath {
                 key,
                 path: file_path,
                 signature: metadata_preview_cache_signature(&metadata),
+                bypass_cache: request.bypass_cache,
             });
         }
     }
 
     let (mut snapshot_map, paths_to_read) =
-        read_metadata_preview_cache(&metadata_preview_state, &deduped_paths);
+        read_metadata_preview_cache(&mut worker.cache, &deduped_paths);
     let cache_hit_count = snapshot_map.len();
     let paths_for_read = paths_to_read
         .iter()
         .map(|entry| entry.path.clone())
         .collect::<Vec<_>>();
 
-    let (fresh_snapshot_map, snapshot_errors) = match read_metadata_snapshot_map_with_state(
-        &metadata_preview_state,
+    let (fresh_snapshot_map, snapshot_errors) = match read_metadata_snapshot_map_with_worker(
+        worker,
         &exiftool_path,
         &paths_for_read,
     ) {
@@ -1306,8 +1402,8 @@ fn build_metadata_snapshots(
             let mut snapshot_map = HashMap::new();
             let mut snapshot_errors = HashMap::new();
             for entry in &paths_to_read {
-                match read_metadata_snapshot_map_with_state(
-                    &metadata_preview_state,
+                match read_metadata_snapshot_map_with_worker(
+                    worker,
                     &exiftool_path,
                     std::slice::from_ref(&entry.path),
                 ) {
@@ -1328,7 +1424,7 @@ fn build_metadata_snapshots(
         }
     };
 
-    write_metadata_preview_cache(&metadata_preview_state, &paths_to_read, &fresh_snapshot_map);
+    write_metadata_preview_cache(&mut worker.cache, &paths_to_read, &fresh_snapshot_map);
     snapshot_map.extend(fresh_snapshot_map);
 
     let mut results = Vec::with_capacity(requests.len());
@@ -1394,7 +1490,7 @@ fn metadata_preview_cache_signature(metadata: &fs::Metadata) -> MetadataPreviewC
 }
 
 fn read_metadata_preview_cache(
-    state: &MetadataPreviewState,
+    cache: &mut HashMap<String, MetadataPreviewCacheEntry>,
     paths: &[MetadataPreviewPath],
 ) -> (
     HashMap<String, MetadataPreviewSnapshot>,
@@ -1402,9 +1498,13 @@ fn read_metadata_preview_cache(
 ) {
     let mut snapshot_map = HashMap::new();
     let mut paths_to_read = Vec::new();
-    let mut cache = state.cache.lock().unwrap();
 
     for path in paths {
+        if path.bypass_cache {
+            paths_to_read.push(path.clone());
+            continue;
+        }
+
         if let Some(entry) = cache.get_mut(&path.key) {
             if entry.signature == path.signature {
                 entry.last_used = METADATA_PREVIEW_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1420,7 +1520,7 @@ fn read_metadata_preview_cache(
 }
 
 fn write_metadata_preview_cache(
-    state: &MetadataPreviewState,
+    cache: &mut HashMap<String, MetadataPreviewCacheEntry>,
     paths: &[MetadataPreviewPath],
     snapshots: &HashMap<String, MetadataPreviewSnapshot>,
 ) {
@@ -1428,7 +1528,6 @@ fn write_metadata_preview_cache(
         return;
     }
 
-    let mut cache = state.cache.lock().unwrap();
     for path in paths {
         let Some(snapshot) = snapshots.get(&path.key) else {
             continue;
@@ -1444,7 +1543,7 @@ fn write_metadata_preview_cache(
         );
     }
 
-    trim_metadata_preview_cache(&mut cache);
+    trim_metadata_preview_cache(cache);
 }
 
 fn trim_metadata_preview_cache(cache: &mut HashMap<String, MetadataPreviewCacheEntry>) {
@@ -1466,8 +1565,17 @@ fn trim_metadata_preview_cache(cache: &mut HashMap<String, MetadataPreviewCacheE
     }
 }
 
-fn read_metadata_snapshot_map_with_state(
-    state: &MetadataPreviewState,
+fn invalidate_metadata_preview_cache(
+    cache: &mut HashMap<String, MetadataPreviewCacheEntry>,
+    paths: &[String],
+) {
+    for path in paths {
+        cache.remove(&dedupe_key(Path::new(path)));
+    }
+}
+
+fn read_metadata_snapshot_map_with_worker(
+    worker: &mut MetadataPreviewWorker,
     exiftool_path: &Path,
     input_paths: &[PathBuf],
 ) -> Result<HashMap<String, MetadataPreviewSnapshot>, String> {
@@ -1475,22 +1583,23 @@ fn read_metadata_snapshot_map_with_state(
         return Ok(HashMap::new());
     }
 
-    let mut session_guard = state.session.lock().unwrap();
-    let needs_new_session = session_guard
+    let needs_new_session = worker
+        .session
         .as_ref()
         .map(|session| session.exiftool_path != exiftool_path)
         .unwrap_or(true);
     if needs_new_session {
-        *session_guard = Some(ExifToolSession::new(exiftool_path)?);
+        worker.session = Some(ExifToolSession::new(exiftool_path)?);
     }
 
-    let session = session_guard
+    let session = worker
+        .session
         .as_mut()
         .ok_or_else(|| "元数据预览引擎不可用。".to_string())?;
     let result = read_metadata_snapshot_map_with_session(session, input_paths);
     if result.is_err() && session.should_restart() {
         if session.restart().is_err() {
-            *session_guard = None;
+            worker.session = None;
         }
     }
 
@@ -1936,6 +2045,7 @@ fn cancel_cleanup(state: State<'_, CleanupState>) -> bool {
 #[tauri::command]
 async fn run_cleanup(
     app: AppHandle,
+    metadata_preview_state: State<'_, Arc<MetadataPreviewState>>,
     cleanup_state: State<'_, CleanupState>,
     scan_state: State<'_, ScanState>,
     queue_state: State<'_, QueueState>,
@@ -1954,6 +2064,7 @@ async fn run_cleanup(
     }
 
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let metadata_preview_state = Arc::clone(metadata_preview_state.inner());
     {
         let mut stored_flag = cleanup_state.cancel_flag.lock().unwrap();
         *stored_flag = Some(cancel_flag.clone());
@@ -2038,6 +2149,7 @@ async fn run_cleanup(
         let mut unchanged = 0_usize;
         let mut failures = Vec::new();
         let mut outcomes = Vec::new();
+        let mut cache_invalidation_paths = HashSet::<String>::new();
         let mut tracked_preview_states = HashMap::<String, CleanupPreviewState>::new();
         let mut fatal_error = None::<String>;
         let mut active_workers = 0_usize;
@@ -2119,6 +2231,13 @@ async fn run_cleanup(
                         outcomes.push(summary_outcome_from(&outcome));
                     }
 
+                    if outcome.status == "success" {
+                        cache_invalidation_paths.insert(outcome.source_path.clone());
+                        if let Some(output_path) = outcome.output_path.clone() {
+                            cache_invalidation_paths.insert(output_path);
+                        }
+                    }
+
                     completed += 1;
                     active_workers = active_workers_after;
                     match outcome.status {
@@ -2172,6 +2291,11 @@ async fn run_cleanup(
                 }
             }
         }
+
+        queue_metadata_cache_invalidation(
+            &metadata_preview_state,
+            cache_invalidation_paths.into_iter().collect(),
+        );
 
         for handle in worker_handles {
             if let Err(error) = handle.await {
@@ -4913,6 +5037,90 @@ mod tests {
         assert!(snapshot.truncated);
         assert_eq!(snapshot.fields[0].group, "XMP-dc");
         assert_eq!(snapshot.fields[0].name, "Title");
+    }
+
+    #[test]
+    fn metadata_preview_cache_returns_matching_snapshot() {
+        let signature = MetadataPreviewCacheSignature {
+            size_bytes: 128,
+            modified_millis: Some(42),
+        };
+        let snapshot = MetadataPreviewSnapshot {
+            count: 1,
+            fields: vec![MetadataFieldPreview {
+                group: "XMP-dc".to_string(),
+                name: "Title".to_string(),
+                value_preview: "Cached".to_string(),
+            }],
+            truncated: false,
+        };
+        let mut cache = HashMap::from([(
+            "c:/demo/a.jpg".to_string(),
+            MetadataPreviewCacheEntry {
+                signature: signature.clone(),
+                snapshot: snapshot.clone(),
+                last_used: 0,
+            },
+        )]);
+        let paths = vec![MetadataPreviewPath {
+            key: "c:/demo/a.jpg".to_string(),
+            path: PathBuf::from("C:/demo/a.jpg"),
+            signature,
+            bypass_cache: false,
+        }];
+
+        let (snapshots, paths_to_read) = read_metadata_preview_cache(&mut cache, &paths);
+
+        assert_eq!(snapshots.get("c:/demo/a.jpg"), Some(&snapshot));
+        assert!(paths_to_read.is_empty());
+    }
+
+    #[test]
+    fn metadata_preview_cache_bypass_forces_fresh_read() {
+        let signature = MetadataPreviewCacheSignature {
+            size_bytes: 128,
+            modified_millis: Some(42),
+        };
+        let mut cache = HashMap::from([(
+            "c:/demo/a.jpg".to_string(),
+            MetadataPreviewCacheEntry {
+                signature: signature.clone(),
+                snapshot: empty_metadata_snapshot(),
+                last_used: 0,
+            },
+        )]);
+        let paths = vec![MetadataPreviewPath {
+            key: "c:/demo/a.jpg".to_string(),
+            path: PathBuf::from("C:/demo/a.jpg"),
+            signature,
+            bypass_cache: true,
+        }];
+
+        let (snapshots, paths_to_read) = read_metadata_preview_cache(&mut cache, &paths);
+
+        assert!(snapshots.is_empty());
+        assert_eq!(paths_to_read.len(), 1);
+        assert_eq!(paths_to_read[0].key, "c:/demo/a.jpg");
+    }
+
+    #[test]
+    fn metadata_preview_cache_invalidation_removes_paths() {
+        let signature = MetadataPreviewCacheSignature {
+            size_bytes: 128,
+            modified_millis: Some(42),
+        };
+        let mut cache = HashMap::from([(
+            "c:/demo/a.jpg".to_string(),
+            MetadataPreviewCacheEntry {
+                signature,
+                snapshot: empty_metadata_snapshot(),
+                last_used: 0,
+            },
+        )]);
+
+        invalidate_metadata_preview_cache(&mut cache, &["c:\\demo\\a.jpg".to_string()]);
+
+        assert!(cache.is_empty());
     }
 
     #[test]

@@ -29,6 +29,38 @@ import {
   toMessage,
 } from "../app-shared";
 
+const TRACKED_QUEUE_LRU_LIMIT = 500;
+
+function mergeTrackedQueuePathLru(current: string[], incoming: string[]) {
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const path of incoming) {
+    if (!path || seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    next.push(path);
+  }
+
+  for (const path of current) {
+    if (!path || seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    next.push(path);
+    if (next.length >= TRACKED_QUEUE_LRU_LIMIT) {
+      break;
+    }
+  }
+
+  return next.slice(0, TRACKED_QUEUE_LRU_LIMIT);
+}
+
+function normalizeQueueFilePaths(files: QueuedFile[]) {
+  return files.map((file) => normalizePath(file.sourcePath));
+}
+
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
   allowReadonlyOverwrite?: boolean;
@@ -57,6 +89,10 @@ export function useWorkbenchController(options?: {
   const pendingProgressRef = useRef<CleanupProgressEvent | null>(null);
   const pendingFailureEventsRef = useRef<Array<{ sourcePath: string; error: string }>>([]);
   const seenRunFailureKeysRef = useRef(new Set<string>());
+  const trackedQueuePathLruRef = useRef<string[]>([]);
+  const trackedQueuePathKeyRef = useRef("");
+  const queuedTrackedPathSyncRef = useRef<string[] | null>(null);
+  const trackedPathSyncInFlightRef = useRef(false);
   const dropActiveRef = useRef(false);
 
   const fileCount = queueView?.supportedCount ?? 0;
@@ -124,6 +160,58 @@ export function useWorkbenchController(options?: {
     setFileStates({});
   });
 
+  const flushTrackedQueuePaths = useEffectEvent(async () => {
+    if (trackedPathSyncInFlightRef.current) {
+      return;
+    }
+
+    const paths = queuedTrackedPathSyncRef.current;
+    if (!paths) {
+      return;
+    }
+
+    queuedTrackedPathSyncRef.current = null;
+    trackedPathSyncInFlightRef.current = true;
+    try {
+      await invoke("set_cleanup_tracked_paths", { paths });
+    } catch (error) {
+      setErrorMessage(toMessage(error));
+    } finally {
+      trackedPathSyncInFlightRef.current = false;
+      if (queuedTrackedPathSyncRef.current) {
+        void flushTrackedQueuePaths();
+      }
+    }
+  });
+
+  const queueTrackedQueuePathSync = useEffectEvent((paths: string[]) => {
+    queuedTrackedPathSyncRef.current = paths;
+    void flushTrackedQueuePaths();
+  });
+
+  const resetTrackedQueuePaths = useEffectEvent(() => {
+    trackedQueuePathLruRef.current = [];
+    trackedQueuePathKeyRef.current = "";
+    queuedTrackedPathSyncRef.current = [];
+    void flushTrackedQueuePaths();
+  });
+
+  const syncVisibleQueueFiles = useEffectEvent((files: QueuedFile[]) => {
+    const visiblePaths = normalizeQueueFilePaths(files);
+    const nextPaths = mergeTrackedQueuePathLru(
+      trackedQueuePathLruRef.current,
+      visiblePaths,
+    );
+    const nextKey = nextPaths.join("|");
+    if (trackedQueuePathKeyRef.current === nextKey) {
+      return;
+    }
+
+    trackedQueuePathLruRef.current = nextPaths;
+    trackedQueuePathKeyRef.current = nextKey;
+    queueTrackedQueuePathSync(nextPaths);
+  });
+
   const enqueueShellRequest = useEffectEvent((request: ShellOpenRequest | null) => {
     if (!request) {
       return;
@@ -159,9 +247,6 @@ export function useWorkbenchController(options?: {
         offset: 0,
         limit: QUEUE_PAGE_SIZE,
       });
-      await invoke("set_cleanup_tracked_paths", {
-        paths: files.map((file) => normalizePath(file.sourcePath)),
-      });
       startTransition(() => {
         setQueueFiles(files);
       });
@@ -188,9 +273,6 @@ export function useWorkbenchController(options?: {
       }
 
       const nextFiles = [...queueFiles, ...files];
-      await invoke("set_cleanup_tracked_paths", {
-        paths: nextFiles.map((file) => normalizePath(file.sourcePath)),
-      });
       startTransition(() => {
         setQueueFiles(nextFiles);
       });
@@ -233,6 +315,7 @@ export function useWorkbenchController(options?: {
           setErrorMessage(null);
           setFileStates({});
         });
+        resetTrackedQueuePaths();
       } catch (error) {
         setErrorMessage(toMessage(error));
         return;
@@ -243,6 +326,7 @@ export function useWorkbenchController(options?: {
     setErrorMessage(null);
     resetRunState();
     setQueueFiles([]);
+    resetTrackedQueuePaths();
 
     try {
       const result = await invoke<ScanSummary>("scan_inputs", {
@@ -384,6 +468,7 @@ export function useWorkbenchController(options?: {
       setProgress(EMPTY_PROGRESS);
       setErrorMessage(null);
       setFileStates({});
+      resetTrackedQueuePaths();
     } catch (error) {
       setErrorMessage(toMessage(error));
     }
@@ -612,5 +697,6 @@ export function useWorkbenchController(options?: {
     cancelCleanup,
     cancelScan,
     clearQueue,
+    syncVisibleQueueFiles,
   };
 }

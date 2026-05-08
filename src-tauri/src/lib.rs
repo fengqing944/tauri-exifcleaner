@@ -4224,7 +4224,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_queue_paths_include_preview_and_loaded_ui_rows() {
+    fn tracked_queue_paths_include_preview_and_ui_tracked_rows() {
         let mut store = QueueStore::default();
 
         merge_scan_batch(

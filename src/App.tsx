@@ -138,6 +138,7 @@ function App() {
     cancelCleanup,
     cancelScan,
     clearQueue,
+    syncVisibleQueueFiles,
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
     allowReadonlyOverwrite: preferences.allowReadonlyOverwrite,
@@ -171,7 +172,8 @@ function App() {
 
     visibleMetadataFileKeyRef.current = nextKey;
     setVisibleMetadataFiles(files);
-  }, []);
+    syncVisibleQueueFiles(files);
+  }, [syncVisibleQueueFiles]);
 
   const selectMirrorOutputDir = useEffectEvent(async () => {
     const selection = await open({
@@ -299,6 +301,8 @@ function App() {
     if (!fileCount && hadFilesRef.current) {
       resetMetadataState();
       hidePreview();
+      visibleMetadataFileKeyRef.current = "";
+      setVisibleMetadataFiles([]);
     }
     hadFilesRef.current = fileCount > 0;
   }, [fileCount]);

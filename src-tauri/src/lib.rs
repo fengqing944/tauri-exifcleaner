@@ -122,7 +122,10 @@ const SHELL_CLEAN_ARG: &str = "--shell-clean";
 const SHELL_IMPORT_ARG: &str = "--shell-import";
 const WINDOW_STATE_FILENAME: &str = ".window-state.json";
 const EXIFTOOL_METADATA_TIMEOUT_SECS: u64 = 30;
-const EXIFTOOL_CLEAN_TIMEOUT_SECS: u64 = 90;
+const EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS: u64 = 90;
+const EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES: u64 = 128 * 1024 * 1024;
+const EXIFTOOL_CLEAN_TIMEOUT_STEP_SECS: u64 = 90;
+const EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS: u64 = 30 * 60;
 const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
 const EXIFTOOL_VERSION_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
@@ -1889,6 +1892,20 @@ fn debug_log_path() -> PathBuf {
     std::env::temp_dir().join("tagsweep-debug.log")
 }
 
+fn cleanup_timeout_for_file_size(size_bytes: u64) -> Duration {
+    if size_bytes <= EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES {
+        return Duration::from_secs(EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS);
+    }
+
+    let extra_steps = size_bytes.saturating_add(EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES - 1)
+        / EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES;
+    let timeout_secs = EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS
+        .saturating_add(extra_steps.saturating_mul(EXIFTOOL_CLEAN_TIMEOUT_STEP_SECS))
+        .min(EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS);
+
+    Duration::from_secs(timeout_secs)
+}
+
 fn debug_logging_enabled() -> bool {
     matches!(
         std::env::var("TAGSWEEP_DEBUG_LOG").ok().as_deref(),
@@ -3350,6 +3367,7 @@ impl ExifToolSession {
                 planned_file.source_path.display()
             )
         })?;
+        let clean_timeout = cleanup_timeout_for_file_size(source_metadata.len());
         let should_restore_readonly = matches!(options.output_mode, OutputMode::Overwrite)
             && source_metadata.permissions().readonly();
 
@@ -3388,6 +3406,7 @@ impl ExifToolSession {
             removal_args,
             write_args,
             overwrite_temp_path,
+            clean_timeout,
         );
 
         if let Err(error) = clean_result {
@@ -3441,6 +3460,7 @@ impl ExifToolSession {
         removal_args: Vec<String>,
         write_args: Vec<String>,
         overwrite_output_path: Option<&Path>,
+        clean_timeout: Duration,
     ) -> Result<(), String> {
         let execute_id = self.next_execute_id;
         self.next_execute_id += 1;
@@ -3466,7 +3486,7 @@ impl ExifToolSession {
         let timed_out = Arc::new(AtomicBool::new(false));
         let watchdog = spawn_process_watchdog(
             self.child.id(),
-            Duration::from_secs(EXIFTOOL_CLEAN_TIMEOUT_SECS),
+            clean_timeout,
             finished.clone(),
             timed_out.clone(),
         );
@@ -3482,7 +3502,7 @@ impl ExifToolSession {
             self.needs_restart = true;
             return Err(format!(
                 "ExifTool 处理超时，已终止当前 worker（超过 {} 秒）。",
-                EXIFTOOL_CLEAN_TIMEOUT_SECS
+                clean_timeout.as_secs()
             ));
         }
 
@@ -4644,6 +4664,19 @@ mod tests {
         assert!(
             should_keep_summary_outcome(&success, &mirror_options),
             "mirror success needs output_path so later previews read the copied file"
+        );
+    }
+
+    #[test]
+    fn cleanup_timeout_scales_for_large_files_and_stays_capped() {
+        assert_eq!(
+            cleanup_timeout_for_file_size(64 * 1024 * 1024).as_secs(),
+            EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS
+        );
+        assert_eq!(cleanup_timeout_for_file_size(398_114_586).as_secs(), 360);
+        assert_eq!(
+            cleanup_timeout_for_file_size(50 * 1024 * 1024 * 1024).as_secs(),
+            EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS
         );
     }
 

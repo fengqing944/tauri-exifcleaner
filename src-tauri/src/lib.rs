@@ -34,6 +34,7 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "heic", "heif", "iiq", "insp", "jpeg", "jpg", "jxl", "mef", "mrw", "nef", "nrw", "orf", "png",
     "raf", "raw", "rw2", "sr2", "srw", "tif", "tiff", "webp", "x3f",
 ];
+const VIDEO_EXTENSIONS: &[&str] = &["avi", "m4v", "mov", "mp4", "wmv"];
 const TARGET_IMAGE_SEARCH_ALLOWED_TAGS: &[&str] = &[
     "XMP-dc:Title",
     "IPTC:ObjectName",
@@ -126,6 +127,11 @@ const EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS: u64 = 90;
 const EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES: u64 = 128 * 1024 * 1024;
 const EXIFTOOL_CLEAN_TIMEOUT_STEP_SECS: u64 = 90;
 const EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS: u64 = 30 * 60;
+const EXIFTOOL_VIDEO_CLEAN_BASE_TIMEOUT_SECS: u64 = 180;
+const EXIFTOOL_VIDEO_CLEAN_TIMEOUT_STEP_BYTES: u64 = 128 * 1024 * 1024;
+const EXIFTOOL_VIDEO_CLEAN_TIMEOUT_STEP_SECS: u64 = 240;
+const EXIFTOOL_VIDEO_CLEAN_TIMEOUT_MAX_SECS: u64 = 45 * 60;
+const HEAVY_VIDEO_CLEANUP_MIN_BYTES: u64 = 128 * 1024 * 1024;
 const EXIFTOOL_CLOSE_TIMEOUT_SECS: u64 = 5;
 const EXIFTOOL_VERSION_TIMEOUT_SECS: u64 = 5;
 const METADATA_WRITE_MAX_CHARS: usize = 240;
@@ -1892,18 +1898,50 @@ fn debug_log_path() -> PathBuf {
     std::env::temp_dir().join("tagsweep-debug.log")
 }
 
-fn cleanup_timeout_for_file_size(size_bytes: u64) -> Duration {
-    if size_bytes <= EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES {
-        return Duration::from_secs(EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS);
+fn cleanup_timeout_for_file(source_path: &Path, size_bytes: u64) -> Duration {
+    if is_video_path(source_path) {
+        return scaled_cleanup_timeout(
+            size_bytes,
+            EXIFTOOL_VIDEO_CLEAN_BASE_TIMEOUT_SECS,
+            EXIFTOOL_VIDEO_CLEAN_TIMEOUT_STEP_BYTES,
+            EXIFTOOL_VIDEO_CLEAN_TIMEOUT_STEP_SECS,
+            EXIFTOOL_VIDEO_CLEAN_TIMEOUT_MAX_SECS,
+        );
     }
 
-    let extra_steps = size_bytes.saturating_add(EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES - 1)
-        / EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES;
-    let timeout_secs = EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS
-        .saturating_add(extra_steps.saturating_mul(EXIFTOOL_CLEAN_TIMEOUT_STEP_SECS))
-        .min(EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS);
+    scaled_cleanup_timeout(
+        size_bytes,
+        EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS,
+        EXIFTOOL_CLEAN_TIMEOUT_STEP_BYTES,
+        EXIFTOOL_CLEAN_TIMEOUT_STEP_SECS,
+        EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS,
+    )
+}
+
+fn scaled_cleanup_timeout(
+    size_bytes: u64,
+    base_secs: u64,
+    step_bytes: u64,
+    step_secs: u64,
+    max_secs: u64,
+) -> Duration {
+    if size_bytes <= step_bytes {
+        return Duration::from_secs(base_secs);
+    }
+
+    let extra_steps = size_bytes.saturating_add(step_bytes - 1) / step_bytes;
+    let timeout_secs = base_secs
+        .saturating_add(extra_steps.saturating_mul(step_secs))
+        .min(max_secs);
 
     Duration::from_secs(timeout_secs)
+}
+
+fn should_limit_heavy_video_cleanup(source_path: &Path) -> bool {
+    is_video_path(source_path)
+        && fs::metadata(source_path)
+            .map(|metadata| metadata.len() >= HEAVY_VIDEO_CLEANUP_MIN_BYTES)
+            .unwrap_or(false)
 }
 
 fn debug_logging_enabled() -> bool {
@@ -2271,6 +2309,7 @@ async fn run_cleanup(
 
         let (sender, mut receiver) = mpsc::unbounded_channel::<WorkerEvent>();
         let mut worker_handles = Vec::with_capacity(concurrency);
+        let heavy_video_limiter = Arc::new(Mutex::new(()));
 
         for worker_index in 0..concurrency {
             let queue = planned_receiver.clone();
@@ -2278,6 +2317,7 @@ async fn run_cleanup(
             let options = options.clone();
             let exiftool_path = exiftool_path.clone();
             let cancel_flag = cancel_flag.clone();
+            let heavy_video_limiter = heavy_video_limiter.clone();
 
             worker_handles.push(tauri::async_runtime::spawn_blocking(move || {
                 run_cleanup_worker(
@@ -2287,6 +2327,7 @@ async fn run_cleanup(
                     options,
                     exiftool_path,
                     cancel_flag,
+                    heavy_video_limiter,
                 )
             }));
         }
@@ -2525,6 +2566,7 @@ fn run_cleanup_worker(
     options: CleanupOptions,
     exiftool_path: PathBuf,
     cancel_flag: Arc<AtomicBool>,
+    heavy_video_limiter: Arc<Mutex<()>>,
 ) {
     let mut session = match ExifToolSession::new(&exiftool_path) {
         Ok(session) => session,
@@ -2548,6 +2590,26 @@ fn run_cleanup_worker(
         let Ok(planned_file) = planned_file else {
             break;
         };
+
+        let _heavy_video_guard = match acquire_heavy_video_cleanup_slot(
+            &planned_file,
+            &heavy_video_limiter,
+            &cancel_flag,
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    break;
+                }
+                cancel_flag.store(true, Ordering::Relaxed);
+                let _ = sender.send(WorkerEvent::Fatal(error));
+                break;
+            }
+        };
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            break;
+        }
 
         if sender
             .send(WorkerEvent::Started(FileCleanupStart {
@@ -2594,6 +2656,32 @@ fn run_cleanup_worker(
     }
 
     let _ = session.close();
+}
+
+fn acquire_heavy_video_cleanup_slot<'a>(
+    planned_file: &PlannedCleanupFile,
+    heavy_video_limiter: &'a Arc<Mutex<()>>,
+    cancel_flag: &AtomicBool,
+) -> Result<Option<std::sync::MutexGuard<'a, ()>>, String> {
+    if !should_limit_heavy_video_cleanup(&planned_file.source_path) {
+        return Ok(None);
+    }
+
+    loop {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Err("任务已取消，大视频清理未开始。".to_string());
+        }
+
+        match heavy_video_limiter.try_lock() {
+            Ok(guard) => return Ok(Some(guard)),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err("大视频清理限流器异常。".to_string());
+            }
+        }
+    }
 }
 
 fn produce_planned_cleanup_files(
@@ -2957,6 +3045,17 @@ fn is_image_path(path: &Path) -> bool {
         .and_then(|extension| extension.to_str())
         .map(|extension| {
             IMAGE_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
+}
+
+fn is_video_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            VIDEO_EXTENSIONS
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension))
         })
@@ -3367,7 +3466,8 @@ impl ExifToolSession {
                 planned_file.source_path.display()
             )
         })?;
-        let clean_timeout = cleanup_timeout_for_file_size(source_metadata.len());
+        let clean_timeout =
+            cleanup_timeout_for_file(&planned_file.source_path, source_metadata.len());
         let should_restore_readonly = matches!(options.output_mode, OutputMode::Overwrite)
             && source_metadata.permissions().readonly();
 
@@ -4670,12 +4770,27 @@ mod tests {
     #[test]
     fn cleanup_timeout_scales_for_large_files_and_stays_capped() {
         assert_eq!(
-            cleanup_timeout_for_file_size(64 * 1024 * 1024).as_secs(),
+            cleanup_timeout_for_file(Path::new("sample.jpg"), 64 * 1024 * 1024).as_secs(),
             EXIFTOOL_CLEAN_BASE_TIMEOUT_SECS
         );
-        assert_eq!(cleanup_timeout_for_file_size(398_114_586).as_secs(), 360);
         assert_eq!(
-            cleanup_timeout_for_file_size(50 * 1024 * 1024 * 1024).as_secs(),
+            cleanup_timeout_for_file(Path::new("sample.jpg"), 398_114_586).as_secs(),
+            360
+        );
+        assert_eq!(
+            cleanup_timeout_for_file(Path::new("sample.mp4"), 64 * 1024 * 1024).as_secs(),
+            EXIFTOOL_VIDEO_CLEAN_BASE_TIMEOUT_SECS
+        );
+        assert_eq!(
+            cleanup_timeout_for_file(Path::new("sample.mp4"), 398_114_586).as_secs(),
+            900
+        );
+        assert_eq!(
+            cleanup_timeout_for_file(Path::new("sample.mp4"), 50 * 1024 * 1024 * 1024).as_secs(),
+            EXIFTOOL_VIDEO_CLEAN_TIMEOUT_MAX_SECS
+        );
+        assert_eq!(
+            cleanup_timeout_for_file(Path::new("sample.jpg"), 50 * 1024 * 1024 * 1024).as_secs(),
             EXIFTOOL_CLEAN_TIMEOUT_MAX_SECS
         );
     }

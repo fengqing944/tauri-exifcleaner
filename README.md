@@ -21,7 +21,7 @@
 - 前端: `React 19 + TypeScript + Vite`
 - 桌面容器: `Tauri 2`
 - 后端: `Rust`
-- 元数据清理引擎: `ExifTool 13.56` Windows 64-bit 资源包
+- 元数据清理引擎: `ExifTool 13.59` Windows 64-bit 资源包
 
 ## 支持方式
 

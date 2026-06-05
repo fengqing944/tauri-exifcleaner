@@ -5,7 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     hash::{DefaultHasher, Hash, Hasher},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
@@ -331,6 +331,8 @@ struct CleanupOptions {
     preserve_structure: bool,
     #[serde(default)]
     allow_readonly_overwrite: bool,
+    #[serde(default)]
+    auto_fix_mismatched_extension: bool,
     video_cleanup_mode: Option<VideoCleanupMode>,
     targeted_image_cleanup: Option<TargetedImageCleanupOptions>,
     metadata_write: Option<MetadataWriteOptions>,
@@ -498,6 +500,13 @@ struct DebugLogInfo {
 struct PlannedCleanupFile {
     source_path: PathBuf,
     output_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedCleanupFile {
+    cleanup_file: PlannedCleanupFile,
+    report_source_path: PathBuf,
+    report_output_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1206,7 +1215,7 @@ fn collect_tracked_queue_paths(store: &QueueStore) -> HashSet<String> {
 fn should_keep_summary_outcome(outcome: &FileCleanupOutcome, options: &CleanupOptions) -> bool {
     match options.output_mode {
         OutputMode::Mirror => true,
-        OutputMode::Overwrite => outcome.status == "unchanged",
+        OutputMode::Overwrite => outcome.status == "unchanged" || outcome.output_path.is_some(),
     }
 }
 
@@ -2591,8 +2600,24 @@ fn run_cleanup_worker(
             break;
         };
 
+        let prepared_file = match prepare_cleanup_file_for_format(&planned_file, &options) {
+            Ok(prepared_file) => prepared_file,
+            Err(error) => {
+                let _ = sender.send(WorkerEvent::Outcome(FileCleanupOutcome {
+                    source_path: planned_file.source_path.to_string_lossy().to_string(),
+                    output_path: planned_file
+                        .output_path
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    status: "failed",
+                    error: Some(error),
+                }));
+                continue;
+            }
+        };
+
         let _heavy_video_guard = match acquire_heavy_video_cleanup_slot(
-            &planned_file,
+            &prepared_file.cleanup_file,
             &heavy_video_limiter,
             &cancel_flag,
         ) {
@@ -2613,9 +2638,12 @@ fn run_cleanup_worker(
 
         if sender
             .send(WorkerEvent::Started(FileCleanupStart {
-                source_path: planned_file.source_path.to_string_lossy().to_string(),
-                output_path: planned_file
-                    .output_path
+                source_path: prepared_file
+                    .report_source_path
+                    .to_string_lossy()
+                    .to_string(),
+                output_path: prepared_file
+                    .report_output_path
                     .as_ref()
                     .map(|path| path.to_string_lossy().to_string()),
             }))
@@ -2624,7 +2652,7 @@ fn run_cleanup_worker(
             break;
         }
 
-        let outcome = match execute_cleanup_file(&planned_file, &options, &mut session) {
+        let outcome = match execute_prepared_cleanup_file(&prepared_file, &options, &mut session) {
             Ok(outcome) => outcome,
             Err(error) => {
                 if session.should_restart() {
@@ -2639,9 +2667,12 @@ fn run_cleanup_worker(
                 }
 
                 FileCleanupOutcome {
-                    source_path: planned_file.source_path.to_string_lossy().to_string(),
-                    output_path: planned_file
-                        .output_path
+                    source_path: prepared_file
+                        .report_source_path
+                        .to_string_lossy()
+                        .to_string(),
+                    output_path: prepared_file
+                        .report_output_path
                         .as_ref()
                         .map(|path| path.to_string_lossy().to_string()),
                     status: "failed",
@@ -2742,6 +2773,253 @@ fn resolve_output_root(options: &CleanupOptions) -> Result<Option<PathBuf>, Stri
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectedFileFormat {
+    Jpeg,
+    Png,
+    Webp,
+    Gif,
+    Tiff,
+}
+
+impl DetectedFileFormat {
+    fn from_header(header: &[u8]) -> Option<Self> {
+        if header.len() >= 8 && header.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Some(Self::Png);
+        }
+        if header.len() >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF {
+            return Some(Self::Jpeg);
+        }
+        if header.len() >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WEBP" {
+            return Some(Self::Webp);
+        }
+        if header.len() >= 6 && (header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a")) {
+            return Some(Self::Gif);
+        }
+        if header.len() >= 4 && (header.starts_with(b"II*\0") || header.starts_with(b"MM\0*")) {
+            return Some(Self::Tiff);
+        }
+
+        None
+    }
+
+    fn canonical_extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Webp => "webp",
+            Self::Gif => "gif",
+            Self::Tiff => "tif",
+        }
+    }
+
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Jpeg => "JPEG",
+            Self::Png => "PNG",
+            Self::Webp => "WebP",
+            Self::Gif => "GIF",
+            Self::Tiff => "TIFF",
+        }
+    }
+
+    fn matches_extension(self, extension: &str) -> bool {
+        match self {
+            Self::Jpeg => ["jpg", "jpeg", "jpe"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension)),
+            Self::Png => extension.eq_ignore_ascii_case("png"),
+            Self::Webp => extension.eq_ignore_ascii_case("webp"),
+            Self::Gif => extension.eq_ignore_ascii_case("gif"),
+            Self::Tiff => ["tif", "tiff"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension)),
+        }
+    }
+
+    fn matches_path_extension(self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| self.matches_extension(extension))
+    }
+}
+
+fn detect_file_format(path: &Path) -> Result<Option<DetectedFileFormat>, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("无法读取文件头: {} ({error})", path.display()))?;
+    let mut header = [0_u8; 12];
+    let read_len = file
+        .read(&mut header)
+        .map_err(|error| format!("无法读取文件头: {} ({error})", path.display()))?;
+
+    Ok(DetectedFileFormat::from_header(&header[..read_len]))
+}
+
+fn detected_image_extension_mismatch(path: &Path) -> Result<Option<DetectedFileFormat>, String> {
+    if !is_image_path(path) {
+        return Ok(None);
+    }
+
+    let Some(detected_format) = detect_file_format(path)? else {
+        return Ok(None);
+    };
+    if detected_format.matches_path_extension(path) {
+        return Ok(None);
+    }
+
+    Ok(Some(detected_format))
+}
+
+fn extension_label(path: &Path) -> String {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_else(|| "无后缀".to_string())
+}
+
+fn format_mismatch_error(path: &Path, detected_format: DetectedFileFormat) -> String {
+    format!(
+        "文件真实格式是 {}，但当前后缀是 {}。可在设置中开启“格式不匹配时改正后缀”，TagSweep 会先改成 .{} 再清理；或手动改名后重试: {}",
+        detected_format.display_name(),
+        extension_label(path),
+        detected_format.canonical_extension(),
+        path.display()
+    )
+}
+
+fn path_with_detected_extension(path: &Path, detected_format: DetectedFileFormat) -> PathBuf {
+    let mut next = path.to_path_buf();
+    next.set_extension(detected_format.canonical_extension());
+    next
+}
+
+fn unique_corrected_extension_path(
+    source_path: &Path,
+    detected_format: DetectedFileFormat,
+) -> Result<PathBuf, String> {
+    let parent = source_path.parent().ok_or_else(|| {
+        format!(
+            "无法为 {} 生成正确后缀路径：缺少父目录。",
+            source_path.display()
+        )
+    })?;
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "无法为 {} 生成正确后缀路径：文件名不可用。",
+                source_path.display()
+            )
+        })?;
+    let extension = detected_format.canonical_extension();
+
+    for index in 0..512 {
+        let file_name = if index == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem} ({index}).{extension}")
+        };
+        let candidate = parent.join(file_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "无法为 {} 生成唯一的 .{} 文件名。",
+        source_path.display(),
+        extension
+    ))
+}
+
+fn cleanup_output_relative_path(file: &QueuedFile, options: &CleanupOptions) -> PathBuf {
+    let mut relative_path = PathBuf::from(&file.relative_path);
+    if !options.auto_fix_mismatched_extension {
+        return relative_path;
+    }
+
+    let source_path = Path::new(&file.source_path);
+    if let Ok(Some(detected_format)) = detected_image_extension_mismatch(source_path) {
+        relative_path = path_with_detected_extension(&relative_path, detected_format);
+    }
+
+    relative_path
+}
+
+fn prepare_cleanup_file_for_format(
+    planned_file: &PlannedCleanupFile,
+    options: &CleanupOptions,
+) -> Result<PreparedCleanupFile, String> {
+    let report_source_path = planned_file.source_path.clone();
+    let mut cleanup_file = planned_file.clone();
+    let mut report_output_path = cleanup_file.output_path.clone();
+
+    if !cleanup_file.source_path.is_file() {
+        return Ok(PreparedCleanupFile {
+            cleanup_file,
+            report_source_path,
+            report_output_path,
+        });
+    }
+
+    let Some(detected_format) = detected_image_extension_mismatch(&cleanup_file.source_path)?
+    else {
+        return Ok(PreparedCleanupFile {
+            cleanup_file,
+            report_source_path,
+            report_output_path,
+        });
+    };
+
+    if !options.auto_fix_mismatched_extension {
+        return Err(format_mismatch_error(
+            &cleanup_file.source_path,
+            detected_format,
+        ));
+    }
+
+    let corrected_source_path =
+        unique_corrected_extension_path(&cleanup_file.source_path, detected_format)?;
+    fs::rename(&cleanup_file.source_path, &corrected_source_path).map_err(|error| {
+        format!(
+            "文件真实格式是 {}，但无法将后缀从 {} 改成 .{}: {} -> {} ({error})",
+            detected_format.display_name(),
+            extension_label(&cleanup_file.source_path),
+            detected_format.canonical_extension(),
+            cleanup_file.source_path.display(),
+            corrected_source_path.display()
+        )
+    })?;
+    append_debug_log(format!(
+        "cleanup.corrected_extension source={} corrected={} detected={}",
+        cleanup_file.source_path.display(),
+        corrected_source_path.display(),
+        detected_format.display_name()
+    ));
+
+    cleanup_file.source_path = corrected_source_path.clone();
+    match options.output_mode {
+        OutputMode::Overwrite => {
+            report_output_path = Some(corrected_source_path);
+        }
+        OutputMode::Mirror => {
+            if let Some(output_path) = cleanup_file.output_path.as_mut() {
+                *output_path = path_with_detected_extension(output_path, detected_format);
+                report_output_path = Some(output_path.clone());
+            }
+        }
+    }
+
+    Ok(PreparedCleanupFile {
+        cleanup_file,
+        report_source_path,
+        report_output_path,
+    })
+}
+
 fn build_planned_cleanup_file(
     file: &QueuedFile,
     options: &CleanupOptions,
@@ -2749,6 +3027,7 @@ fn build_planned_cleanup_file(
     reserved_paths: &mut HashSet<String>,
 ) -> Result<PlannedCleanupFile, String> {
     let source_path = PathBuf::from(&file.source_path);
+    let output_relative_path = cleanup_output_relative_path(file, options);
     let output_path = match options.output_mode {
         OutputMode::Overwrite => None,
         OutputMode::Mirror => {
@@ -2757,9 +3036,9 @@ fn build_planned_cleanup_file(
             let mut candidate = base_dir.to_path_buf();
             if options.preserve_structure {
                 candidate.push(sanitize_segment(&file.root_label));
-                candidate.push(&file.relative_path);
+                candidate.push(&output_relative_path);
             } else {
-                let file_name = Path::new(&file.relative_path)
+                let file_name = output_relative_path
                     .file_name()
                     .map(|value| value.to_os_string())
                     .unwrap_or_else(|| "unnamed".into());
@@ -2776,11 +3055,22 @@ fn build_planned_cleanup_file(
     })
 }
 
+#[cfg(test)]
 fn execute_cleanup_file(
     planned_file: &PlannedCleanupFile,
     options: &CleanupOptions,
     session: &mut ExifToolSession,
 ) -> Result<FileCleanupOutcome, String> {
+    let prepared_file = prepare_cleanup_file_for_format(planned_file, options)?;
+    execute_prepared_cleanup_file(&prepared_file, options, session)
+}
+
+fn execute_prepared_cleanup_file(
+    prepared_file: &PreparedCleanupFile,
+    options: &CleanupOptions,
+    session: &mut ExifToolSession,
+) -> Result<FileCleanupOutcome, String> {
+    let planned_file = &prepared_file.cleanup_file;
     if let Some(output_path) = planned_file.output_path.as_ref() {
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent)
@@ -2791,9 +3081,12 @@ fn execute_cleanup_file(
     let status = session.clean_file(planned_file, options)?;
 
     Ok(FileCleanupOutcome {
-        source_path: planned_file.source_path.to_string_lossy().to_string(),
-        output_path: planned_file
-            .output_path
+        source_path: prepared_file
+            .report_source_path
+            .to_string_lossy()
+            .to_string(),
+        output_path: prepared_file
+            .report_output_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         status,
@@ -4324,6 +4617,28 @@ mod tests {
             .join(executable_name)
     }
 
+    fn default_test_cleanup_options() -> CleanupOptions {
+        CleanupOptions {
+            output_mode: OutputMode::Overwrite,
+            output_dir: None,
+            parallelism: 1,
+            preserve_structure: true,
+            allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
+            video_cleanup_mode: None,
+            targeted_image_cleanup: None,
+            metadata_write: None,
+        }
+    }
+
+    fn write_fake_png(path: &Path) {
+        fs::write(
+            path,
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRfake test payload",
+        )
+        .expect("write fake png");
+    }
+
     #[test]
     fn queue_store_dedupes_files_and_limits_preview_rows() {
         let mut store = QueueStore::default();
@@ -4653,6 +4968,129 @@ mod tests {
     }
 
     #[test]
+    fn detect_file_format_identifies_png_with_wrong_extension() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-detect-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        write_fake_png(&source_path);
+
+        assert_eq!(
+            detect_file_format(&source_path).expect("detect file format"),
+            Some(DetectedFileFormat::Png)
+        );
+        assert_eq!(
+            detected_image_extension_mismatch(&source_path).expect("detect mismatch"),
+            Some(DetectedFileFormat::Png)
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn mismatched_extension_requires_explicit_opt_in() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-reject-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        write_fake_png(&source_path);
+
+        let planned = PlannedCleanupFile {
+            source_path: source_path.clone(),
+            output_path: None,
+        };
+        let options = default_test_cleanup_options();
+        let error = prepare_cleanup_file_for_format(&planned, &options)
+            .expect_err("mismatched extension should require opt-in");
+
+        assert!(error.contains("真实格式是 PNG"));
+        assert!(error.contains("当前后缀是 .jpg"));
+        assert!(source_path.exists(), "opt-out should not rename the source");
+        assert!(
+            !temp_dir.join("sample.png").exists(),
+            "opt-out should not create a corrected file"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn auto_fix_mismatched_extension_renames_source_before_cleanup() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-fix-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        let corrected_path = temp_dir.join("sample.png");
+        write_fake_png(&source_path);
+
+        let planned = PlannedCleanupFile {
+            source_path: source_path.clone(),
+            output_path: None,
+        };
+        let mut options = default_test_cleanup_options();
+        options.auto_fix_mismatched_extension = true;
+        let prepared =
+            prepare_cleanup_file_for_format(&planned, &options).expect("prepare corrected source");
+
+        assert!(!source_path.exists(), "old suffix should be renamed away");
+        assert!(corrected_path.exists(), "corrected PNG path should exist");
+        assert_eq!(prepared.cleanup_file.source_path, corrected_path);
+        assert_eq!(prepared.report_source_path, source_path);
+        assert_eq!(prepared.report_output_path, Some(corrected_path));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn mirror_plan_uses_corrected_extension_when_auto_fix_is_enabled() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-mirror-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let input_dir = temp_dir.join("input");
+        let output_dir = temp_dir.join("output");
+        fs::create_dir_all(&input_dir).expect("create input dir");
+        let source_path = input_dir.join("sample.jpg");
+        write_fake_png(&source_path);
+        let queued = QueuedFile {
+            source_path: source_path.to_string_lossy().to_string(),
+            relative_path: "sample.jpg".to_string(),
+            root_label: "input".to_string(),
+            root_source_path: input_dir.to_string_lossy().to_string(),
+            size_bytes: 128,
+            from_directory: true,
+        };
+
+        let mut options = default_test_cleanup_options();
+        options.output_mode = OutputMode::Mirror;
+        options.output_dir = Some(output_dir.to_string_lossy().to_string());
+        options.auto_fix_mismatched_extension = true;
+        let output_root = resolve_output_root(&options)
+            .expect("resolve output root")
+            .expect("mirror output root");
+        let planned =
+            build_planned_cleanup_file(&queued, &options, Some(&output_root), &mut HashSet::new())
+                .expect("build planned cleanup file");
+
+        assert_eq!(
+            planned
+                .output_path
+                .as_ref()
+                .and_then(|path| path.extension())
+                .and_then(|extension| extension.to_str()),
+            Some("png")
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn cleanup_preview_states_fill_missing_rows_from_final_summary() {
         let tracked_preview_files = vec![
             queued_file("C:/input/1.jpg", "1.jpg", "input", "C:/input"),
@@ -4729,6 +5167,7 @@ mod tests {
             targeted_image_cleanup: None,
             metadata_write: None,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
         };
         let mirror_options = CleanupOptions {
             output_mode: OutputMode::Mirror,
@@ -4739,8 +5178,21 @@ mod tests {
             targeted_image_cleanup: None,
             metadata_write: None,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
         };
         let success = FileCleanupOutcome {
+            source_path: "C:/input/success.jpg".to_string(),
+            output_path: None,
+            status: "success",
+            error: None,
+        };
+        let renamed_success = FileCleanupOutcome {
+            source_path: "C:/input/renamed.jpg".to_string(),
+            output_path: Some("C:/input/renamed.png".to_string()),
+            status: "success",
+            error: None,
+        };
+        let mirror_success = FileCleanupOutcome {
             source_path: "C:/input/success.jpg".to_string(),
             output_path: Some("C:/out/success.jpg".to_string()),
             status: "success",
@@ -4758,11 +5210,15 @@ mod tests {
             "overwrite success can be inferred and should not inflate the final payload"
         );
         assert!(
+            should_keep_summary_outcome(&renamed_success, &overwrite_options),
+            "overwrite success with a corrected extension needs output_path for later previews"
+        );
+        assert!(
             should_keep_summary_outcome(&unchanged, &overwrite_options),
             "mixed overwrite results need unchanged rows as exact overrides"
         );
         assert!(
-            should_keep_summary_outcome(&success, &mirror_options),
+            should_keep_summary_outcome(&mirror_success, &mirror_options),
             "mirror success needs output_path so later previews read the copied file"
         );
     }
@@ -4890,6 +5346,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4902,6 +5359,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
@@ -4924,6 +5382,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
@@ -4975,6 +5434,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -4991,6 +5451,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5017,6 +5478,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5037,6 +5499,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
@@ -5060,6 +5523,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: Some(VideoCleanupMode::Strict),
             targeted_image_cleanup: Some(TargetedImageCleanupOptions {
                 enabled: true,
@@ -5377,6 +5841,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5439,6 +5904,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: Some(MetadataWriteOptions {
@@ -5523,6 +5989,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5572,6 +6039,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: true,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5619,6 +6087,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5664,6 +6133,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5708,6 +6178,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5757,6 +6228,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,
@@ -5842,6 +6314,7 @@ mod tests {
             parallelism: 1,
             preserve_structure: true,
             allow_readonly_overwrite: false,
+            auto_fix_mismatched_extension: false,
             video_cleanup_mode: None,
             targeted_image_cleanup: None,
             metadata_write: None,

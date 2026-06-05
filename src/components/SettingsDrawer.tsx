@@ -24,7 +24,7 @@ const SETTINGS_TABS: Array<{
   caption: string;
 }> = [
   { id: "execution", label: "执行", caption: "速度" },
-  { id: "cleanup", label: "清理", caption: "视频安全" },
+  { id: "cleanup", label: "清理", caption: "格式安全" },
   { id: "metadata", label: "标记", caption: "公开字段" },
   { id: "behavior", label: "界面", caption: "详情" },
   { id: "environment", label: "环境", caption: "只读" },
@@ -37,6 +37,7 @@ export function SettingsDrawer(props: {
   autoOpenDetailsOnFailure: boolean;
   reopenRunDetailsOnLaunch: boolean;
   allowReadonlyOverwrite: boolean;
+  autoFixMismatchedExtension: boolean;
   cleanupOutputMode: CleanupOutputMode;
   mirrorOutputDir: string | null;
   videoCleanupMode: VideoCleanupMode;
@@ -49,6 +50,7 @@ export function SettingsDrawer(props: {
   onAutoOpenDetailsOnFailureChange: (value: boolean) => void;
   onReopenRunDetailsOnLaunchChange: (value: boolean) => void;
   onAllowReadonlyOverwriteChange: (value: boolean) => void;
+  onAutoFixMismatchedExtensionChange: (value: boolean) => void;
   onCleanupOutputModeChange: (value: CleanupOutputMode) => void;
   onSelectMirrorOutputDir: () => void;
   onClearMirrorOutputDir: () => void;
@@ -302,6 +304,35 @@ export function SettingsDrawer(props: {
                   </div>
                 </div>
               ) : null}
+            </div>
+
+            <div className="setting-card">
+              <div className="setting-head">
+                <div>
+                  <strong>格式后缀修正</strong>
+                  <span>
+                    只在文件内容和扩展名明显不一致时处理，不转换图片格式。
+                  </span>
+                </div>
+              </div>
+
+              <label className="setting-check">
+                <input
+                  type="checkbox"
+                  checked={props.autoFixMismatchedExtension}
+                  onChange={(event) =>
+                    props.onAutoFixMismatchedExtensionChange(
+                      event.currentTarget.checked,
+                    )
+                  }
+                />
+                <div>
+                  <strong>格式不匹配时改正后缀</strong>
+                  <span>
+                    例如内容是 PNG 但文件名是 .jpg，清理前把源文件改为 .png；关闭时会提示原因并跳过该文件。
+                  </span>
+                </div>
+              </label>
             </div>
 
             <div className="setting-card">

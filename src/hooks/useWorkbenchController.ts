@@ -66,6 +66,7 @@ function normalizeQueueFilePaths(files: QueuedFile[]) {
 export function useWorkbenchController(options?: {
   preferredParallelism?: number | null;
   allowReadonlyOverwrite?: boolean;
+  autoFixMismatchedExtension?: boolean;
   cleanupOutputMode?: CleanupOutputMode;
   mirrorOutputDir?: string | null;
   videoCleanupMode?: VideoCleanupMode;
@@ -520,6 +521,7 @@ export function useWorkbenchController(options?: {
           parallelism,
           preserveStructure: true,
           allowReadonlyOverwrite: Boolean(options?.allowReadonlyOverwrite),
+          autoFixMismatchedExtension: Boolean(options?.autoFixMismatchedExtension),
           videoCleanupMode: options?.videoCleanupMode ?? "safe",
           targetedImageCleanup: {
             enabled: Boolean(options?.targetedImageCleanup?.enabled),

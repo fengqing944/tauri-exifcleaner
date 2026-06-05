@@ -143,6 +143,7 @@ function App() {
   } = useWorkbenchController({
     preferredParallelism: preferences.preferredParallelism,
     allowReadonlyOverwrite: preferences.allowReadonlyOverwrite,
+    autoFixMismatchedExtension: preferences.autoFixMismatchedExtension,
     cleanupOutputMode: preferences.cleanupOutputMode,
     mirrorOutputDir: preferences.mirrorOutputDir,
     videoCleanupMode: preferences.videoCleanupMode,
@@ -714,6 +715,7 @@ function App() {
         autoOpenDetailsOnFailure={preferences.autoOpenDetailsOnFailure}
         reopenRunDetailsOnLaunch={preferences.reopenRunDetailsOnLaunch}
         allowReadonlyOverwrite={preferences.allowReadonlyOverwrite}
+        autoFixMismatchedExtension={preferences.autoFixMismatchedExtension}
         cleanupOutputMode={preferences.cleanupOutputMode}
         mirrorOutputDir={preferences.mirrorOutputDir}
         videoCleanupMode={preferences.videoCleanupMode}
@@ -735,6 +737,9 @@ function App() {
         }
         onAllowReadonlyOverwriteChange={(value) =>
           setPreference("allowReadonlyOverwrite", value)
+        }
+        onAutoFixMismatchedExtensionChange={(value) =>
+          setPreference("autoFixMismatchedExtension", value)
         }
         onCleanupOutputModeChange={(cleanupOutputMode) =>
           setPreference("cleanupOutputMode", cleanupOutputMode)

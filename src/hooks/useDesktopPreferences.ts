@@ -13,6 +13,7 @@ export type DesktopPreferences = {
   reopenRunDetailsOnLaunch: boolean;
   lastDetailsOpen: boolean;
   allowReadonlyOverwrite: boolean;
+  autoFixMismatchedExtension: boolean;
   cleanupOutputMode: CleanupOutputMode;
   mirrorOutputDir: string | null;
   videoCleanupMode: VideoCleanupMode;
@@ -29,6 +30,7 @@ const DEFAULT_PREFERENCES: DesktopPreferences = {
   reopenRunDetailsOnLaunch: false,
   lastDetailsOpen: false,
   allowReadonlyOverwrite: false,
+  autoFixMismatchedExtension: false,
   cleanupOutputMode: "overwrite",
   mirrorOutputDir: null,
   videoCleanupMode: "safe",
@@ -173,6 +175,10 @@ function sanitizePreferences(input: unknown): DesktopPreferences {
       typeof record.allowReadonlyOverwrite === "boolean"
         ? record.allowReadonlyOverwrite
         : DEFAULT_PREFERENCES.allowReadonlyOverwrite,
+    autoFixMismatchedExtension:
+      typeof record.autoFixMismatchedExtension === "boolean"
+        ? record.autoFixMismatchedExtension
+        : DEFAULT_PREFERENCES.autoFixMismatchedExtension,
     cleanupOutputMode: sanitizeCleanupOutputMode(record.cleanupOutputMode),
     mirrorOutputDir: sanitizePathPreference(record.mirrorOutputDir),
     videoCleanupMode: sanitizeVideoCleanupMode(record.videoCleanupMode),

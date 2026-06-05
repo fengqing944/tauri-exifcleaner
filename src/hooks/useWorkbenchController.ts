@@ -188,6 +188,7 @@ export function useWorkbenchController(options?: {
         [pathKey]: {
           status: payload.status,
           outputPath: payload.outputPath,
+          correctedSourcePath: payload.correctedSourcePath,
           error: payload.error,
         },
       }));

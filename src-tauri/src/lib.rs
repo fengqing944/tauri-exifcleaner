@@ -199,15 +199,6 @@ impl Default for MetadataPreviewState {
     }
 }
 
-impl Default for MetadataPreviewWorker {
-    fn default() -> Self {
-        Self {
-            session: None,
-            cache: HashMap::new(),
-        }
-    }
-}
-
 #[derive(Default)]
 struct CleanupState {
     running: Mutex<bool>,
@@ -219,6 +210,7 @@ struct MetadataPreviewState {
     sender: crossbeam_channel::Sender<MetadataPreviewWorkItem>,
 }
 
+#[derive(Default)]
 struct MetadataPreviewWorker {
     session: Option<ExifToolSession>,
     cache: HashMap<String, MetadataPreviewCacheEntry>,
@@ -382,6 +374,7 @@ struct CleanupProgressEvent {
     concurrency: usize,
     current_path: String,
     output_path: Option<String>,
+    corrected_source_path: Option<String>,
     status: String,
     error: Option<String>,
 }
@@ -398,6 +391,7 @@ struct CleanupFailure {
 struct CleanupOutcome {
     source_path: String,
     output_path: Option<String>,
+    corrected_source_path: Option<String>,
     status: String,
     error: Option<String>,
 }
@@ -407,6 +401,7 @@ struct CleanupOutcome {
 struct CleanupPreviewState {
     source_path: String,
     output_path: Option<String>,
+    corrected_source_path: Option<String>,
     status: String,
     error: Option<String>,
     snapshot_error: Option<String>,
@@ -507,6 +502,7 @@ struct PreparedCleanupFile {
     cleanup_file: PlannedCleanupFile,
     report_source_path: PathBuf,
     report_output_path: Option<PathBuf>,
+    corrected_source_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -534,6 +530,7 @@ struct ScanOutcome {
 struct FileCleanupOutcome {
     source_path: String,
     output_path: Option<String>,
+    corrected_source_path: Option<String>,
     status: &'static str,
     error: Option<String>,
 }
@@ -542,6 +539,16 @@ struct FileCleanupOutcome {
 struct FileCleanupStart {
     source_path: String,
     output_path: Option<String>,
+    corrected_source_path: Option<String>,
+}
+
+#[derive(Clone)]
+struct CleanupWorkerShared {
+    options: CleanupOptions,
+    exiftool_path: PathBuf,
+    cancel_flag: Arc<AtomicBool>,
+    heavy_video_limiter: Arc<Mutex<()>>,
+    reserved_corrected_paths: Arc<Mutex<HashSet<String>>>,
 }
 
 struct CleanupPreviewSnapshots {
@@ -1022,7 +1029,7 @@ fn append_queued_files(store: &mut QueueStore, files: &[QueuedFile]) -> Result<(
         .map_err(|error| format!("无法定位队列暂存文件: {error}"))?;
 
     for file in files {
-        if store.file_count % QUEUE_INDEX_STRIDE == 0 {
+        if store.file_count.is_multiple_of(QUEUE_INDEX_STRIDE) {
             store.queue_page_offsets.push(next_offset);
         }
 
@@ -1177,7 +1184,8 @@ fn build_cleanup_preview_states(
                 .unwrap_or_else(|| CleanupPreviewState {
                     source_path: file.source_path.clone(),
                     output_path: None,
-                    status: if let Some(_) = failure_map.get(&key) {
+                    corrected_source_path: None,
+                    status: if failure_map.get(&key).is_some() {
                         "failed".to_string()
                     } else if cancelled {
                         "cancelled".to_string()
@@ -1196,6 +1204,7 @@ fn summary_outcome_from(outcome: &FileCleanupOutcome) -> CleanupOutcome {
     CleanupOutcome {
         source_path: outcome.source_path.clone(),
         output_path: outcome.output_path.clone(),
+        corrected_source_path: outcome.corrected_source_path.clone(),
         status: outcome.status.to_string(),
         error: outcome.error.clone(),
     }
@@ -1216,6 +1225,19 @@ fn should_keep_summary_outcome(outcome: &FileCleanupOutcome, options: &CleanupOp
     match options.output_mode {
         OutputMode::Mirror => true,
         OutputMode::Overwrite => outcome.status == "unchanged" || outcome.output_path.is_some(),
+    }
+}
+
+fn prune_summary_outcomes_before_return(
+    outcomes: &mut Vec<CleanupOutcome>,
+    options: &CleanupOptions,
+    cancelled: bool,
+    succeeded: usize,
+) {
+    if matches!(options.output_mode, OutputMode::Overwrite) && !cancelled && succeeded == 0 {
+        outcomes.retain(|outcome| {
+            outcome.output_path.is_some() || outcome.corrected_source_path.is_some()
+        });
     }
 }
 
@@ -1754,10 +1776,8 @@ fn read_metadata_snapshot_map_with_worker(
         .as_mut()
         .ok_or_else(|| "元数据预览引擎不可用。".to_string())?;
     let result = read_metadata_snapshot_map_with_session(session, input_paths);
-    if result.is_err() && session.should_restart() {
-        if session.restart().is_err() {
-            worker.session = None;
-        }
+    if result.is_err() && session.should_restart() && session.restart().is_err() {
+        worker.session = None;
     }
 
     result
@@ -1961,7 +1981,7 @@ fn debug_logging_enabled() -> bool {
 }
 
 fn sanitize_debug_message(message: &str) -> String {
-    let flattened = message.replace('\r', " ").replace('\n', " ");
+    let flattened = message.replace(['\r', '\n'], " ");
     let scrubbed = flattened
         .split_whitespace()
         .map(|token| {
@@ -2319,25 +2339,21 @@ async fn run_cleanup(
         let (sender, mut receiver) = mpsc::unbounded_channel::<WorkerEvent>();
         let mut worker_handles = Vec::with_capacity(concurrency);
         let heavy_video_limiter = Arc::new(Mutex::new(()));
+        let reserved_corrected_paths = Arc::new(Mutex::new(HashSet::<String>::new()));
 
         for worker_index in 0..concurrency {
             let queue = planned_receiver.clone();
             let sender = sender.clone();
-            let options = options.clone();
-            let exiftool_path = exiftool_path.clone();
-            let cancel_flag = cancel_flag.clone();
-            let heavy_video_limiter = heavy_video_limiter.clone();
+            let shared = CleanupWorkerShared {
+                options: options.clone(),
+                exiftool_path: exiftool_path.clone(),
+                cancel_flag: cancel_flag.clone(),
+                heavy_video_limiter: heavy_video_limiter.clone(),
+                reserved_corrected_paths: reserved_corrected_paths.clone(),
+            };
 
             worker_handles.push(tauri::async_runtime::spawn_blocking(move || {
-                run_cleanup_worker(
-                    worker_index,
-                    queue,
-                    sender,
-                    options,
-                    exiftool_path,
-                    cancel_flag,
-                    heavy_video_limiter,
-                )
+                run_cleanup_worker(worker_index, queue, sender, shared)
             }));
         }
         drop(sender);
@@ -2384,6 +2400,7 @@ async fn run_cleanup(
                                 concurrency,
                                 current_path: started.source_path,
                                 output_path: started.output_path,
+                                corrected_source_path: started.corrected_source_path,
                                 status: "running".to_string(),
                                 error: None,
                             },
@@ -2401,6 +2418,7 @@ async fn run_cleanup(
                             CleanupPreviewState {
                                 source_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
+                                corrected_source_path: outcome.corrected_source_path.clone(),
                                 status: outcome.status.to_string(),
                                 error: outcome.error.clone(),
                                 snapshot_error: None,
@@ -2419,6 +2437,7 @@ async fn run_cleanup(
                                 concurrency,
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
+                                corrected_source_path: outcome.corrected_source_path.clone(),
                                 status: outcome.status.to_string(),
                                 error: outcome.error.clone(),
                             },
@@ -2471,6 +2490,7 @@ async fn run_cleanup(
                                 concurrency,
                                 current_path: outcome.source_path.clone(),
                                 output_path: outcome.output_path.clone(),
+                                corrected_source_path: outcome.corrected_source_path.clone(),
                                 status: outcome.status.to_string(),
                                 error: outcome.error.clone(),
                             },
@@ -2513,9 +2533,7 @@ async fn run_cleanup(
         }
 
         let cancelled = cancel_flag.load(Ordering::Relaxed);
-        if matches!(options.output_mode, OutputMode::Overwrite) && !cancelled && succeeded == 0 {
-            outcomes.clear();
-        }
+        prune_summary_outcomes_before_return(&mut outcomes, &options, cancelled, succeeded);
         let preview_snapshots = build_cleanup_preview_snapshot_map(
             &exiftool_path,
             &tracked_preview_files,
@@ -2572,15 +2590,12 @@ fn run_cleanup_worker(
     worker_index: usize,
     queue: CleanupReceiver<PlannedCleanupFile>,
     sender: mpsc::UnboundedSender<WorkerEvent>,
-    options: CleanupOptions,
-    exiftool_path: PathBuf,
-    cancel_flag: Arc<AtomicBool>,
-    heavy_video_limiter: Arc<Mutex<()>>,
+    shared: CleanupWorkerShared,
 ) {
-    let mut session = match ExifToolSession::new(&exiftool_path) {
+    let mut session = match ExifToolSession::new(&shared.exiftool_path) {
         Ok(session) => session,
         Err(error) => {
-            cancel_flag.store(true, Ordering::Relaxed);
+            shared.cancel_flag.store(true, Ordering::Relaxed);
             let _ = sender.send(WorkerEvent::Fatal(format!(
                 "清理引擎 worker {} 初始化失败: {error}",
                 worker_index + 1
@@ -2590,7 +2605,7 @@ fn run_cleanup_worker(
     };
 
     loop {
-        if cancel_flag.load(Ordering::Relaxed) {
+        if shared.cancel_flag.load(Ordering::Relaxed) {
             break;
         }
 
@@ -2600,7 +2615,11 @@ fn run_cleanup_worker(
             break;
         };
 
-        let prepared_file = match prepare_cleanup_file_for_format(&planned_file, &options) {
+        let prepared_file = match prepare_cleanup_file_for_format(
+            &planned_file,
+            &shared.options,
+            &shared.reserved_corrected_paths,
+        ) {
             Ok(prepared_file) => prepared_file,
             Err(error) => {
                 let _ = sender.send(WorkerEvent::Outcome(FileCleanupOutcome {
@@ -2609,6 +2628,7 @@ fn run_cleanup_worker(
                         .output_path
                         .as_ref()
                         .map(|path| path.to_string_lossy().to_string()),
+                    corrected_source_path: None,
                     status: "failed",
                     error: Some(error),
                 }));
@@ -2618,21 +2638,21 @@ fn run_cleanup_worker(
 
         let _heavy_video_guard = match acquire_heavy_video_cleanup_slot(
             &prepared_file.cleanup_file,
-            &heavy_video_limiter,
-            &cancel_flag,
+            &shared.heavy_video_limiter,
+            &shared.cancel_flag,
         ) {
             Ok(guard) => guard,
             Err(error) => {
-                if cancel_flag.load(Ordering::Relaxed) {
+                if shared.cancel_flag.load(Ordering::Relaxed) {
                     break;
                 }
-                cancel_flag.store(true, Ordering::Relaxed);
+                shared.cancel_flag.store(true, Ordering::Relaxed);
                 let _ = sender.send(WorkerEvent::Fatal(error));
                 break;
             }
         };
 
-        if cancel_flag.load(Ordering::Relaxed) {
+        if shared.cancel_flag.load(Ordering::Relaxed) {
             break;
         }
 
@@ -2646,40 +2666,49 @@ fn run_cleanup_worker(
                     .report_output_path
                     .as_ref()
                     .map(|path| path.to_string_lossy().to_string()),
+                corrected_source_path: prepared_file
+                    .corrected_source_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().to_string()),
             }))
             .is_err()
         {
             break;
         }
 
-        let outcome = match execute_prepared_cleanup_file(&prepared_file, &options, &mut session) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if session.should_restart() {
-                    if let Err(restart_error) = session.restart() {
-                        cancel_flag.store(true, Ordering::Relaxed);
-                        let _ = sender.send(WorkerEvent::Fatal(format!(
-                            "清理引擎 worker {} 重启失败: {restart_error}",
-                            worker_index + 1
-                        )));
-                        break;
+        let outcome =
+            match execute_prepared_cleanup_file(&prepared_file, &shared.options, &mut session) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    if session.should_restart() {
+                        if let Err(restart_error) = session.restart() {
+                            shared.cancel_flag.store(true, Ordering::Relaxed);
+                            let _ = sender.send(WorkerEvent::Fatal(format!(
+                                "清理引擎 worker {} 重启失败: {restart_error}",
+                                worker_index + 1
+                            )));
+                            break;
+                        }
+                    }
+
+                    FileCleanupOutcome {
+                        source_path: prepared_file
+                            .report_source_path
+                            .to_string_lossy()
+                            .to_string(),
+                        output_path: prepared_file
+                            .report_output_path
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().to_string()),
+                        corrected_source_path: prepared_file
+                            .corrected_source_path
+                            .as_ref()
+                            .map(|path| path.to_string_lossy().to_string()),
+                        status: "failed",
+                        error: Some(error),
                     }
                 }
-
-                FileCleanupOutcome {
-                    source_path: prepared_file
-                        .report_source_path
-                        .to_string_lossy()
-                        .to_string(),
-                    output_path: prepared_file
-                        .report_output_path
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    status: "failed",
-                    error: Some(error),
-                }
-            }
-        };
+            };
 
         if sender.send(WorkerEvent::Outcome(outcome)).is_err() {
             break;
@@ -2894,9 +2923,10 @@ fn path_with_detected_extension(path: &Path, detected_format: DetectedFileFormat
     next
 }
 
-fn unique_corrected_extension_path(
+fn reserve_corrected_extension_path(
     source_path: &Path,
     detected_format: DetectedFileFormat,
+    reserved_paths: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<PathBuf, String> {
     let parent = source_path.parent().ok_or_else(|| {
         format!(
@@ -2916,14 +2946,12 @@ fn unique_corrected_extension_path(
         })?;
     let extension = detected_format.canonical_extension();
 
+    let mut reserved_paths = reserved_paths.lock().unwrap();
     for index in 0..512 {
-        let file_name = if index == 0 {
-            format!("{stem}.{extension}")
-        } else {
-            format!("{stem} ({index}).{extension}")
-        };
-        let candidate = parent.join(file_name);
-        if !candidate.exists() {
+        let candidate = corrected_extension_candidate(parent, stem, extension, index);
+        let candidate_key = dedupe_key(&candidate);
+        if !candidate.exists() && !reserved_paths.contains(&candidate_key) {
+            reserved_paths.insert(candidate_key);
             return Ok(candidate);
         }
     }
@@ -2933,6 +2961,50 @@ fn unique_corrected_extension_path(
         source_path.display(),
         extension
     ))
+}
+
+fn release_reserved_corrected_extension_path(
+    path: &Path,
+    reserved_paths: &Arc<Mutex<HashSet<String>>>,
+) {
+    reserved_paths.lock().unwrap().remove(&dedupe_key(path));
+}
+
+fn corrected_extension_candidate(
+    parent: &Path,
+    stem: &str,
+    extension: &str,
+    index: usize,
+) -> PathBuf {
+    let file_name = if index == 0 {
+        format!("{stem}.{extension}")
+    } else {
+        format!("{stem} ({index}).{extension}")
+    };
+    parent.join(file_name)
+}
+
+#[cfg(target_os = "windows")]
+fn rename_file_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let from_wide = path_to_wide(from);
+    let to_wide = path_to_wide(to);
+    let result =
+        unsafe { MoveFileExW(from_wide.as_ptr(), to_wide.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if result == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn rename_file_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::hard_link(from, to)?;
+    if let Err(error) = fs::remove_file(from) {
+        let _ = fs::remove_file(to);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn cleanup_output_relative_path(file: &QueuedFile, options: &CleanupOptions) -> PathBuf {
@@ -2952,6 +3024,7 @@ fn cleanup_output_relative_path(file: &QueuedFile, options: &CleanupOptions) -> 
 fn prepare_cleanup_file_for_format(
     planned_file: &PlannedCleanupFile,
     options: &CleanupOptions,
+    reserved_corrected_paths: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<PreparedCleanupFile, String> {
     let report_source_path = planned_file.source_path.clone();
     let mut cleanup_file = planned_file.clone();
@@ -2962,6 +3035,7 @@ fn prepare_cleanup_file_for_format(
             cleanup_file,
             report_source_path,
             report_output_path,
+            corrected_source_path: None,
         });
     }
 
@@ -2971,6 +3045,7 @@ fn prepare_cleanup_file_for_format(
             cleanup_file,
             report_source_path,
             report_output_path,
+            corrected_source_path: None,
         });
     };
 
@@ -2981,21 +3056,41 @@ fn prepare_cleanup_file_for_format(
         ));
     }
 
-    let corrected_source_path =
-        unique_corrected_extension_path(&cleanup_file.source_path, detected_format)?;
-    fs::rename(&cleanup_file.source_path, &corrected_source_path).map_err(|error| {
-        format!(
-            "文件真实格式是 {}，但无法将后缀从 {} 改成 .{}: {} -> {} ({error})",
-            detected_format.display_name(),
-            extension_label(&cleanup_file.source_path),
-            detected_format.canonical_extension(),
-            cleanup_file.source_path.display(),
-            corrected_source_path.display()
-        )
-    })?;
+    let original_source_path = cleanup_file.source_path.clone();
+    let corrected_source_path = loop {
+        let corrected_source_path = reserve_corrected_extension_path(
+            &original_source_path,
+            detected_format,
+            reserved_corrected_paths,
+        )?;
+        match rename_file_no_replace(&original_source_path, &corrected_source_path) {
+            Ok(()) => break corrected_source_path,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                release_reserved_corrected_extension_path(
+                    &corrected_source_path,
+                    reserved_corrected_paths,
+                );
+                continue;
+            }
+            Err(error) => {
+                release_reserved_corrected_extension_path(
+                    &corrected_source_path,
+                    reserved_corrected_paths,
+                );
+                return Err(format!(
+                    "文件真实格式是 {}，但无法将后缀从 {} 改成 .{}: {} -> {} ({error})",
+                    detected_format.display_name(),
+                    extension_label(&original_source_path),
+                    detected_format.canonical_extension(),
+                    original_source_path.display(),
+                    corrected_source_path.display()
+                ));
+            }
+        }
+    };
     append_debug_log(format!(
         "cleanup.corrected_extension source={} corrected={} detected={}",
-        cleanup_file.source_path.display(),
+        original_source_path.display(),
         corrected_source_path.display(),
         detected_format.display_name()
     ));
@@ -3003,7 +3098,7 @@ fn prepare_cleanup_file_for_format(
     cleanup_file.source_path = corrected_source_path.clone();
     match options.output_mode {
         OutputMode::Overwrite => {
-            report_output_path = Some(corrected_source_path);
+            report_output_path = Some(corrected_source_path.clone());
         }
         OutputMode::Mirror => {
             if let Some(output_path) = cleanup_file.output_path.as_mut() {
@@ -3017,6 +3112,7 @@ fn prepare_cleanup_file_for_format(
         cleanup_file,
         report_source_path,
         report_output_path,
+        corrected_source_path: Some(corrected_source_path),
     })
 }
 
@@ -3061,7 +3157,9 @@ fn execute_cleanup_file(
     options: &CleanupOptions,
     session: &mut ExifToolSession,
 ) -> Result<FileCleanupOutcome, String> {
-    let prepared_file = prepare_cleanup_file_for_format(planned_file, options)?;
+    let reserved_corrected_paths = Arc::new(Mutex::new(HashSet::new()));
+    let prepared_file =
+        prepare_cleanup_file_for_format(planned_file, options, &reserved_corrected_paths)?;
     execute_prepared_cleanup_file(&prepared_file, options, session)
 }
 
@@ -3087,6 +3185,10 @@ fn execute_prepared_cleanup_file(
             .to_string(),
         output_path: prepared_file
             .report_output_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        corrected_source_path: prepared_file
+            .corrected_source_path
             .as_ref()
             .map(|path| path.to_string_lossy().to_string()),
         status,
@@ -4285,7 +4387,7 @@ fn reserve_unique_path(mut candidate: PathBuf, reserved_paths: &mut HashSet<Stri
         let parent = candidate
             .parent()
             .map(Path::to_path_buf)
-            .unwrap_or_else(PathBuf::new);
+            .unwrap_or_default();
         let stem = candidate
             .file_stem()
             .and_then(|value| value.to_str())
@@ -5004,7 +5106,8 @@ mod tests {
             output_path: None,
         };
         let options = default_test_cleanup_options();
-        let error = prepare_cleanup_file_for_format(&planned, &options)
+        let reserved_paths = Arc::new(Mutex::new(HashSet::new()));
+        let error = prepare_cleanup_file_for_format(&planned, &options, &reserved_paths)
             .expect_err("mismatched extension should require opt-in");
 
         assert!(error.contains("真实格式是 PNG"));
@@ -5035,14 +5138,61 @@ mod tests {
         };
         let mut options = default_test_cleanup_options();
         options.auto_fix_mismatched_extension = true;
-        let prepared =
-            prepare_cleanup_file_for_format(&planned, &options).expect("prepare corrected source");
+        let reserved_paths = Arc::new(Mutex::new(HashSet::new()));
+        let prepared = prepare_cleanup_file_for_format(&planned, &options, &reserved_paths)
+            .expect("prepare corrected source");
 
         assert!(!source_path.exists(), "old suffix should be renamed away");
         assert!(corrected_path.exists(), "corrected PNG path should exist");
         assert_eq!(prepared.cleanup_file.source_path, corrected_path);
         assert_eq!(prepared.report_source_path, source_path);
-        assert_eq!(prepared.report_output_path, Some(corrected_path));
+        assert_eq!(prepared.report_output_path, Some(corrected_path.clone()));
+        assert_eq!(prepared.corrected_source_path, Some(corrected_path));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn auto_fix_mismatched_extension_reserves_unique_names_with_same_stem() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-fix-unique-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let first_source_path = temp_dir.join("sample.jpg");
+        let second_source_path = temp_dir.join("sample.jpeg");
+        write_fake_png(&first_source_path);
+        write_fake_png(&second_source_path);
+
+        let mut options = default_test_cleanup_options();
+        options.auto_fix_mismatched_extension = true;
+        let reserved_paths = Arc::new(Mutex::new(HashSet::new()));
+        let first = prepare_cleanup_file_for_format(
+            &PlannedCleanupFile {
+                source_path: first_source_path.clone(),
+                output_path: None,
+            },
+            &options,
+            &reserved_paths,
+        )
+        .expect("prepare first corrected source");
+        let second = prepare_cleanup_file_for_format(
+            &PlannedCleanupFile {
+                source_path: second_source_path.clone(),
+                output_path: None,
+            },
+            &options,
+            &reserved_paths,
+        )
+        .expect("prepare second corrected source");
+
+        assert_eq!(first.cleanup_file.source_path, temp_dir.join("sample.png"));
+        assert_eq!(
+            second.cleanup_file.source_path,
+            temp_dir.join("sample (1).png")
+        );
+        assert!(temp_dir.join("sample.png").exists());
+        assert!(temp_dir.join("sample (1).png").exists());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -5102,6 +5252,7 @@ mod tests {
             CleanupPreviewState {
                 source_path: "C:/input/1.jpg".to_string(),
                 output_path: None,
+                corrected_source_path: None,
                 status: "success".to_string(),
                 error: None,
                 snapshot_error: None,
@@ -5183,24 +5334,28 @@ mod tests {
         let success = FileCleanupOutcome {
             source_path: "C:/input/success.jpg".to_string(),
             output_path: None,
+            corrected_source_path: None,
             status: "success",
             error: None,
         };
         let renamed_success = FileCleanupOutcome {
             source_path: "C:/input/renamed.jpg".to_string(),
             output_path: Some("C:/input/renamed.png".to_string()),
+            corrected_source_path: Some("C:/input/renamed.png".to_string()),
             status: "success",
             error: None,
         };
         let mirror_success = FileCleanupOutcome {
             source_path: "C:/input/success.jpg".to_string(),
             output_path: Some("C:/out/success.jpg".to_string()),
+            corrected_source_path: None,
             status: "success",
             error: None,
         };
         let unchanged = FileCleanupOutcome {
             source_path: "C:/input/unchanged.jpg".to_string(),
             output_path: None,
+            corrected_source_path: None,
             status: "unchanged",
             error: None,
         };
@@ -5220,6 +5375,35 @@ mod tests {
         assert!(
             should_keep_summary_outcome(&mirror_success, &mirror_options),
             "mirror success needs output_path so later previews read the copied file"
+        );
+    }
+
+    #[test]
+    fn overwrite_summary_pruning_keeps_corrected_extension_paths() {
+        let options = default_test_cleanup_options();
+        let mut outcomes = vec![
+            CleanupOutcome {
+                source_path: "C:/input/renamed.jpg".to_string(),
+                output_path: Some("C:/input/renamed.png".to_string()),
+                corrected_source_path: Some("C:/input/renamed.png".to_string()),
+                status: "unchanged".to_string(),
+                error: None,
+            },
+            CleanupOutcome {
+                source_path: "C:/input/plain.jpg".to_string(),
+                output_path: None,
+                corrected_source_path: None,
+                status: "unchanged".to_string(),
+                error: None,
+            },
+        ];
+
+        prune_summary_outcomes_before_return(&mut outcomes, &options, false, 0);
+
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(
+            outcomes[0].output_path.as_deref(),
+            Some("C:/input/renamed.png")
         );
     }
 
@@ -5859,6 +6043,57 @@ mod tests {
     }
 
     #[test]
+    fn persistent_session_corrects_png_extension_and_keeps_unchanged_output_path() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("icons")
+            .join("32x32.png");
+        let temp_dir = std::env::temp_dir().join(format!(
+            "metasweep-disguised-png-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let wrong_extension_path = temp_dir.join(format!("png-disguised-{counter}.jpg"));
+        let corrected_path = temp_dir.join(format!("png-disguised-{counter}.png"));
+        fs::copy(&source, &wrong_extension_path).expect("copy disguised png sample");
+
+        let planned = PlannedCleanupFile {
+            source_path: wrong_extension_path.clone(),
+            output_path: None,
+        };
+        let mut options = default_test_cleanup_options();
+        options.auto_fix_mismatched_extension = true;
+        options.targeted_image_cleanup = Some(TargetedImageCleanupOptions {
+            enabled: true,
+            search: Some("definitely-no-such-public-tag".to_string()),
+        });
+
+        let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
+        let result = execute_cleanup_file(&planned, &options, &mut session)
+            .expect("correct disguised png extension");
+        let _ = session.close();
+
+        assert_eq!(result.status, "unchanged");
+        let corrected_path_text = corrected_path.to_string_lossy().to_string();
+        assert_eq!(
+            result.output_path.as_deref(),
+            Some(corrected_path_text.as_str())
+        );
+        assert_eq!(
+            result.corrected_source_path.as_deref(),
+            Some(corrected_path_text.as_str())
+        );
+        assert!(
+            !wrong_extension_path.exists(),
+            "old incorrect suffix should be gone"
+        );
+        assert!(corrected_path.exists(), "corrected png path should exist");
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn persistent_session_cleans_png_metadata_and_writes_native_text_tags() {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("icons")
@@ -6259,8 +6494,9 @@ mod tests {
         let working_copy = temp_dir.join("预览 文件.png");
         fs::copy(&source, &working_copy).expect("copy preview png");
 
-        let snapshot_map = read_metadata_snapshot_map(&bundled_exiftool(), &[working_copy.clone()])
-            .expect("read metadata");
+        let snapshot_map =
+            read_metadata_snapshot_map(&bundled_exiftool(), std::slice::from_ref(&working_copy))
+                .expect("read metadata");
 
         assert!(
             snapshot_map.contains_key(&dedupe_key(&working_copy)),
@@ -6282,9 +6518,11 @@ mod tests {
         fs::copy(&source, &working_copy).expect("copy preview png");
 
         let mut session = ExifToolSession::new(&bundled_exiftool()).expect("start exiftool");
-        let snapshot_map =
-            read_metadata_snapshot_map_with_session(&mut session, &[working_copy.clone()])
-                .expect("read metadata through stay-open session");
+        let snapshot_map = read_metadata_snapshot_map_with_session(
+            &mut session,
+            std::slice::from_ref(&working_copy),
+        )
+        .expect("read metadata through stay-open session");
         let _ = session.close();
 
         let snapshot = snapshot_map

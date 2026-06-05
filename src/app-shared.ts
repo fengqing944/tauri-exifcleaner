@@ -60,6 +60,7 @@ export type CleanupProgressEvent = {
   concurrency: number;
   currentPath: string;
   outputPath: string | null;
+  correctedSourcePath: string | null;
   status: CleanupStatus;
   error: string | null;
 };
@@ -79,6 +80,7 @@ export type MetadataPreviewSnapshot = {
 export type CleanupPreviewState = {
   sourcePath: string;
   outputPath: string | null;
+  correctedSourcePath: string | null;
   status: CleanupStatus;
   error: string | null;
   snapshotError: string | null;
@@ -99,6 +101,7 @@ export type CleanupSummary = {
   outcomes?: Array<{
     sourcePath: string;
     outputPath: string | null;
+    correctedSourcePath: string | null;
     status: CleanupStatus;
     error: string | null;
   }>;
@@ -179,6 +182,7 @@ export type MetadataDebugEntry = {
 export type FileRunState = {
   status: CleanupStatus;
   outputPath: string | null;
+  correctedSourcePath: string | null;
   error: string | null;
 };
 
@@ -326,6 +330,7 @@ export function buildFileStateMap(
     result[normalizePath(item.sourcePath)] = {
       status: item.status,
       outputPath: item.outputPath,
+      correctedSourcePath: item.correctedSourcePath,
       error: item.error,
     };
     return result;
@@ -392,6 +397,7 @@ export function mergeSummaryFileStates(
       next[pathKey] = {
         status: outcome.status,
         outputPath: outcome.outputPath,
+        correctedSourcePath: outcome.correctedSourcePath,
         error: outcome.error,
       };
       continue;
@@ -402,6 +408,7 @@ export function mergeSummaryFileStates(
       next[pathKey] = {
         status: "failed",
         outputPath: null,
+        correctedSourcePath: null,
         error: failure,
       };
       continue;
@@ -416,6 +423,7 @@ export function mergeSummaryFileStates(
       next[pathKey] = {
         status: fallbackSuccessStatus,
         outputPath: currentState?.outputPath ?? null,
+        correctedSourcePath: currentState?.correctedSourcePath ?? null,
         error: null,
       };
     }

@@ -14,6 +14,7 @@ import type {
 import {
   formatBytes,
   formatProgressStatus,
+  getLeafName,
   getRowStatusDescriptor,
   normalizePath,
   QUEUE_ROW_HEIGHT,
@@ -317,6 +318,17 @@ export function WorkbenchPanel(props: {
                 const isSelected = props.selectedPreviewPathKey === pathKey;
                 const isActive = props.highlightedPathKey === pathKey && props.isRunning;
                 const rowStatus = getRowStatusDescriptor(rowState);
+                const correctedSourcePath =
+                  rowState?.correctedSourcePath &&
+                  normalizePath(rowState.correctedSourcePath) !== pathKey
+                    ? rowState.correctedSourcePath
+                    : null;
+                const primaryLabel = correctedSourcePath
+                  ? getLeafName(correctedSourcePath)
+                  : file.relativePath;
+                const secondaryLabel = correctedSourcePath
+                  ? `已改为 ${correctedSourcePath}`
+                  : file.sourcePath;
 
                 return (
                   <div
@@ -335,8 +347,8 @@ export function WorkbenchPanel(props: {
                     }
                   >
                     <div className="queue-file">
-                      <strong title={file.relativePath}>{trimMiddle(file.relativePath, 44)}</strong>
-                      <span title={file.sourcePath}>{trimMiddle(file.sourcePath, 68)}</span>
+                      <strong title={primaryLabel}>{trimMiddle(primaryLabel, 44)}</strong>
+                      <span title={secondaryLabel}>{trimMiddle(secondaryLabel, 68)}</span>
                     </div>
                     <span className="queue-count">
                       {resolveBeforeCountLabel(

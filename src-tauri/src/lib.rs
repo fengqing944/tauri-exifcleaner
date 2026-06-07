@@ -3432,6 +3432,9 @@ fn default_cleanup_removal_args_for_file(
     options: &CleanupOptions,
     source_path: &Path,
 ) -> Vec<String> {
+    if is_bmp_path(source_path) {
+        return Vec::new();
+    }
     if is_png_path(source_path) {
         return PNG_SAFE_CLEAN_REMOVAL_ARGS
             .iter()
@@ -3468,6 +3471,12 @@ fn is_png_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+}
+
+fn is_bmp_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("bmp"))
 }
 
 fn targeted_image_cleanup_args(
@@ -3577,6 +3586,10 @@ fn metadata_write_args(options: &CleanupOptions, source_path: &Path) -> Vec<Stri
         return Vec::new();
     };
     if !metadata_write.enabled {
+        return Vec::new();
+    }
+
+    if is_bmp_path(source_path) {
         return Vec::new();
     }
 
@@ -5672,6 +5685,10 @@ mod tests {
                 "-PNG:Copyright=© 2026 Example Studio".to_string(),
             ]
         );
+        assert!(
+            metadata_write_args(&enabled_options, Path::new("sample.bmp")).is_empty(),
+            "BMP files are read-only for ExifTool, so TagSweep must not write marker metadata"
+        );
     }
 
     #[test]
@@ -5689,6 +5706,20 @@ mod tests {
         };
 
         assert_eq!(cleanup_removal_args(&options), vec!["-all=".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_removal_args_skip_bmp_writes() {
+        let mut options = default_test_cleanup_options();
+        options.video_cleanup_mode = Some(VideoCleanupMode::Strict);
+
+        let args = cleanup_removal_args_for_file(&options, Path::new("sample.bmp"), None)
+            .expect("build BMP cleanup args");
+
+        assert!(
+            args.is_empty(),
+            "ExifTool cannot write BMP files, so BMP cleanup should be a no-op"
+        );
     }
 
     #[test]

@@ -2806,6 +2806,7 @@ fn resolve_output_root(options: &CleanupOptions) -> Result<Option<PathBuf>, Stri
 enum DetectedFileFormat {
     Jpeg,
     Png,
+    Bmp,
     Webp,
     Gif,
     Tiff,
@@ -2818,6 +2819,9 @@ impl DetectedFileFormat {
         }
         if header.len() >= 3 && header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF {
             return Some(Self::Jpeg);
+        }
+        if header.len() >= 2 && header.starts_with(b"BM") {
+            return Some(Self::Bmp);
         }
         if header.len() >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WEBP" {
             return Some(Self::Webp);
@@ -2836,6 +2840,7 @@ impl DetectedFileFormat {
         match self {
             Self::Jpeg => "jpg",
             Self::Png => "png",
+            Self::Bmp => "bmp",
             Self::Webp => "webp",
             Self::Gif => "gif",
             Self::Tiff => "tif",
@@ -2846,6 +2851,7 @@ impl DetectedFileFormat {
         match self {
             Self::Jpeg => "JPEG",
             Self::Png => "PNG",
+            Self::Bmp => "BMP",
             Self::Webp => "WebP",
             Self::Gif => "GIF",
             Self::Tiff => "TIFF",
@@ -2858,6 +2864,7 @@ impl DetectedFileFormat {
                 .iter()
                 .any(|candidate| candidate.eq_ignore_ascii_case(extension)),
             Self::Png => extension.eq_ignore_ascii_case("png"),
+            Self::Bmp => extension.eq_ignore_ascii_case("bmp"),
             Self::Webp => extension.eq_ignore_ascii_case("webp"),
             Self::Gif => extension.eq_ignore_ascii_case("gif"),
             Self::Tiff => ["tif", "tiff"]
@@ -4741,6 +4748,10 @@ mod tests {
         .expect("write fake png");
     }
 
+    fn write_fake_bmp(path: &Path) {
+        fs::write(path, b"BMfake test payload").expect("write fake bmp");
+    }
+
     #[test]
     fn queue_store_dedupes_files_and_limits_preview_rows() {
         let mut store = QueueStore::default();
@@ -5092,6 +5103,28 @@ mod tests {
     }
 
     #[test]
+    fn detect_file_format_identifies_bmp_with_wrong_extension() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-detect-bmp-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        write_fake_bmp(&source_path);
+
+        assert_eq!(
+            detect_file_format(&source_path).expect("detect file format"),
+            Some(DetectedFileFormat::Bmp)
+        );
+        assert_eq!(
+            detected_image_extension_mismatch(&source_path).expect("detect mismatch"),
+            Some(DetectedFileFormat::Bmp)
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn mismatched_extension_requires_explicit_opt_in() {
         let temp_dir = std::env::temp_dir().join(format!(
             "tagsweep-format-reject-{}",
@@ -5144,6 +5177,37 @@ mod tests {
 
         assert!(!source_path.exists(), "old suffix should be renamed away");
         assert!(corrected_path.exists(), "corrected PNG path should exist");
+        assert_eq!(prepared.cleanup_file.source_path, corrected_path);
+        assert_eq!(prepared.report_source_path, source_path);
+        assert_eq!(prepared.report_output_path, Some(corrected_path.clone()));
+        assert_eq!(prepared.corrected_source_path, Some(corrected_path));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn auto_fix_mismatched_extension_renames_bmp_source_before_cleanup() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "tagsweep-format-fix-bmp-{}",
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+        let source_path = temp_dir.join("sample.jpg");
+        let corrected_path = temp_dir.join("sample.bmp");
+        write_fake_bmp(&source_path);
+
+        let planned = PlannedCleanupFile {
+            source_path: source_path.clone(),
+            output_path: None,
+        };
+        let mut options = default_test_cleanup_options();
+        options.auto_fix_mismatched_extension = true;
+        let reserved_paths = Arc::new(Mutex::new(HashSet::new()));
+        let prepared = prepare_cleanup_file_for_format(&planned, &options, &reserved_paths)
+            .expect("prepare corrected BMP source");
+
+        assert!(!source_path.exists(), "old suffix should be renamed away");
+        assert!(corrected_path.exists(), "corrected BMP path should exist");
         assert_eq!(prepared.cleanup_file.source_path, corrected_path);
         assert_eq!(prepared.report_source_path, source_path);
         assert_eq!(prepared.report_output_path, Some(corrected_path.clone()));
